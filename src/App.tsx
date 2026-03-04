@@ -59,13 +59,28 @@ export default function App() {
       return;
     }
 
+    // --- Link Shortening Logic ---
+    let finalId = targetFileId;
+    const bucketPrefix = "https://firebasestorage.googleapis.com/v0/b/market-update-56e1c.firebasestorage.app/o/";
+
+    // If it was just newly uploaded to Firebase
+    if (finalId.startsWith('vblob_')) {
+      const decoded = atob(finalId.slice(6).replace(/-/g, '+').replace(/_/g, '/'));
+      if (decoded.startsWith(bucketPrefix)) {
+        const compressed = decoded.replace(bucketPrefix, "");
+        const safeBase64 = btoa(compressed).replace(/\+/g, '-').replace(/_/g, '/').replace(/=+$/, '');
+        finalId = `f_${safeBase64}`;
+      }
+    }
+
     const origin = window.location.origin;
     const params = new URLSearchParams();
-    if (clientName) params.append('client_name', clientName);
-    if (reportName) params.append('report_name', reportName);
-    if (previewImage) params.append('preview_image', previewImage);
+    // Shorthand: c=client, r=report, i=image
+    if (clientName) params.append('c', clientName);
+    if (reportName) params.append('r', reportName);
+    if (previewImage) params.append('i', previewImage);
 
-    const link = `${origin}/api/share/${targetFileId}?${params.toString()}`;
+    const link = `${origin}/s/${finalId}?${params.toString()}`;
     setGeneratedLink(link);
     setCopied(false);
   };
@@ -220,8 +235,8 @@ export default function App() {
                   }
 
                   const params = new URLSearchParams();
-                  if (clientName) params.append('client_name', clientName);
-                  if (reportName) params.append('report_name', reportName);
+                  if (clientName) params.append('c', clientName);
+                  if (reportName) params.append('r', reportName);
 
                   const url = `/view/${extractedId}?${params.toString()}`;
                   window.open(url, '_blank');

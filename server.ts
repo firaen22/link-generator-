@@ -17,29 +17,29 @@ console.log(`Telegram Bot: ${process.env.TELEGRAM_BOT_TOKEN ? '✅ LOADED' : '�
 console.log(`Telegram Chat ID: ${process.env.TELEGRAM_CHAT_ID ? '✅ LOADED' : '❌ MISSING'}`);
 console.log('------------------------------');
 
-// API Route for the Link Preview
-app.get("/api/share/:file_id", (req, res) => {
+// API Route for the Link Preview (Supports both old and new shorter path)
+app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
   const { file_id } = req.params;
-  const { client_name, name, report_name, preview_image } = req.query;
+  const { client_name, name, report_name, preview_image, c, r, i } = req.query;
 
-  // Default values
-  // Support 'name' as alias for 'client_name' from the snippet
-  const cName = (typeof name === 'string' && name) ? name :
-    (typeof client_name === 'string' && client_name) ? client_name : "貴客";
-  const rName = typeof report_name === 'string' && report_name ? report_name : "Document";
+  // Handle shorthand or full names
+  const cName = (c || name || client_name || "貴客") as string;
+  const rName = (r || report_name || "Document") as string;
+  const imageParam = (i || preview_image) as string;
 
   // Professional OG Image (Keep file size small for WhatsApp ~ < 300KB)
   let ogImage = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop";
-  if (typeof preview_image === 'string' && preview_image.startsWith('http')) {
-    ogImage = preview_image;
+  if (imageParam && imageParam.startsWith('http')) {
+    ogImage = imageParam;
   }
 
   // Wealth OS Branding
   const title = `📈 專屬市場簡報：${cName}`;
   const description = "Wealth OS 為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
 
-  // Target URL: Points to our internal Viewer to maintain tracking capabilities
-  const viewerUrl = `${process.env.APP_URL || ''}/view/${file_id}?client_name=${encodeURIComponent(cName)}&report_name=${encodeURIComponent(rName)}`;
+  // Target URL: Points to our internal Viewer
+  // Pass shortened params to viewer as well
+  const viewerUrl = `${process.env.APP_URL || ''}/view/${file_id}?c=${encodeURIComponent(cName)}&r=${encodeURIComponent(rName)}`;
 
   // Send Telegram Notification (Fire and Forget)
   if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
@@ -112,11 +112,21 @@ app.get("/api/share/:file_id", (req, res) => {
 app.get("/api/pdf/:file_id", async (req, res) => {
   const { file_id } = req.params;
 
-  // Handle Firebase/Blob proxy - Forced Proxy Mode to bypass CORS
-  if (file_id.startsWith('vblob_')) {
+  // Handle Firebase/Blob proxy
+  if (file_id.startsWith('vblob_') || file_id.startsWith('f_')) {
     try {
-      const base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
-      const blobUrl = Buffer.from(base64, 'base64').toString('utf8');
+      let blobUrl = "";
+      if (file_id.startsWith('f_')) {
+        // Decompress shorter Firebase ID
+        const bucketPrefix = "https://firebasestorage.googleapis.com/v0/b/market-update-56e1c.firebasestorage.app/o/";
+        const base64 = file_id.slice(2).replace(/-/g, '+').replace(/_/g, '/');
+        const path = Buffer.from(base64, 'base64').toString('utf8');
+        blobUrl = bucketPrefix + path;
+      } else {
+        // Old full URL Base64
+        const base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
+        blobUrl = Buffer.from(base64, 'base64').toString('utf8');
+      }
 
       console.log(`[VBLOB PROXY] Fetching: ${blobUrl}`);
       const response = await fetch(blobUrl, {

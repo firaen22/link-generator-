@@ -17,8 +17,8 @@ export default function Viewer() {
   const { fileId } = useParams();
   const [searchParams] = useSearchParams();
   const [loadError, setLoadError] = useState<string | null>(null);
-  const clientName = searchParams.get('client_name') || searchParams.get('name') || '貴客';
-  const reportName = searchParams.get('report_name') || 'Document';
+  const clientName = searchParams.get('c') || searchParams.get('client_name') || searchParams.get('name') || '貴客';
+  const reportName = searchParams.get('r') || searchParams.get('report_name') || 'Document';
 
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
