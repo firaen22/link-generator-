@@ -25,6 +25,7 @@ app.post('/api/upload', async (request, response) => {
       onBeforeGenerateToken: async (pathname) => {
         return {
           allowedContentTypes: ['application/pdf'],
+          maximumSizeInBytes: 50 * 1024 * 1024, // 50MB
           tokenPayload: JSON.stringify({}),
         };
       },
