@@ -237,7 +237,7 @@ export default function Viewer() {
                   rel="noreferrer"
                   className="px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-all shadow-lg shadow-blue-200"
                 >
-                  Open in Google Drive
+                  {fileId?.startsWith('vblob_') ? 'Open Original File' : 'Open in Google Drive'}
                 </a>
               </div>
             }

@@ -100,15 +100,34 @@ app.get("/api/share/:file_id", (req, res) => {
 app.get("/api/pdf/:file_id", async (req, res) => {
   const { file_id } = req.params;
 
-  // Detect if it's a Vercel Blob (starts with vblob_)
+  // Handle Firebase/Blob proxy to bypass CORS
   if (file_id.startsWith('vblob_')) {
     try {
       const base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
       const blobUrl = Buffer.from(base64, 'base64').toString('utf8');
 
-      return res.redirect(blobUrl);
+      const response = await fetch(blobUrl);
+      if (!response.ok) throw new Error("File fetch failed");
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", 'inline; filename="report.pdf"');
+
+      if (response.body) {
+        // @ts-ignore - Stream data to browser
+        const reader = response.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(value);
+        }
+        res.end();
+      } else {
+        const arrayBuffer = await response.arrayBuffer();
+        res.send(Buffer.from(arrayBuffer));
+      }
+      return;
     } catch (error) {
-      console.error("Vercel Blob Proxy Error:", error);
+      console.error("Vblob Proxy Error:", error);
       res.status(404).send("Document not found");
       return;
     }
