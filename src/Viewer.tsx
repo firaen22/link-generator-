@@ -1,15 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { Document, Page, pdfjs } from 'react-pdf';
-import { 
-  ChevronLeft, ChevronRight, Clock, Eye, AlertCircle, 
+import {
+  ChevronLeft, ChevronRight, Clock, Eye, AlertCircle,
   ZoomIn, ZoomOut, Maximize, Minimize, Download
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
-// Configure PDF.js worker
-// Use CDN for better compatibility in this environment
-pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+// Configure PDF.js worker using Vite's URL handling for reliability
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url,
+).toString();
 
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -27,7 +29,7 @@ export default function Viewer() {
   const [scale, setScale] = useState(1.0);
   const [containerWidth, setContainerWidth] = useState(window.innerWidth);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  
+
   // Tracking refs
   const startTimeRef = useRef(Date.now());
   const lastPingRef = useRef(Date.now());
@@ -63,7 +65,7 @@ export default function Viewer() {
   function onDocumentLoadSuccess({ numPages }: { numPages: number }) {
     setNumPages(numPages);
     setLoading(false);
-    
+
     // Track 'open' event only once per session
     if (!hasTrackedOpenRef.current) {
       sendTrackingEvent('open', { total_pages: numPages });
@@ -144,19 +146,19 @@ export default function Viewer() {
               {Math.floor(timeSpent / 60)}:{(timeSpent % 60).toString().padStart(2, '0')}
             </span>
           </div>
-          
+
           {/* Zoom Controls (Desktop) */}
           <div className="hidden md:flex items-center gap-1 bg-slate-50 rounded-lg p-1 border border-slate-200">
-            <button 
-              onClick={zoomOut} 
+            <button
+              onClick={zoomOut}
               className="p-1.5 hover:bg-white hover:shadow-sm rounded-md transition-all text-slate-600 active:scale-95"
               title="Zoom Out"
             >
               <ZoomOut className="w-4 h-4" />
             </button>
             <span className="text-xs font-medium w-12 text-center select-none">{Math.round(scale * 100)}%</span>
-            <button 
-              onClick={zoomIn} 
+            <button
+              onClick={zoomIn}
               className="p-1.5 hover:bg-white hover:shadow-sm rounded-md transition-all text-slate-600 active:scale-95"
               title="Zoom In"
             >
@@ -165,7 +167,7 @@ export default function Viewer() {
           </div>
 
           {/* Download/External Link */}
-          <a 
+          <a
             href={`https://drive.google.com/file/d/${fileId}/view`}
             target="_blank"
             rel="noreferrer"
@@ -178,8 +180,8 @@ export default function Viewer() {
       </header>
 
       {/* Main Content */}
-      <main 
-        className="flex-1 pt-24 pb-32 px-4 flex justify-center overflow-y-auto scroll-smooth" 
+      <main
+        className="flex-1 pt-24 pb-32 px-4 flex justify-center overflow-y-auto scroll-smooth"
         ref={containerRef}
       >
         <div className="w-full max-w-6xl flex justify-center">
@@ -201,9 +203,9 @@ export default function Viewer() {
                 <p className="text-sm max-w-md mx-auto mb-6 text-slate-600">
                   This usually happens if the file permissions are restricted.
                 </p>
-                <a 
-                  href={`https://drive.google.com/file/d/${fileId}/view`} 
-                  target="_blank" 
+                <a
+                  href={`https://drive.google.com/file/d/${fileId}/view`}
+                  target="_blank"
                   rel="noreferrer"
                   className="px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-all shadow-lg shadow-blue-200"
                 >
@@ -220,8 +222,8 @@ export default function Viewer() {
               transition={{ duration: 0.4, ease: "easeOut" }}
               className="relative"
             >
-              <Page 
-                pageNumber={pageNumber} 
+              <Page
+                pageNumber={pageNumber}
                 scale={scale}
                 width={Math.min(containerWidth - 32, 1000)}
                 renderTextLayer={true}
@@ -239,27 +241,27 @@ export default function Viewer() {
       {/* Bottom Floating Navigation Bar */}
       {numPages && (
         <div className="fixed bottom-8 left-1/2 transform -translate-x-1/2 z-50">
-          <motion.div 
+          <motion.div
             initial={{ y: 50, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             className="bg-slate-900/90 backdrop-blur-xl text-white pl-2 pr-4 py-1.5 rounded-full shadow-2xl flex items-center gap-3 border border-white/10 ring-1 ring-black/5"
           >
             <div className="flex items-center gap-1">
-              <button 
-                onClick={previousPage} 
+              <button
+                onClick={previousPage}
                 disabled={pageNumber <= 1}
                 className="p-2 hover:bg-white/10 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
                 title="Previous Page"
               >
                 <ChevronLeft className="w-5 h-5" />
               </button>
-              
+
               <span className="font-mono text-sm font-medium min-w-[60px] text-center select-none">
                 {pageNumber} <span className="text-slate-500">/</span> {numPages}
               </span>
 
-              <button 
-                onClick={nextPage} 
+              <button
+                onClick={nextPage}
                 disabled={pageNumber >= numPages}
                 className="p-2 hover:bg-white/10 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
                 title="Next Page"
@@ -272,7 +274,7 @@ export default function Viewer() {
             <div className="w-px h-6 bg-white/20"></div>
 
             {/* Mobile Zoom (Simple Toggle) */}
-            <button 
+            <button
               onClick={() => setScale(s => s === 1 ? 1.5 : 1)}
               className="p-2 hover:bg-white/10 rounded-full transition-colors md:hidden"
               title="Toggle Zoom"
@@ -281,7 +283,7 @@ export default function Viewer() {
             </button>
 
             {/* Fullscreen Toggle */}
-            <button 
+            <button
               onClick={() => {
                 if (!document.fullscreenElement) {
                   document.documentElement.requestFullscreen();

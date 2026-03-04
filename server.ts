@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = parseInt(process.env.PORT || "3000", 10);
 
 // Middleware to parse JSON
 app.use(express.json());
@@ -15,15 +15,15 @@ app.use(express.json());
 app.get("/api/share/:file_id", (req, res) => {
   const { file_id } = req.params;
   const { client_name, name, report_name, preview_image } = req.query;
-  
+
   // Default values
   // Support 'name' as alias for 'client_name' from the snippet
-  const cName = (typeof name === 'string' && name) ? name : 
-                (typeof client_name === 'string' && client_name) ? client_name : "貴客";
+  const cName = (typeof name === 'string' && name) ? name :
+    (typeof client_name === 'string' && client_name) ? client_name : "貴客";
   const rName = typeof report_name === 'string' && report_name ? report_name : "Document";
-  
-  // Professional OG Image
-  let ogImage = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1200&auto=format&fit=crop";
+
+  // Professional OG Image (Keep file size small for WhatsApp ~ < 300KB)
+  let ogImage = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop";
   if (typeof preview_image === 'string' && preview_image.startsWith('http')) {
     ogImage = preview_image;
   }
@@ -38,13 +38,13 @@ app.get("/api/share/:file_id", (req, res) => {
   // Send Telegram Notification (Fire and Forget)
   if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
     const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-    
+
     // Wealth OS HTML Format
     const text = `🔔 <b>Wealth OS 閱讀通知</b>\n\n` +
-                 `👤 <b>客戶：</b> ${cName}\n` +
-                 `📄 <b>報告：</b> ${rName} (${file_id})\n` +
-                 `⏰ <b>時間：</b> 剛剛`;
-    
+      `👤 <b>客戶：</b> ${cName}\n` +
+      `📄 <b>報告：</b> ${rName} (${file_id})\n` +
+      `⏰ <b>時間：</b> 剛剛`;
+
     fetch(telegramUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -67,6 +67,8 @@ app.get("/api/share/:file_id", (req, res) => {
       <meta property="og:description" content="${description}" />
       <meta property="og:image" content="${ogImage}" />
       <meta property="og:type" content="website" />
+      <meta name="twitter:card" content="summary_large_image" />
+      <meta name="twitter:image" content="${ogImage}" />
       
       <style>
           body { font-family: -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f9f9f9; color: #333; }
@@ -98,15 +100,15 @@ app.get("/api/share/:file_id", (req, res) => {
 app.get("/api/pdf/:file_id", async (req, res) => {
   const { file_id } = req.params;
   const driveUrl = `https://drive.google.com/uc?export=download&id=${file_id}`;
-  
+
   try {
     const response = await fetch(driveUrl);
-    
+
     if (!response.ok) {
       console.error(`[PDF PROXY] Failed to fetch from Drive. Status: ${response.status} ${response.statusText}`);
       throw new Error(`Failed to fetch PDF: ${response.statusText}`);
     }
-    
+
     const contentType = response.headers.get("content-type");
     console.log(`[PDF PROXY] Fetch success. Content-Type: ${contentType}`);
 
@@ -114,35 +116,15 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       console.error("[PDF PROXY] Received HTML instead of PDF. Likely a permission issue or virus scan warning.");
       throw new Error("Google Drive returned HTML instead of PDF. Check file permissions.");
     }
-    
+
     // Forward headers
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="document.pdf"`);
-    
+
     // Stream the body
-    // @ts-ignore - ReadableStream to NodeJS.ReadableStream mismatch
-    const reader = response.body.getReader();
-    const stream = new ReadableStream({
-      start(controller) {
-        return pump();
-        function pump() {
-          return reader.read().then(({ done, value }) => {
-            if (done) {
-              controller.close();
-              return;
-            }
-            controller.enqueue(value);
-            return pump();
-          });
-        }
-      }
-    });
-    
-    // Convert web stream to node stream for express
-    // Simple buffer approach for stability in this environment
+    // Convert web stream to buffer for express
     const arrayBuffer = await response.arrayBuffer();
     res.send(Buffer.from(arrayBuffer));
-    
   } catch (error) {
     console.error("PDF Proxy Error:", error);
     res.status(500).send("Error loading document");
@@ -152,7 +134,7 @@ app.get("/api/pdf/:file_id", async (req, res) => {
 // Tracking Endpoint
 app.post("/api/track", (req, res) => {
   const { event, client_name, report_name, file_id, duration_seconds, page } = req.body;
-  
+
   console.log(`[TRACK] ${event} | ${client_name} | ${report_name}`);
 
   // Send Telegram Notification
