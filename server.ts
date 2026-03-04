@@ -2,6 +2,8 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
+import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
+import { list } from '@vercel/blob';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -10,6 +12,31 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 
 // Middleware to parse JSON
 app.use(express.json());
+
+// Vercel Blob Upload Authentication Endpoint
+app.post('/api/upload', async (request, response) => {
+  const body = request.body as HandleUploadBody;
+
+  try {
+    const jsonResponse = await handleUpload({
+      body,
+      request,
+      onBeforeGenerateToken: async (pathname) => {
+        return {
+          allowedContentTypes: ['application/pdf'],
+          tokenPayload: JSON.stringify({}),
+        };
+      },
+      onUploadCompleted: async ({ blob }) => {
+        console.log('Upload completed:', blob.url);
+      },
+    });
+
+    response.status(200).json(jsonResponse);
+  } catch (error) {
+    response.status(400).json({ error: (error as Error).message });
+  }
+});
 
 // API Route for the Link Preview
 app.get("/api/share/:file_id", (req, res) => {
@@ -96,9 +123,30 @@ app.get("/api/share/:file_id", (req, res) => {
   res.send(html);
 });
 
-// Proxy Endpoint for PDF (Streams from Google Drive)
+// Proxy Endpoint for PDF (Streams from Google Drive or redirects to Vercel Blob)
 app.get("/api/pdf/:file_id", async (req, res) => {
   const { file_id } = req.params;
+
+  // Detect if it's a Vercel Blob (typically has .pdf extension from our upload)
+  if (file_id.toLowerCase().endsWith('.pdf')) {
+    try {
+      const { blobs } = await list({ prefix: file_id });
+      const blob = blobs.find(b => b.pathname === file_id || b.url.endsWith(file_id));
+
+      if (blob) {
+        // Vercel Blobs have permissive CORS, direct redirect works perfectly for react-pdf
+        res.redirect(blob.url);
+        return;
+      } else {
+        throw new Error("Blob not found in Vercel Storage");
+      }
+    } catch (error) {
+      console.error("Vercel Blob Proxy Error:", error);
+      res.status(404).send("Document not found");
+      return;
+    }
+  }
+
   const driveUrl = `https://drive.google.com/uc?export=download&id=${file_id}`;
 
   try {
