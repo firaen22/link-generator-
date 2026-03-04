@@ -37,6 +37,7 @@ export default function App() {
         const newBlob = await upload(file.name, file, {
           access: 'public',
           handleUploadUrl: '/api/upload',
+          multipart: true, // Required for files > 4.5MB
         });
         targetFileId = newBlob.url.split('/').pop() || '';
       } catch (error) {
