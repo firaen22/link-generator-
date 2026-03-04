@@ -1,0 +1,5 @@
+{
+  "name": "Link Preview Generator",
+  "description": "Generates professional preview links with Open Graph tags for Google Drive files, optimized for WhatsApp sharing.",
+  "requestFramePermissions": []
+}
