@@ -124,19 +124,13 @@ app.get("/api/share/:file_id", (req, res) => {
 app.get("/api/pdf/:file_id", async (req, res) => {
   const { file_id } = req.params;
 
-  // Detect if it's a Vercel Blob (typically has .pdf extension from our upload)
-  if (file_id.toLowerCase().endsWith('.pdf')) {
+  // Detect if it's a Vercel Blob (starts with vblob_)
+  if (file_id.startsWith('vblob_')) {
     try {
-      const { blobs } = await list({ prefix: file_id });
-      const blob = blobs.find(b => b.pathname === file_id || b.url.endsWith(file_id));
+      const base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
+      const blobUrl = Buffer.from(base64, 'base64').toString('utf8');
 
-      if (blob) {
-        // Vercel Blobs have permissive CORS, direct redirect works perfectly for react-pdf
-        res.redirect(blob.url);
-        return;
-      } else {
-        throw new Error("Blob not found in Vercel Storage");
-      }
+      return res.redirect(blobUrl);
     } catch (error) {
       console.error("Vercel Blob Proxy Error:", error);
       res.status(404).send("Document not found");
@@ -160,6 +154,11 @@ app.get("/api/pdf/:file_id", async (req, res) => {
     if (contentType && contentType.includes("text/html")) {
       console.error("[PDF PROXY] Received HTML instead of PDF. Likely a permission issue or virus scan warning.");
       throw new Error("Google Drive returned HTML instead of PDF. Check file permissions.");
+    }
+
+    if (req.query.large === 'true' || (file_id && file_id.length > 20 && !req.query.large)) {
+      // Direct redirect for large files to avoid timeout
+      return res.redirect(driveUrl);
     }
 
     // Forward headers

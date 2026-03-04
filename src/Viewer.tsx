@@ -120,6 +120,20 @@ export default function Viewer() {
     return () => clearInterval(timer);
   }, []);
 
+  const pdfUrl = fileId?.startsWith('vblob_')
+    ? (() => {
+      try {
+        return atob(fileId.slice(6).replace(/-/g, '+').replace(/_/g, '/'));
+      } catch {
+        return `/api/pdf/${fileId}`;
+      }
+    })()
+    : `/api/pdf/${fileId}`;
+
+  const downloadUrl = fileId?.startsWith('vblob_')
+    ? pdfUrl
+    : `https://drive.google.com/file/d/${fileId}/view`;
+
   return (
     <div className="min-h-screen bg-[#F3F4F6] flex flex-col font-sans text-slate-900">
       {/* Professional Header */}
@@ -168,11 +182,11 @@ export default function Viewer() {
 
           {/* Download/External Link */}
           <a
-            href={`https://drive.google.com/file/d/${fileId}/view`}
+            href={downloadUrl}
             target="_blank"
             rel="noreferrer"
             className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
-            title="Open in Google Drive"
+            title={fileId?.startsWith('vblob_') ? "Original Document" : "Open in Google Drive"}
           >
             <Download className="w-5 h-5" />
           </a>
@@ -186,7 +200,7 @@ export default function Viewer() {
       >
         <div className="w-full max-w-6xl flex justify-center">
           <Document
-            file={`/api/pdf/${fileId}`}
+            file={pdfUrl}
             onLoadSuccess={onDocumentLoadSuccess}
             loading={
               <div className="flex flex-col items-center justify-center h-[60vh] w-full">
@@ -201,10 +215,10 @@ export default function Viewer() {
                 </div>
                 <h3 className="text-lg font-bold text-slate-800 mb-2">Unable to load document</h3>
                 <p className="text-sm max-w-md mx-auto mb-6 text-slate-600">
-                  This usually happens if the file permissions are restricted.
+                  This usually happens if the file permissions are restricted, or the file is too large.
                 </p>
                 <a
-                  href={`https://drive.google.com/file/d/${fileId}/view`}
+                  href={downloadUrl}
                   target="_blank"
                   rel="noreferrer"
                   className="px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-all shadow-lg shadow-blue-200"

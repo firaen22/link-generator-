@@ -39,7 +39,8 @@ export default function App() {
           handleUploadUrl: '/api/upload',
           multipart: true, // Required for files > 4.5MB
         });
-        targetFileId = newBlob.url.split('/').pop() || '';
+        const base64url = btoa(newBlob.url).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        targetFileId = `vblob_${base64url}`;
       } catch (error) {
         console.error('上傳失敗', error);
         alert('上傳失敗，請檢查檔案大小或網路。');
@@ -202,9 +203,11 @@ export default function App() {
                   e.preventDefault();
                   // Extract File ID
                   let extractedId = fileId;
-                  const urlMatch = fileId.match(/\/d\/([a-zA-Z0-9_-]+)/);
-                  if (urlMatch && urlMatch[1]) {
-                    extractedId = urlMatch[1];
+                  if (!fileId.startsWith('vblob_')) {
+                    const urlMatch = fileId.match(/\/d\/([a-zA-Z0-9_-]+)/);
+                    if (urlMatch && urlMatch[1]) {
+                      extractedId = urlMatch[1];
+                    }
                   }
 
                   if (!extractedId) {
