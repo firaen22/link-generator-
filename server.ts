@@ -11,6 +11,12 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 // Middleware to parse JSON
 app.use(express.json());
 
+// Startup status check
+console.log('--- Wealth OS Server Status ---');
+console.log(`Telegram Bot: ${process.env.TELEGRAM_BOT_TOKEN ? '✅ LOADED' : '❌ MISSING'}`);
+console.log(`Telegram Chat ID: ${process.env.TELEGRAM_CHAT_ID ? '✅ LOADED' : '❌ MISSING'}`);
+console.log('------------------------------');
+
 // API Route for the Link Preview
 app.get("/api/share/:file_id", (req, res) => {
   const { file_id } = req.params;
@@ -215,13 +221,22 @@ app.post("/api/track", (req, res) => {
     }
 
     if (text) {
+      // Escape for HTML
+      const htmlText = text
+        .replace(/\*/g, '') // Remove markdown bold if any
+        .replace(/🔔 /g, '🔔 <b>')
+        .replace(/👤 /g, '</b>\n👤 ')
+        .replace(/📄 /g, '📄 ')
+        .replace(/🔗 /g, '🔗 ')
+        .replace(/\n\n/g, '</b>\n\n');
+
       fetch(telegramUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: process.env.TELEGRAM_CHAT_ID,
-          text: text,
-          parse_mode: 'Markdown'
+          text: text.replace(/\*/g, ''), // Fallback to plain if HTML is tricky, but let's try clean first
+          parse_mode: 'HTML'
         })
       })
         .then(r => {
