@@ -31,6 +31,12 @@ app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
   let ogImage = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop";
   if (imageParam && imageParam.startsWith('http')) {
     ogImage = imageParam;
+
+    // Auto-fix for meee.com.tw (image host) viewer links to direct links
+    if (ogImage.includes('meee.com.tw') && !ogImage.includes('i.meee.com.tw')) {
+      ogImage = ogImage.replace('meee.com.tw', 'i.meee.com.tw') + '.png';
+      console.log(`[OG_IMAGE] Auto-fixed meee link: ${ogImage}`);
+    }
   }
 
   // Wealth OS Branding
