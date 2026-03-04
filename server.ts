@@ -53,7 +53,13 @@ app.get("/api/share/:file_id", (req, res) => {
         text: text,
         parse_mode: 'HTML'
       })
-    }).catch(err => console.error('Telegram notification failed:', err));
+    })
+      .then(r => {
+        if (!r.ok) console.error(`Telegram API Error (Share): ${r.status} ${r.statusText}`);
+      })
+      .catch(err => console.error('Telegram notification failed (Share):', err));
+  } else {
+    console.log('[TELEGRAM] Skip share notification: Token or Chat ID missing');
   }
 
   const html = `
@@ -217,8 +223,14 @@ app.post("/api/track", (req, res) => {
           text: text,
           parse_mode: 'Markdown'
         })
-      }).catch(err => console.error('Telegram notification failed:', err));
+      })
+        .then(r => {
+          if (!r.ok) console.error(`Telegram API Error: ${r.status} ${r.statusText}`);
+        })
+        .catch(err => console.error('Telegram notification failed:', err));
     }
+  } else {
+    console.log('[TELEGRAM] Skip notification: Token or Chat ID missing');
   }
 
   res.json({ status: "ok" });
