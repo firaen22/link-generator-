@@ -68,7 +68,7 @@ export default function App() {
       const decoded = atob(finalId.slice(6).replace(/-/g, '+').replace(/_/g, '/'));
       if (decoded.startsWith(bucketPrefix)) {
         const compressed = decoded.replace(bucketPrefix, "");
-        const safeBase64 = btoa(compressed).replace(/\+/g, '-').replace(/_/g, '/').replace(/=+$/, '');
+        const safeBase64 = btoa(compressed).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         finalId = `f_${safeBase64}`;
       }
     }
