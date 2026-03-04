@@ -211,31 +211,26 @@ app.post("/api/track", (req, res) => {
     let text = "";
 
     if (event === 'open') {
-      text = `🔔 *報告已開啟 (Level B)*\n\n👤 客戶：${client_name}\n📄 報告：${report_name}\n🔗 ID：${file_id}`;
+      const totalPages = req.body.total_pages || "未知";
+      text = `🔔 <b>報告已開啟</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📑 <b>總頁數：</b> ${totalPages}\n🔗 <b>ID：</b> ${file_id}`;
     } else if (event === 'heartbeat' && duration_seconds % 60 === 0 && duration_seconds > 0) {
-      // Notify every minute
-      text = `⏱ *閱讀中...*\n\n👤 客戶：${client_name}\n⏳ 已閱讀：${duration_seconds / 60} 分鐘`;
+      const currentPage = req.body.current_page || 1;
+      const totalPages = req.body.total_pages || 1;
+      const progress = Math.round((currentPage / totalPages) * 100);
+
+      text = `⏱ <b>正在閱讀中...</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n⏳ <b>累計時間：</b> ${duration_seconds / 60} 分鐘\n📊 <b>目前進度：</b> 第 ${currentPage} 頁 (${progress}%)`;
     } else if (event === 'page_view') {
       // Optional: Notify on every page turn (can be spammy, maybe just log)
       // text = `📄 *翻頁*\n\n👤 客戶：${client_name}\n📍 第 ${page} 頁`;
     }
 
     if (text) {
-      // Escape for HTML
-      const htmlText = text
-        .replace(/\*/g, '') // Remove markdown bold if any
-        .replace(/🔔 /g, '🔔 <b>')
-        .replace(/👤 /g, '</b>\n👤 ')
-        .replace(/📄 /g, '📄 ')
-        .replace(/🔗 /g, '🔗 ')
-        .replace(/\n\n/g, '</b>\n\n');
-
       fetch(telegramUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: process.env.TELEGRAM_CHAT_ID,
-          text: text.replace(/\*/g, ''), // Fallback to plain if HTML is tricky, but let's try clean first
+          text: text,
           parse_mode: 'HTML'
         })
       })

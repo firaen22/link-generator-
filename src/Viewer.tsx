@@ -48,6 +48,7 @@ export default function Viewer() {
       file_id: fileId,
       client_name: clientName,
       report_name: reportName,
+      total_pages: numPages,
       timestamp: new Date().toISOString(),
       ...data
     };
@@ -110,7 +111,10 @@ export default function Viewer() {
 
       // Send heartbeat every 30 seconds
       if (now - lastPingRef.current > 30000) {
-        sendTrackingEvent('heartbeat', { duration_seconds: sessionDuration });
+        sendTrackingEvent('heartbeat', {
+          duration_seconds: sessionDuration,
+          current_page: pageNumber
+        });
         lastPingRef.current = now;
       }
     }, 1000);
