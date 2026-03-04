@@ -5,204 +5,212 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-  // Middleware to parse JSON
-  app.use(express.json());
+// Middleware to parse JSON
+app.use(express.json());
 
-  // API Route for the Link Preview
-  app.get("/api/share/:file_id", (req, res) => {
-    const { file_id } = req.params;
-    const { client_name, name, report_name, preview_image } = req.query;
+// API Route for the Link Preview
+app.get("/api/share/:file_id", (req, res) => {
+  const { file_id } = req.params;
+  const { client_name, name, report_name, preview_image } = req.query;
+  
+  // Default values
+  // Support 'name' as alias for 'client_name' from the snippet
+  const cName = (typeof name === 'string' && name) ? name : 
+                (typeof client_name === 'string' && client_name) ? client_name : "貴客";
+  const rName = typeof report_name === 'string' && report_name ? report_name : "Document";
+  
+  // Professional OG Image
+  let ogImage = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1200&auto=format&fit=crop";
+  if (typeof preview_image === 'string' && preview_image.startsWith('http')) {
+    ogImage = preview_image;
+  }
+
+  // Wealth OS Branding
+  const title = `📈 專屬市場簡報：${cName}`;
+  const description = "Wealth OS 為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
+
+  // Target URL: Points to our internal Viewer to maintain tracking capabilities
+  const viewerUrl = `${process.env.APP_URL || ''}/view/${file_id}?client_name=${encodeURIComponent(cName)}&report_name=${encodeURIComponent(rName)}`;
+
+  // Send Telegram Notification (Fire and Forget)
+  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+    const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
     
-    // Default values
-    // Support 'name' as alias for 'client_name' from the snippet
-    const cName = (typeof name === 'string' && name) ? name : 
-                  (typeof client_name === 'string' && client_name) ? client_name : "貴客";
-    const rName = typeof report_name === 'string' && report_name ? report_name : "Document";
+    // Wealth OS HTML Format
+    const text = `🔔 <b>Wealth OS 閱讀通知</b>\n\n` +
+                 `👤 <b>客戶：</b> ${cName}\n` +
+                 `📄 <b>報告：</b> ${rName} (${file_id})\n` +
+                 `⏰ <b>時間：</b> 剛剛`;
     
-    // Professional OG Image
-    let ogImage = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1200&auto=format&fit=crop";
-    if (typeof preview_image === 'string' && preview_image.startsWith('http')) {
-      ogImage = preview_image;
+    fetch(telegramUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: process.env.TELEGRAM_CHAT_ID,
+        text: text,
+        parse_mode: 'HTML'
+      })
+    }).catch(err => console.error('Telegram notification failed:', err));
+  }
+
+  const html = `
+  <!DOCTYPE html>
+  <html lang="zh-HK">
+  <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>${title}</title>
+      <meta property="og:title" content="${title}" />
+      <meta property="og:description" content="${description}" />
+      <meta property="og:image" content="${ogImage}" />
+      <meta property="og:type" content="website" />
+      
+      <style>
+          body { font-family: -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f9f9f9; color: #333; }
+          .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin-bottom: 20px; }
+          @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+          .container { text-align: center; }
+      </style>
+      
+      <script>
+          // 延遲 0.8 秒跳轉，確保 OG Tag 被抓取，也給客戶一點「載入中」的專業感
+          setTimeout(function() {
+              window.location.href = "${viewerUrl}";
+          }, 800);
+      </script>
+  </head>
+  <body>
+      <div class="container">
+          <div class="loader"></div>
+          <p>正在為您開啟專屬市場報告...</p>
+      </div>
+  </body>
+  </html>
+  `;
+
+  res.send(html);
+});
+
+// Proxy Endpoint for PDF (Streams from Google Drive)
+app.get("/api/pdf/:file_id", async (req, res) => {
+  const { file_id } = req.params;
+  const driveUrl = `https://drive.google.com/uc?export=download&id=${file_id}`;
+  
+  try {
+    const response = await fetch(driveUrl);
+    
+    if (!response.ok) {
+      console.error(`[PDF PROXY] Failed to fetch from Drive. Status: ${response.status} ${response.statusText}`);
+      throw new Error(`Failed to fetch PDF: ${response.statusText}`);
+    }
+    
+    const contentType = response.headers.get("content-type");
+    console.log(`[PDF PROXY] Fetch success. Content-Type: ${contentType}`);
+
+    if (contentType && contentType.includes("text/html")) {
+      console.error("[PDF PROXY] Received HTML instead of PDF. Likely a permission issue or virus scan warning.");
+      throw new Error("Google Drive returned HTML instead of PDF. Check file permissions.");
+    }
+    
+    // Forward headers
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="document.pdf"`);
+    
+    // Stream the body
+    // @ts-ignore - ReadableStream to NodeJS.ReadableStream mismatch
+    const reader = response.body.getReader();
+    const stream = new ReadableStream({
+      start(controller) {
+        return pump();
+        function pump() {
+          return reader.read().then(({ done, value }) => {
+            if (done) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(value);
+            return pump();
+          });
+        }
+      }
+    });
+    
+    // Convert web stream to node stream for express
+    // Simple buffer approach for stability in this environment
+    const arrayBuffer = await response.arrayBuffer();
+    res.send(Buffer.from(arrayBuffer));
+    
+  } catch (error) {
+    console.error("PDF Proxy Error:", error);
+    res.status(500).send("Error loading document");
+  }
+});
+
+// Tracking Endpoint
+app.post("/api/track", (req, res) => {
+  const { event, client_name, report_name, file_id, duration_seconds, page } = req.body;
+  
+  console.log(`[TRACK] ${event} | ${client_name} | ${report_name}`);
+
+  // Send Telegram Notification
+  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+    const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+    let text = "";
+
+    if (event === 'open') {
+      text = `🔔 *報告已開啟 (Level B)*\n\n👤 客戶：${client_name}\n📄 報告：${report_name}\n🔗 ID：${file_id}`;
+    } else if (event === 'heartbeat' && duration_seconds % 60 === 0 && duration_seconds > 0) {
+      // Notify every minute
+      text = `⏱ *閱讀中...*\n\n👤 客戶：${client_name}\n⏳ 已閱讀：${duration_seconds / 60} 分鐘`;
+    } else if (event === 'page_view') {
+      // Optional: Notify on every page turn (can be spammy, maybe just log)
+      // text = `📄 *翻頁*\n\n👤 客戶：${client_name}\n📍 第 ${page} 頁`;
     }
 
-    // Wealth OS Branding
-    const title = `📈 專屬市場簡報：${cName}`;
-    const description = "Wealth OS 為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
-
-    // Target URL: Points to our internal Viewer to maintain tracking capabilities
-    const viewerUrl = `${process.env.APP_URL || ''}/view/${file_id}?client_name=${encodeURIComponent(cName)}&report_name=${encodeURIComponent(rName)}`;
-
-    // Send Telegram Notification (Fire and Forget)
-    if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
-      const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-      
-      // Wealth OS HTML Format
-      const text = `🔔 <b>Wealth OS 閱讀通知</b>\n\n` +
-                   `👤 <b>客戶：</b> ${cName}\n` +
-                   `📄 <b>報告：</b> ${rName} (${file_id})\n` +
-                   `⏰ <b>時間：</b> 剛剛`;
-      
+    if (text) {
       fetch(telegramUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: process.env.TELEGRAM_CHAT_ID,
           text: text,
-          parse_mode: 'HTML'
+          parse_mode: 'Markdown'
         })
       }).catch(err => console.error('Telegram notification failed:', err));
     }
-
-    const html = `
-    <!DOCTYPE html>
-    <html lang="zh-HK">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>${title}</title>
-        <meta property="og:title" content="${title}" />
-        <meta property="og:description" content="${description}" />
-        <meta property="og:image" content="${ogImage}" />
-        <meta property="og:type" content="website" />
-        
-        <style>
-            body { font-family: -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f9f9f9; color: #333; }
-            .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin-bottom: 20px; }
-            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-            .container { text-align: center; }
-        </style>
-        
-        <script>
-            // 延遲 0.8 秒跳轉，確保 OG Tag 被抓取，也給客戶一點「載入中」的專業感
-            setTimeout(function() {
-                window.location.href = "${viewerUrl}";
-            }, 800);
-        </script>
-    </head>
-    <body>
-        <div class="container">
-            <div class="loader"></div>
-            <p>正在為您開啟專屬市場報告...</p>
-        </div>
-    </body>
-    </html>
-    `;
-
-    res.send(html);
-  });
-
-  // Proxy Endpoint for PDF (Streams from Google Drive)
-  app.get("/api/pdf/:file_id", async (req, res) => {
-    const { file_id } = req.params;
-    const driveUrl = `https://drive.google.com/uc?export=download&id=${file_id}`;
-    
-    try {
-      const response = await fetch(driveUrl);
-      
-      if (!response.ok) {
-        console.error(`[PDF PROXY] Failed to fetch from Drive. Status: ${response.status} ${response.statusText}`);
-        throw new Error(`Failed to fetch PDF: ${response.statusText}`);
-      }
-      
-      const contentType = response.headers.get("content-type");
-      console.log(`[PDF PROXY] Fetch success. Content-Type: ${contentType}`);
-
-      if (contentType && contentType.includes("text/html")) {
-        console.error("[PDF PROXY] Received HTML instead of PDF. Likely a permission issue or virus scan warning.");
-        throw new Error("Google Drive returned HTML instead of PDF. Check file permissions.");
-      }
-      
-      // Forward headers
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `inline; filename="document.pdf"`);
-      
-      // Stream the body
-      // @ts-ignore - ReadableStream to NodeJS.ReadableStream mismatch
-      const reader = response.body.getReader();
-      const stream = new ReadableStream({
-        start(controller) {
-          return pump();
-          function pump() {
-            return reader.read().then(({ done, value }) => {
-              if (done) {
-                controller.close();
-                return;
-              }
-              controller.enqueue(value);
-              return pump();
-            });
-          }
-        }
-      });
-      
-      // Convert web stream to node stream for express
-      // Simple buffer approach for stability in this environment
-      const arrayBuffer = await response.arrayBuffer();
-      res.send(Buffer.from(arrayBuffer));
-      
-    } catch (error) {
-      console.error("PDF Proxy Error:", error);
-      res.status(500).send("Error loading document");
-    }
-  });
-
-  // Tracking Endpoint
-  app.post("/api/track", (req, res) => {
-    const { event, client_name, report_name, file_id, duration_seconds, page } = req.body;
-    
-    console.log(`[TRACK] ${event} | ${client_name} | ${report_name}`);
-
-    // Send Telegram Notification
-    if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
-      const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-      let text = "";
-
-      if (event === 'open') {
-        text = `🔔 *報告已開啟 (Level B)*\n\n👤 客戶：${client_name}\n📄 報告：${report_name}\n🔗 ID：${file_id}`;
-      } else if (event === 'heartbeat' && duration_seconds % 60 === 0 && duration_seconds > 0) {
-        // Notify every minute
-        text = `⏱ *閱讀中...*\n\n👤 客戶：${client_name}\n⏳ 已閱讀：${duration_seconds / 60} 分鐘`;
-      } else if (event === 'page_view') {
-        // Optional: Notify on every page turn (can be spammy, maybe just log)
-        // text = `📄 *翻頁*\n\n👤 客戶：${client_name}\n📍 第 ${page} 頁`;
-      }
-
-      if (text) {
-        fetch(telegramUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: process.env.TELEGRAM_CHAT_ID,
-            text: text,
-            parse_mode: 'Markdown'
-          })
-        }).catch(err => console.error('Telegram notification failed:', err));
-      }
-    }
-
-    res.json({ status: "ok" });
-  });
-
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    // Production static file serving would go here
-    // For this environment, we mostly care about dev mode
-    app.use(express.static(path.resolve(__dirname, "dist")));
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
-}
+  res.json({ status: "ok" });
+});
 
-startServer();
+// For Vercel Serverless Functions
+export default app;
+
+// Start Server locally if not running on Vercel
+if (!process.env.VERCEL) {
+  async function startServer() {
+    // Vite middleware for development
+    if (process.env.NODE_ENV !== "production") {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } else {
+      // Production static file serving
+      app.use(express.static(path.resolve(__dirname, "dist")));
+      app.get("*", (req, res) => {
+        res.sendFile(path.resolve(__dirname, "dist", "index.html"));
+      });
+    }
+
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
+
+  startServer();
+}
