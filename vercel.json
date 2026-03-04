@@ -6,6 +6,10 @@
             "destination": "/api/[...path]"
         },
         {
+            "source": "/s/(.*)",
+            "destination": "/api/[...path]"
+        },
+        {
             "source": "/(.*)",
             "destination": "/index.html"
         }
