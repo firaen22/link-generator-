@@ -123,8 +123,11 @@ export default function Viewer() {
   const pdfUrl = fileId?.startsWith('vblob_')
     ? (() => {
       try {
-        return atob(fileId.slice(6).replace(/-/g, '+').replace(/_/g, '/'));
-      } catch {
+        const base64 = fileId.slice(6).replace(/-/g, '+').replace(/_/g, '/');
+        const padded = base64.padEnd(base64.length + (4 - base64.length % 4) % 4, '=');
+        return atob(padded);
+      } catch (error) {
+        console.error("Decoding error:", error);
         return `/api/pdf/${fileId}`;
       }
     })()
