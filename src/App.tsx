@@ -6,7 +6,8 @@
 import React, { useState, useRef } from 'react';
 import { Link, Copy, Check, FileText, Share2, Eye, UploadCloud } from 'lucide-react';
 import { motion } from 'motion/react';
-import { upload } from '@vercel/blob/client';
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { storage } from "./firebase";
 
 export default function App() {
   const [fileId, setFileId] = useState('');
@@ -29,21 +30,24 @@ export default function App() {
       targetFileId = urlMatch[1];
     }
 
-    // Handle Blob Upload
+    // Handle Firebase Upload
     if (!targetFileId && fileInputRef.current?.files?.[0]) {
       setIsUploading(true);
       try {
         const file = fileInputRef.current.files[0];
-        const newBlob = await upload(file.name, file, {
-          access: 'public',
-          handleUploadUrl: '/api/upload',
-          multipart: true, // Required for files > 4.5MB
-        });
-        const base64url = btoa(newBlob.url).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-        targetFileId = `vblob_${base64url}`;
+        // Create a unique file path in storage
+        const storageRef = ref(storage, `reports/${Date.now()}_${file.name}`);
+
+        // Direct upload to Firebase (supports large files)
+        const snapshot = await uploadBytes(storageRef, file);
+        const downloadURL = await getDownloadURL(snapshot.ref);
+
+        // Encode the URL as base64 with vblob_ prefix for the Viewer
+        const safeBase64 = btoa(downloadURL).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        targetFileId = `vblob_${safeBase64}`;
       } catch (error) {
-        console.error('上傳失敗', error);
-        alert('上傳失敗，請檢查檔案大小或網路。');
+        console.error('Firebase 上傳失敗', error);
+        alert('上傳失敗，請檢查網路或 Firebase 設定。');
         setIsUploading(false);
         return;
       }

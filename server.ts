@@ -2,8 +2,6 @@ import 'dotenv/config';
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
-import { list } from '@vercel/blob';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -12,28 +10,6 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 
 // Middleware to parse JSON
 app.use(express.json());
-
-// Vercel Blob Upload Authentication Endpoint
-app.post('/api/upload', async (request, response) => {
-  const body = request.body as HandleUploadBody;
-
-  try {
-    const jsonResponse = await handleUpload({
-      body,
-      request,
-      onBeforeGenerateToken: async (pathname) => {
-        return {
-          allowedContentTypes: ['application/pdf'],
-          maximumSizeInBytes: 50 * 1024 * 1024, // 50MB
-        };
-      },
-    });
-
-    response.status(200).json(jsonResponse);
-  } catch (error) {
-    response.status(400).json({ error: (error as Error).message });
-  }
-});
 
 // API Route for the Link Preview
 app.get("/api/share/:file_id", (req, res) => {
