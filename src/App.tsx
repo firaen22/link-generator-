@@ -47,7 +47,7 @@ export default function App() {
         targetFileId = `vblob_${safeBase64}`;
       } catch (error) {
         console.error('Firebase 上傳失敗', error);
-        alert('上傳失敗，請檢查網路或 Firebase 設定。');
+        alert(`上傳失敗：${error instanceof Error ? error.message : '請檢查網路或 Firebase 設定'}`);
         setIsUploading(false);
         return;
       }
