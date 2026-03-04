@@ -120,18 +120,8 @@ export default function Viewer() {
     return () => clearInterval(timer);
   }, []);
 
-  const pdfUrl = fileId?.startsWith('vblob_')
-    ? (() => {
-      try {
-        const base64 = fileId.slice(6).replace(/-/g, '+').replace(/_/g, '/');
-        const padded = base64.padEnd(base64.length + (4 - base64.length % 4) % 4, '=');
-        return atob(padded);
-      } catch (error) {
-        console.error("Decoding error:", error);
-        return `/api/pdf/${fileId}`;
-      }
-    })()
-    : `/api/pdf/${fileId}`;
+  // Forced Proxy Mode: Always route through backend to bypass CORS
+  const pdfUrl = `/api/pdf/${fileId}`;
 
   const downloadUrl = fileId?.startsWith('vblob_')
     ? pdfUrl
