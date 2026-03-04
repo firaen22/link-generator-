@@ -180,23 +180,22 @@ export default function Viewer() {
             </button>
           </div>
 
-          {/* Download/External Link */}
-          <a
-            href={downloadUrl}
-            target="_blank"
-            rel="noreferrer"
+          {/* Action Button: Fullscreen placeholder or just nothing to keep protection */}
+          <button
+            onClick={() => setIsFullscreen(!isFullscreen)}
             className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
-            title={fileId?.startsWith('vblob_') ? "Original Document" : "Open in Google Drive"}
+            title="Maximize View"
           >
-            <Download className="w-5 h-5" />
-          </a>
+            <Maximize className="w-5 h-5" />
+          </button>
         </div>
       </header>
 
       {/* Main Content */}
       <main
-        className="flex-1 pt-24 pb-32 px-4 flex justify-center overflow-y-auto scroll-smooth"
+        className="flex-1 pt-24 pb-32 px-4 flex justify-center overflow-y-auto scroll-smooth select-none"
         ref={containerRef}
+        onContextMenu={(e) => e.preventDefault()}
       >
         <div className="w-full max-w-6xl flex justify-center">
           <Document
@@ -228,17 +227,9 @@ export default function Viewer() {
                   <AlertCircle className="w-8 h-8 text-red-500" />
                 </div>
                 <h3 className="text-lg font-bold text-slate-800 mb-2">Unable to load document</h3>
-                <p className="text-sm max-w-md mx-auto mb-6 text-slate-600">
+                <p className="text-sm max-w-md mx-auto text-slate-600">
                   This usually happens if the file permissions are restricted, or the file is too large.
                 </p>
-                <a
-                  href={downloadUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-all shadow-lg shadow-blue-200"
-                >
-                  {fileId?.startsWith('vblob_') ? 'Open Original File' : 'Open in Google Drive'}
-                </a>
               </div>
             }
             onLoadError={(error) => console.error('Error loading PDF:', error)}
