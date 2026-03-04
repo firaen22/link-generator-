@@ -203,9 +203,23 @@ export default function Viewer() {
             file={pdfUrl}
             onLoadSuccess={onDocumentLoadSuccess}
             loading={
-              <div className="flex flex-col items-center justify-center h-[60vh] w-full">
-                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600 mb-4"></div>
-                <p className="text-sm text-slate-500 font-medium animate-pulse">Loading secure document... (Please wait for large files)</p>
+              <div className="flex flex-col items-center justify-center h-[60vh] w-full space-y-6">
+                <div className="relative w-20 h-20 flex items-center justify-center">
+                  {/* Outer spinning ring */}
+                  <div className="absolute inset-0 rounded-full border-t-2 border-l-2 border-blue-500 animate-[spin_1.5s_linear_infinite] opacity-70"></div>
+                  {/* Inner spinning ring (reverse) */}
+                  <div className="absolute inset-2 rounded-full border-b-2 border-r-2 border-indigo-600 animate-[spin_2s_linear_infinite_reverse] opacity-80"></div>
+                  {/* Center logo */}
+                  <div className="h-12 w-12 bg-gradient-to-tr from-blue-50 to-indigo-100 rounded-full flex items-center justify-center shadow-inner animate-pulse">
+                    <div className="w-6 h-6 bg-blue-600 rounded-md flex items-center justify-center text-white font-bold text-xs shadow-md">W</div>
+                  </div>
+                </div>
+                <div className="text-center space-y-2">
+                  <h3 className="text-slate-800 font-bold text-lg">Secure Document Loading</h3>
+                  <p className="text-sm text-slate-500 font-medium animate-pulse max-w-xs mx-auto">
+                    Retrieving large report from encrypted storage...
+                  </p>
+                </div>
               </div>
             }
             error={
