@@ -106,8 +106,14 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       const base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
       const blobUrl = Buffer.from(base64, 'base64').toString('utf8');
 
-      const response = await fetch(blobUrl);
-      if (!response.ok) throw new Error("Firebase storage fetch failed");
+      console.log(`[VBLOB PROXY] Fetching: ${blobUrl}`);
+      const response = await fetch(blobUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+          'Referer': 'https://firebasestorage.googleapis.com/'
+        }
+      });
+      if (!response.ok) throw new Error(`Firebase storage fetch failed: ${response.status} ${response.statusText}`);
 
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", 'inline; filename="report.pdf"');

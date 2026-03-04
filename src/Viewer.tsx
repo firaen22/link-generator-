@@ -19,7 +19,8 @@ import 'react-pdf/dist/Page/TextLayer.css';
 export default function Viewer() {
   const { fileId } = useParams();
   const [searchParams] = useSearchParams();
-  const clientName = searchParams.get('client_name') || searchParams.get('name') || 'Client';
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const clientName = searchParams.get('client_name') || searchParams.get('name') || '貴客';
   const reportName = searchParams.get('report_name') || 'Document';
 
   const [numPages, setNumPages] = useState<number | null>(null);
@@ -220,12 +221,20 @@ export default function Viewer() {
                   <AlertCircle className="w-8 h-8 text-red-500" />
                 </div>
                 <h3 className="text-lg font-bold text-slate-800 mb-2">Unable to load document</h3>
-                <p className="text-sm max-w-md mx-auto text-slate-600">
+                <p className="text-sm max-w-md mx-auto text-slate-600 mb-2">
                   This usually happens if the file permissions are restricted, or the file is too large.
                 </p>
+                {loadError && (
+                  <div className="text-[10px] text-red-400 font-mono bg-red-50/50 px-2 py-1 rounded">
+                    Error Details: {loadError}
+                  </div>
+                )}
               </div>
             }
-            onLoadError={(error) => console.error('Error loading PDF:', error)}
+            onLoadError={(error) => {
+              console.error('Error loading PDF:', error);
+              setLoadError(error.message);
+            }}
             className="flex flex-col items-center gap-8"
           >
             <motion.div
