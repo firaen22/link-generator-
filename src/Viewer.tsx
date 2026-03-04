@@ -251,6 +251,15 @@ export default function Viewer() {
                   <div className="h-[800px] w-[600px] bg-white shadow-xl rounded-sm animate-pulse"></div>
                 }
               />
+
+              {/* Dynamic Watermark Overlay */}
+              <div className="absolute inset-0 pointer-events-none overflow-hidden z-10 opacity-[0.08] select-none flex flex-wrap gap-x-32 gap-y-32 rotate-[-30deg] scale-125 items-center justify-center">
+                {Array.from({ length: 24 }).map((_, i) => (
+                  <div key={i} className="text-xl font-bold whitespace-nowrap text-slate-900 tracking-widest uppercase">
+                    {clientName} • CONFIDENTIAL • {clientName}
+                  </div>
+                ))}
+              </div>
             </motion.div>
           </Document>
         </div>
