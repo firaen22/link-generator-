@@ -7,11 +7,8 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
-// Configure PDF.js worker using Vite's URL handling for reliability
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
-).toString();
+// Force consistent worker version to fix "API version does not match Worker version"
+pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@5.5.207/build/pdf.worker.min.mjs`;
 
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
