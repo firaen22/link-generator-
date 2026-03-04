@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
@@ -26,11 +25,7 @@ app.post('/api/upload', async (request, response) => {
         return {
           allowedContentTypes: ['application/pdf'],
           maximumSizeInBytes: 50 * 1024 * 1024, // 50MB
-          tokenPayload: JSON.stringify({}),
         };
-      },
-      onUploadCompleted: async ({ blob }) => {
-        console.log('Upload completed:', blob.url);
       },
     });
 
@@ -226,6 +221,7 @@ if (!process.env.VERCEL) {
   async function startServer() {
     // Vite middleware for development
     if (process.env.NODE_ENV !== "production") {
+      const { createServer: createViteServer } = await import("vite");
       const vite = await createViteServer({
         server: { middlewareMode: true },
         appType: "spa",
