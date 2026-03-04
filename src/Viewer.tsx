@@ -7,8 +7,8 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
-// Force consistent worker version to fix "API version does not match Worker version"
-pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@5.5.207/build/pdf.worker.min.mjs`;
+// Match the API version reported in the error (5.4.296) to fix mismatch
+pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@5.4.296/build/pdf.worker.min.mjs`;
 
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
