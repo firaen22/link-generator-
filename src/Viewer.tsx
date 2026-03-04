@@ -205,7 +205,7 @@ export default function Viewer() {
             loading={
               <div className="flex flex-col items-center justify-center h-[60vh] w-full">
                 <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600 mb-4"></div>
-                <p className="text-sm text-slate-500 font-medium animate-pulse">Loading secure document...</p>
+                <p className="text-sm text-slate-500 font-medium animate-pulse">Loading secure document... (Please wait for large files)</p>
               </div>
             }
             error={

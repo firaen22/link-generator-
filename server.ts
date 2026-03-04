@@ -165,10 +165,20 @@ app.get("/api/pdf/:file_id", async (req, res) => {
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="document.pdf"`);
 
-    // Stream the body
-    // Convert web stream to buffer for express
-    const arrayBuffer = await response.arrayBuffer();
-    res.send(Buffer.from(arrayBuffer));
+    // Stream the body to prevent 10s timeout on Vercel
+    if (response.body) {
+      // @ts-ignore
+      const reader = response.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value); // Stream chunks to bypass 10s timeout
+      }
+      res.end();
+    } else {
+      const arrayBuffer = await response.arrayBuffer();
+      res.send(Buffer.from(arrayBuffer));
+    }
   } catch (error) {
     console.error("PDF Proxy Error:", error);
     res.status(500).send("Error loading document");
