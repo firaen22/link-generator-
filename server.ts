@@ -311,7 +311,7 @@ app.post("/api/session-end", async (req, res) => {
 
       const prompt = `你現在是大蓄後台專屬智能分析引擎。目標：協助理財顧問將「市場資訊」轉化為「保險與基金銷售契機」。\n\n輸入數據：\n- 客戶名稱：${client_name}\n- 讀取報告：${report_name}\n- 總歷時：${total_duration_sec} 秒\n- 行為特徵：\n${behaviorSummary}\n\n請以冷靜專業的香港私人銀行分析師口吻，在 200 字以內，輸出三個區塊（不要使用這三個詞作為標題，直接寫出內容，用對應的 Emoji 開頭即可）：\n🧠 **客戶意圖速寫**：一句話精準總結。\n🔥 **關鍵行為拆解**：找出停留最久或放大的頁面推測痛點。\n💡 **Speed Delivery 破冰建議 (Next-Best-Action)**：一段可直接複製的 WhatsApp 繁體中文對話開場白 (要求語氣自然、專業)。\n\n注意：只輸出這三個區塊的純文本，每行用 Emoji 開頭即可，不需要其他廢話或 \`\`\` 格式。不要重複客戶名稱和報告名稱的頂部標頭。`;
 
-      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite-preview-02-05" });
+      const model = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
 
       const result = await model.generateContent(prompt);
       const response = await result.response;
