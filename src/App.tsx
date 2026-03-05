@@ -110,7 +110,7 @@ export default function App() {
                 id="linkTitle"
                 value={linkTitle}
                 onChange={(e) => setLinkTitle(e.target.value)}
-                placeholder="📈 專屬市場簡報"
+                placeholder="專案報告"
                 className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white"
               />
             </div>

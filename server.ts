@@ -44,7 +44,7 @@ app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
   // Branding
   const title = titleParam
     ? (titleParam.includes('：') || titleParam.includes(':') ? titleParam : `${titleParam}：${cName}`)
-    : `📈 專屬市場簡報：${cName}`;
+    : `專案報告：${cName}`;
   const description = descParam || "為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
 
   // Target URL: Points to our internal Viewer
