@@ -18,6 +18,8 @@ export default function App() {
   const [generatedLink, setGeneratedLink] = useState('');
   const [copied, setCopied] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadedFileId, setUploadedFileId] = useState('');
+  const [lastFileFingerprint, setLastFileFingerprint] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -27,27 +29,38 @@ export default function App() {
     let targetFileId = '';
 
     // Handle Firebase Upload
-    if (fileInputRef.current?.files?.[0]) {
-      setIsUploading(true);
-      try {
-        const file = fileInputRef.current.files[0];
-        // Create a unique file path in storage
-        const storageRef = ref(storage, `reports/${Date.now()}_${file.name}`);
+    const file = fileInputRef.current?.files?.[0];
+    if (file) {
+      const currentFingerprint = `${file.name}-${file.size}`;
 
-        // Direct upload to Firebase (supports large files)
-        const snapshot = await uploadBytes(storageRef, file);
-        const downloadURL = await getDownloadURL(snapshot.ref);
+      // Skip upload if it's the same file we already uploaded
+      if (uploadedFileId && lastFileFingerprint === currentFingerprint) {
+        targetFileId = uploadedFileId;
+      } else {
+        setIsUploading(true);
+        try {
+          // Create a unique file path in storage
+          const storageRef = ref(storage, `reports/${Date.now()}_${file.name}`);
 
-        // Encode the URL as base64 with vblob_ prefix for the Viewer
-        const safeBase64 = btoa(downloadURL).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-        targetFileId = `vblob_${safeBase64}`;
-      } catch (error) {
-        console.error('Firebase 上傳失敗', error);
-        alert(`上傳失敗：${error instanceof Error ? error.message : '請檢查網路或 Firebase 設定'}`);
+          // Direct upload to Firebase (supports large files)
+          const snapshot = await uploadBytes(storageRef, file);
+          const downloadURL = await getDownloadURL(snapshot.ref);
+
+          // Encode the URL as base64 with vblob_ prefix for the Viewer
+          const safeBase64 = btoa(downloadURL).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+          targetFileId = `vblob_${safeBase64}`;
+
+          // Cache the results
+          setUploadedFileId(targetFileId);
+          setLastFileFingerprint(currentFingerprint);
+        } catch (error) {
+          console.error('Firebase 上傳失敗', error);
+          alert(`上傳失敗：${error instanceof Error ? error.message : '請檢查網路或 Firebase 設定'}`);
+          setIsUploading(false);
+          return;
+        }
         setIsUploading(false);
-        return;
       }
-      setIsUploading(false);
     }
 
     if (!targetFileId) {
