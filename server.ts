@@ -12,7 +12,7 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 app.use(express.json());
 
 // Startup status check
-console.log('--- Wealth OS Server Status ---');
+console.log('--- Server Status ---');
 console.log(`Telegram Bot: ${process.env.TELEGRAM_BOT_TOKEN ? '✅ LOADED' : '❌ MISSING'}`);
 console.log(`Telegram Chat ID: ${process.env.TELEGRAM_CHAT_ID ? '✅ LOADED' : '❌ MISSING'}`);
 console.log('------------------------------');
@@ -40,9 +40,9 @@ app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
     }
   }
 
-  // Wealth OS Branding
+  // Branding
   const title = `📈 專屬市場簡報：${cName}`;
-  const description = descParam || "Wealth OS 為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
+  const description = descParam || "為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
 
   // Target URL: Points to our internal Viewer
   // Pass shortened params to viewer as well
@@ -52,8 +52,8 @@ app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
   if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
     const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
 
-    // Wealth OS HTML Format
-    const text = `🔔 <b>Wealth OS 閱讀通知</b>\n\n` +
+    // Telegram HTML Format
+    const text = `🔔 <b>閱讀通知</b>\n\n` +
       `👤 <b>客戶：</b> ${cName}\n` +
       `📄 <b>報告：</b> ${rName} (${file_id})\n` +
       `⏰ <b>時間：</b> 剛剛`;
@@ -237,7 +237,7 @@ app.post("/api/track", (req, res) => {
       if (progress === 80) icon = "🌖";
       if (progress === 100) icon = "✅";
 
-      text = `${icon} <b>Wealth OS 閱讀進度：${progress}%</b>\n\n` +
+      text = `${icon} <b>閱讀進度：${progress}%</b>\n\n` +
         `👤 <b>客戶：</b> ${client_name}\n` +
         `📄 <b>報告：</b> ${report_name}\n` +
         `📍 <b>位置：</b> 第 ${current_page} / ${total_pages || '?'} 頁`;

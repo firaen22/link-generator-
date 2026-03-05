@@ -121,7 +121,7 @@ export default function App() {
                 id="description"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="Wealth OS 為您整理的最新市場動態..."
+                placeholder="為您整理的最新市場動態..."
                 rows={2}
                 className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white resize-none"
               />
