@@ -151,25 +151,30 @@ export default function Viewer() {
   return (
     <div className="min-h-screen bg-[#F9FAFB] flex flex-col font-sans text-slate-900">
       {/* Professional Header */}
-      <header className="bg-white/80 backdrop-blur-md border-b border-slate-100 h-14 flex items-center justify-between px-6 fixed top-0 w-full z-50 transition-all">
+      <header className="bg-white/90 backdrop-blur-md border-b border-slate-100 shadow-[0_4px_30px_rgba(0,0,0,0.03)] h-16 flex items-center justify-between px-4 sm:px-6 fixed top-0 w-full z-50 transition-all">
+        {/* Top subtle gold line for premium feel */}
+        <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-amber-300 via-amber-400 to-amber-300"></div>
+
         {/* Left: Brand & Title */}
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-sm shadow-md shadow-blue-200">W</div>
-            <span className="font-bold text-lg tracking-tight hidden sm:block text-[#1A1A1A]">Wealth OS</span>
+            <div className="w-8 h-8 bg-blue-900 rounded-lg flex items-center justify-center text-amber-400 font-bold text-sm shadow-md shadow-blue-900/20">W</div>
+            <span className="font-bold text-lg tracking-tight hidden sm:block text-blue-950">Wealth OS</span>
           </div>
           <div className="h-6 w-px bg-slate-200 mx-2 hidden sm:block"></div>
           <div className="flex flex-col">
-            <h1 className="text-sm font-bold text-[#1A1A1A] leading-tight truncate max-w-[150px] sm:max-w-xs">{reportName}</h1>
-            <span className="text-[11px] text-slate-400 font-normal uppercase tracking-wider truncate max-w-[150px] sm:max-w-xs">Prepared for {clientName}</span>
+            <h1 className="text-sm font-bold text-blue-950 leading-tight truncate max-w-[150px] sm:max-w-xs">{reportName}</h1>
+            <span className="text-[10px] sm:text-xs text-amber-600/80 font-medium truncate max-w-[150px] sm:max-w-xs uppercase tracking-wider">
+              Prepared for {clientName}
+            </span>
           </div>
         </div>
 
         {/* Right: Stats & Actions */}
         <div className="flex items-center gap-3 sm:gap-4">
           {/* Time Tracker */}
-          <div className="hidden sm:flex items-center gap-2 text-slate-500 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-100">
-            <Clock className="w-3.5 h-3.5 text-slate-400" />
+          <div className="hidden sm:flex items-center gap-2 text-blue-900 bg-blue-50/50 px-3 py-1.5 rounded-full border border-blue-100">
+            <Clock className="w-3.5 h-3.5 text-amber-500" />
             <span className="text-xs font-medium font-mono">
               {Math.floor(timeSpent / 60)}:{(timeSpent % 60).toString().padStart(2, '0')}
             </span>
@@ -218,18 +223,18 @@ export default function Viewer() {
             loading={
               <div className="flex flex-col items-center justify-center h-[60vh] w-full space-y-6">
                 <div className="relative w-20 h-20 flex items-center justify-center">
-                  {/* Outer spinning ring */}
-                  <div className="absolute inset-0 rounded-full border-t-2 border-l-2 border-blue-500 animate-[spin_1.5s_linear_infinite] opacity-70"></div>
-                  {/* Inner spinning ring (reverse) */}
-                  <div className="absolute inset-2 rounded-full border-b-2 border-r-2 border-indigo-600 animate-[spin_2s_linear_infinite_reverse] opacity-80"></div>
+                  {/* Outer spinning ring (Navy) */}
+                  <div className="absolute inset-0 rounded-full border-t-2 border-l-2 border-blue-900 animate-[spin_1.5s_linear_infinite] opacity-80"></div>
+                  {/* Inner spinning ring (Amber) */}
+                  <div className="absolute inset-2 rounded-full border-b-2 border-r-2 border-amber-400 animate-[spin_2s_linear_infinite_reverse] opacity-90"></div>
                   {/* Center logo */}
-                  <div className="h-12 w-12 bg-gradient-to-tr from-blue-50 to-indigo-100 rounded-full flex items-center justify-center shadow-inner animate-pulse">
-                    <div className="w-6 h-6 bg-blue-600 rounded-md flex items-center justify-center text-white font-bold text-xs shadow-md">W</div>
+                  <div className="h-12 w-12 bg-gradient-to-tr from-white to-slate-50 rounded-full flex items-center justify-center shadow-inner animate-pulse">
+                    <div className="w-6 h-6 bg-blue-900 rounded-md flex items-center justify-center text-amber-400 font-bold text-xs shadow-sm">W</div>
                   </div>
                 </div>
                 <div className="text-center space-y-2">
-                  <h3 className="text-slate-800 font-bold text-lg">Secure Document Loading</h3>
-                  <p className="text-sm text-slate-500 font-medium animate-pulse max-w-xs mx-auto">
+                  <h3 className="text-blue-950 font-bold text-lg">Secure Document Loading</h3>
+                  <p className="text-sm text-amber-600/80 font-medium animate-pulse max-w-xs mx-auto">
                     Retrieving large report from encrypted storage...
                   </p>
                 </div>
@@ -292,32 +297,28 @@ export default function Viewer() {
       {numPages && (
         <div className="fixed bottom-8 left-1/2 transform -translate-x-1/2 z-50">
           <motion.div
-            initial={{ y: 20, opacity: 0 }}
+            initial={{ y: 50, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
-            className="bg-white/70 backdrop-blur-2xl text-slate-900 px-2 py-2 rounded-2xl shadow-[0_8px_32px_0_rgba(31,38,135,0.07)] border border-white/40 ring-1 ring-black/5 flex items-center gap-2"
+            className="bg-blue-950/80 backdrop-blur-2xl text-white pl-2 pr-4 py-1.5 rounded-full shadow-[0_10px_40px_-10px_rgba(30,58,138,0.5)] border border-white/10 ring-1 ring-amber-400/20 flex items-center gap-3"
           >
             <div className="flex items-center gap-1">
               <button
                 onClick={previousPage}
                 disabled={pageNumber <= 1}
-                className="p-2 hover:bg-black/5 rounded-xl disabled:opacity-30 disabled:hover:bg-transparent transition-all active:scale-95 text-slate-700"
+                className="p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
                 title="Previous Page"
               >
                 <ChevronLeft className="w-5 h-5" />
               </button>
 
-              <div className="h-4 w-px bg-slate-200 mx-1"></div>
-
-              <span className="font-mono text-xs font-semibold tabular-nums min-w-[60px] text-center select-none">
-                {pageNumber} <span className="text-slate-400 font-normal">/</span> {numPages}
+              <span className="font-mono text-sm font-medium min-w-[60px] text-center select-none text-slate-200">
+                {pageNumber} <span className="text-amber-400/60">/</span> {numPages}
               </span>
-
-              <div className="h-4 w-px bg-slate-200 mx-1"></div>
 
               <button
                 onClick={nextPage}
                 disabled={pageNumber >= numPages}
-                className="p-2 hover:bg-black/5 rounded-xl disabled:opacity-30 disabled:hover:bg-transparent transition-all active:scale-95 text-slate-700"
+                className="p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
                 title="Next Page"
               >
                 <ChevronRight className="w-5 h-5" />
@@ -325,12 +326,12 @@ export default function Viewer() {
             </div>
 
             {/* Divider */}
-            <div className="w-px h-6 bg-white/20"></div>
+            <div className="w-px h-6 bg-white/10"></div>
 
             {/* Mobile Zoom (Simple Toggle) */}
             <button
               onClick={() => setScale(s => s === 1 ? 1.5 : 1)}
-              className="p-2 hover:bg-black/5 rounded-xl transition-all md:hidden text-slate-700 active:scale-95"
+              className="p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full transition-colors md:hidden"
               title="Toggle Zoom"
             >
               {scale > 1 ? <ZoomOut className="w-4 h-4" /> : <ZoomIn className="w-4 h-4" />}
@@ -347,7 +348,7 @@ export default function Viewer() {
                   setIsFullscreen(false);
                 }
               }}
-              className="p-2 hover:bg-black/5 rounded-xl transition-all hidden sm:block text-slate-700 active:scale-95"
+              className="p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full transition-colors hidden sm:block"
               title="Toggle Fullscreen"
             >
               {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
