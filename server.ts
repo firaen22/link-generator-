@@ -20,12 +20,13 @@ console.log('------------------------------');
 // API Route for the Link Preview (Supports both old and new shorter path)
 app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
   const { file_id } = req.params;
-  const { client_name, name, report_name, preview_image, c, r, i } = req.query;
+  const { client_name, name, report_name, preview_image, c, r, i, d, desc } = req.query;
 
   // Handle shorthand or full names
   const cName = (c || name || client_name || "貴客") as string;
   const rName = (r || report_name || "Document") as string;
   const imageParam = (i || preview_image) as string;
+  const descParam = (d || desc) as string;
 
   // Professional OG Image (Keep file size small for WhatsApp ~ < 300KB)
   let ogImage = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop";
@@ -41,7 +42,7 @@ app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
 
   // Wealth OS Branding
   const title = `📈 專屬市場簡報：${cName}`;
-  const description = "Wealth OS 為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
+  const description = descParam || "Wealth OS 為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
 
   // Target URL: Points to our internal Viewer
   // Pass shortened params to viewer as well

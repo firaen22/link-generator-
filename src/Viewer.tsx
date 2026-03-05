@@ -209,9 +209,7 @@ export default function Viewer() {
   // Forced Proxy Mode: Always route through backend to bypass CORS
   const pdfUrl = `/api/pdf/${fileId}`;
 
-  const downloadUrl = fileId?.startsWith('vblob_')
-    ? pdfUrl
-    : `https://drive.google.com/file/d/${fileId}/view`;
+  const downloadUrl = pdfUrl;
 
   return (
     <div className="min-h-screen bg-[#F9FAFB] flex flex-col font-sans text-slate-900">

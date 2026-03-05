@@ -4,16 +4,16 @@
  */
 
 import React, { useState, useRef } from 'react';
-import { Link, Copy, Check, FileText, Share2, Eye, UploadCloud } from 'lucide-react';
+import { Link, Copy, Check, FileText, Share2, UploadCloud } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "./firebase";
 
 export default function App() {
-  const [fileId, setFileId] = useState('');
   const [clientName, setClientName] = useState('');
   const [reportName, setReportName] = useState('');
   const [previewImage, setPreviewImage] = useState('');
+  const [description, setDescription] = useState('');
   const [generatedLink, setGeneratedLink] = useState('');
   const [copied, setCopied] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -23,15 +23,10 @@ export default function App() {
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    let targetFileId = fileId;
-    let extractedId = fileId;
-    const urlMatch = targetFileId.match(/\/d\/([a-zA-Z0-9_-]+)/);
-    if (urlMatch && urlMatch[1]) {
-      targetFileId = urlMatch[1];
-    }
+    let targetFileId = '';
 
     // Handle Firebase Upload
-    if (!targetFileId && fileInputRef.current?.files?.[0]) {
+    if (fileInputRef.current?.files?.[0]) {
       setIsUploading(true);
       try {
         const file = fileInputRef.current.files[0];
@@ -55,30 +50,20 @@ export default function App() {
     }
 
     if (!targetFileId) {
-      alert("請填寫 Google Drive ID 或選擇檔案上傳");
+      alert("請選擇檔案上傳");
       return;
     }
 
-    // --- Link Shortening Logic ---
+    // --- Blobs are already shortened in the upload block ---
     let finalId = targetFileId;
-    const bucketPrefix = "https://firebasestorage.googleapis.com/v0/b/market-update-56e1c.firebasestorage.app/o/";
-
-    // If it was just newly uploaded to Firebase
-    if (finalId.startsWith('vblob_')) {
-      const decoded = atob(finalId.slice(6).replace(/-/g, '+').replace(/_/g, '/'));
-      if (decoded.startsWith(bucketPrefix)) {
-        const compressed = decoded.replace(bucketPrefix, "");
-        const safeBase64 = btoa(compressed).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-        finalId = `f_${safeBase64}`;
-      }
-    }
 
     const origin = window.location.origin;
     const params = new URLSearchParams();
-    // Shorthand: c=client, r=report, i=image
+    // Shorthand: c=client, r=report, i=image, d=description
     if (clientName) params.append('c', clientName);
     if (reportName) params.append('r', reportName);
     if (previewImage) params.append('i', previewImage);
+    if (description) params.append('d', description);
 
     const link = `${origin}/s/${finalId}?${params.toString()}`;
     setGeneratedLink(link);
@@ -129,31 +114,17 @@ export default function App() {
             </div>
 
             <div>
-              <label htmlFor="fileId" className="block text-sm font-semibold text-slate-700 mb-1.5">
-                Google Drive File ID
+              <label htmlFor="description" className="block text-sm font-semibold text-slate-700 mb-1.5">
+                Link Description
               </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-                  <FileText className="h-5 w-5 text-slate-400" />
-                </div>
-                <input
-                  type="text"
-                  id="fileId"
-                  value={fileId}
-                  onChange={(e) => setFileId(e.target.value)}
-                  placeholder="Paste File ID here..."
-                  className="block w-full pl-11 pr-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white"
-                />
-              </div>
-              <p className="text-xs text-slate-400 mt-1.5 ml-1">
-                From: drive.google.com/file/d/<b>FILE_ID</b>/view
-              </p>
-            </div>
-
-            <div className="flex items-center">
-              <div className="flex-grow h-px bg-slate-200"></div>
-              <span className="px-3 text-xs text-slate-400 font-semibold uppercase tracking-wider">OR</span>
-              <div className="flex-grow h-px bg-slate-200"></div>
+              <textarea
+                id="description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Wealth OS 為您整理的最新市場動態..."
+                rows={2}
+                className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white resize-none"
+              />
             </div>
 
             <div>
@@ -168,7 +139,6 @@ export default function App() {
                   type="file"
                   ref={fileInputRef}
                   accept="application/pdf"
-                  onChange={() => setFileId('')} // clear drive ID if file selected
                   className="block w-full pl-11 pr-4 py-2 border border-slate-200 rounded-xl file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition-all outline-none text-sm bg-slate-50 focus:bg-white cursor-pointer"
                 />
               </div>
@@ -215,36 +185,6 @@ export default function App() {
                 className="flex-1 flex justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-lg shadow-indigo-200 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all transform hover:-translate-y-0.5 cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
               >
                 {isUploading ? 'Uploading...' : 'Generate Link'}
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  // Extract File ID
-                  let extractedId = fileId;
-                  if (!fileId.startsWith('vblob_')) {
-                    const urlMatch = fileId.match(/\/d\/([a-zA-Z0-9_-]+)/);
-                    if (urlMatch && urlMatch[1]) {
-                      extractedId = urlMatch[1];
-                    }
-                  }
-
-                  if (!extractedId) {
-                    alert("Please enter a valid Google Drive File ID");
-                    return;
-                  }
-
-                  const params = new URLSearchParams();
-                  if (clientName) params.append('c', clientName);
-                  if (reportName) params.append('r', reportName);
-
-                  const url = `/view/${extractedId}?${params.toString()}`;
-                  window.open(url, '_blank');
-                }}
-                className="flex-none px-4 py-3.5 border border-slate-200 rounded-xl text-slate-600 font-semibold text-sm hover:bg-slate-50 hover:text-indigo-600 hover:border-indigo-200 transition-all focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 cursor-pointer"
-                title="Preview Document"
-              >
-                <Eye className="w-5 h-5" />
               </button>
             </div>
           </form>
