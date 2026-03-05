@@ -13,6 +13,7 @@ export default function App() {
   const [clientName, setClientName] = useState('');
   const [reportName, setReportName] = useState('');
   const [previewImage, setPreviewImage] = useState('');
+  const [linkTitle, setLinkTitle] = useState('');
   const [description, setDescription] = useState('');
   const [generatedLink, setGeneratedLink] = useState('');
   const [copied, setCopied] = useState(false);
@@ -59,11 +60,12 @@ export default function App() {
 
     const origin = window.location.origin;
     const params = new URLSearchParams();
-    // Shorthand: c=client, r=report, i=image, d=description
+    // Shorthand: c=client, r=report, i=image, d=description, t=title
     if (clientName) params.append('c', clientName);
     if (reportName) params.append('r', reportName);
     if (previewImage) params.append('i', previewImage);
     if (description) params.append('d', description);
+    if (linkTitle) params.append('t', linkTitle);
 
     const link = `${origin}/s/${finalId}?${params.toString()}`;
     setGeneratedLink(link);
@@ -99,6 +101,20 @@ export default function App() {
           </div>
 
           <form onSubmit={handleGenerate} className="space-y-5">
+            <div>
+              <label htmlFor="linkTitle" className="block text-sm font-semibold text-slate-700 mb-1.5">
+                Link Title
+              </label>
+              <input
+                type="text"
+                id="linkTitle"
+                value={linkTitle}
+                onChange={(e) => setLinkTitle(e.target.value)}
+                placeholder="📈 專屬市場簡報"
+                className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white"
+              />
+            </div>
+
             <div>
               <label htmlFor="reportName" className="block text-sm font-semibold text-slate-700 mb-1.5">
                 Report Name
