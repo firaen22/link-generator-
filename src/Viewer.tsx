@@ -50,19 +50,36 @@ export default function Viewer() {
     const handleFocus = () => setIsWindowFocused(true);
     const handleMouseLeave = () => setIsWindowFocused(false);
     const handleMouseEnter = () => setIsWindowFocused(true);
+    const handleVisibilityChange = () => {
+      if (document.hidden) setIsWindowFocused(false);
+      else setIsWindowFocused(true);
+    };
 
     window.addEventListener('blur', handleBlur);
     window.addEventListener('focus', handleFocus);
     document.addEventListener('mouseleave', handleMouseLeave);
     document.addEventListener('mouseenter', handleMouseEnter);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // High-frequency "Paranoia" Check (captures fast mouse-shortcuts that events might miss)
+    let animationFrameId: number;
+    const checkFocus = () => {
+      if (!document.hasFocus() && isWindowFocused) {
+        setIsWindowFocused(false);
+      }
+      animationFrameId = requestAnimationFrame(checkFocus);
+    };
+    animationFrameId = requestAnimationFrame(checkFocus);
 
     return () => {
       window.removeEventListener('blur', handleBlur);
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('mouseleave', handleMouseLeave);
       document.removeEventListener('mouseenter', handleMouseEnter);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      cancelAnimationFrame(animationFrameId);
     };
-  }, []);
+  }, [isWindowFocused]);
 
   // 2. Keyboard Protection: intercept common screenshot and print commands
   useEffect(() => {
