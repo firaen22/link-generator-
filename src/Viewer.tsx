@@ -29,6 +29,7 @@ export default function Viewer() {
   const [containerWidth, setContainerWidth] = useState(window.innerWidth);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isWindowFocused, setIsWindowFocused] = useState(true);
+  const [isScreenshotting, setIsScreenshotting] = useState(false);
 
   // Tracking refs
   const startTimeRef = useRef(Date.now());
@@ -43,17 +44,23 @@ export default function Viewer() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // 1. Monitor window focus: blur content if taking screenshots or switching apps
+  // 1. Monitor window focus & mouse out: blur content aggressively
   useEffect(() => {
     const handleBlur = () => setIsWindowFocused(false);
     const handleFocus = () => setIsWindowFocused(true);
+    const handleMouseLeave = () => setIsWindowFocused(false);
+    const handleMouseEnter = () => setIsWindowFocused(true);
 
     window.addEventListener('blur', handleBlur);
     window.addEventListener('focus', handleFocus);
+    document.addEventListener('mouseleave', handleMouseLeave);
+    document.addEventListener('mouseenter', handleMouseEnter);
 
     return () => {
       window.removeEventListener('blur', handleBlur);
       window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('mouseleave', handleMouseLeave);
+      document.removeEventListener('mouseenter', handleMouseEnter);
     };
   }, []);
 
@@ -67,10 +74,24 @@ export default function Viewer() {
         sendTrackingEvent('security_alert', { type: 'print_attempt' });
       }
 
-      // Detect PrintScreen key
-      if (e.key === 'PrintScreen') {
-        alert("系統偵測到截圖動作，請注意文件安全。");
+      // Detect specific screenshot combos
+      const isMacScreenshot = e.metaKey && e.shiftKey && ['3', '4', '5'].includes(e.key);
+      const isWinScreenshot = (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's';
+
+      if (e.key === 'PrintScreen' || isMacScreenshot || isWinScreenshot) {
+        setIsScreenshotting(true);
+        // Force immediate DOM update to blur before screenshot fires (if possible)
+        if (containerRef.current) {
+          containerRef.current.style.filter = "blur(64px) grayscale(100%) opacity(50%)";
+        }
+
         sendTrackingEvent('security_alert', { type: 'screenshot_detected' });
+
+        // Remove blur after a safe timeout
+        setTimeout(() => {
+          setIsScreenshotting(false);
+          if (containerRef.current) containerRef.current.style.filter = "";
+        }, 4000);
       }
     };
 
@@ -248,7 +269,8 @@ export default function Viewer() {
 
       {/* Main Content */}
       <main
-        className={`flex-1 pt-20 pb-32 bg-[#F9FAFB] flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-300 ${isWindowFocused ? '' : 'blur-3xl grayscale'}`}
+        className={`flex-1 pt-20 pb-32 bg-[#F9FAFB] flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-200 ${(isWindowFocused && !isScreenshotting) ? '' : 'blur-3xl grayscale opacity-50'
+          }`}
         ref={containerRef}
         onContextMenu={(e) => e.preventDefault()}
       >
