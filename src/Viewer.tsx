@@ -86,14 +86,13 @@ export default function Viewer() {
       // Intercept print (Ctrl+P or Cmd+P)
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
         e.preventDefault();
-        alert("本文件受保護，不支援列印。");
         sendTrackingEvent('security_alert', { type: 'print_attempt' });
+        alert("本文件受保護，不支援列印。");
       }
 
-      // Detect Windows PrintScreen
       if (e.key === 'PrintScreen') {
-        alert("系統偵測到截圖動作，請注意文件安全。");
         sendTrackingEvent('security_alert', { type: 'screenshot_detected_win' });
+        alert("系統偵測到截圖動作，請注意文件安全。");
       }
 
       // Detect Mac Screenshot (Cmd + Shift)

@@ -220,7 +220,7 @@ app.get("/api/pdf/:file_id", async (req, res) => {
 });
 
 // Tracking Endpoint
-app.post("/api/track", (req, res) => {
+app.post("/api/track", async (req, res) => {
   const { event, client_name, report_name, file_id, duration_seconds, page } = req.body;
 
   console.log(`[TRACK] ${event} | ${client_name} | ${report_name}`);
@@ -246,7 +246,12 @@ app.post("/api/track", (req, res) => {
         `📍 <b>位置：</b> 第 ${current_page} / ${total_pages || '?'} 頁`;
     } else if (event === 'security_alert') {
       const { type } = req.body;
-      const actionDesc = type === 'print_attempt' ? '列印報告' : '截圖報告';
+      let actionDesc = '截圖報告';
+      if (type === 'print_attempt') actionDesc = '列印報告';
+      if (type === 'screenshot_detected_win') actionDesc = 'Windows 截圖';
+      if (type === 'screenshot_detected_mac') actionDesc = 'Mac 截圖 (Cmd+Shift)';
+      if (type === 'potential_screenshot_mac') actionDesc = '潛在 Mac 截圖 (Cmd+Shift)';
+
       text = `🚨 <b>安全警報：偵測到未經授權的操作</b> 🚨\n\n` +
         `👤 <b>客戶：</b> ${client_name}\n` +
         `📄 <b>報告：</b> ${report_name}\n` +
@@ -256,19 +261,20 @@ app.post("/api/track", (req, res) => {
     // else if (event === 'heartbeat' && duration_seconds % 60 === 0 && duration_seconds > 0) { ... }
 
     if (text) {
-      fetch(telegramUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: process.env.TELEGRAM_CHAT_ID,
-          text: text,
-          parse_mode: 'HTML'
-        })
-      })
-        .then(r => {
-          if (!r.ok) console.error(`Telegram API Error: ${r.status} ${r.statusText}`);
-        })
-        .catch(err => console.error('Telegram notification failed:', err));
+      try {
+        const r = await fetch(telegramUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: process.env.TELEGRAM_CHAT_ID,
+            text: text,
+            parse_mode: 'HTML'
+          })
+        });
+        if (!r.ok) console.error(`Telegram API Error: ${r.status} ${r.statusText}`);
+      } catch (err) {
+        console.error('Telegram notification failed:', err);
+      }
     }
   } else {
     console.log('[TELEGRAM] Skip notification: Token or Chat ID missing');
