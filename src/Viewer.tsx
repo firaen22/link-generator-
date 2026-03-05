@@ -22,6 +22,7 @@ export default function Viewer() {
 
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
+  const notifiedMilestones = useRef<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
   const [timeSpent, setTimeSpent] = useState(0);
   const [scale, setScale] = useState(1.0);
@@ -83,9 +84,27 @@ export default function Viewer() {
     });
   }
 
-  // Track page views when pageNumber changes
+  // Track page views and milestones when pageNumber changes
   useEffect(() => {
     if (!loading && numPages) {
+      const progress = Math.round((pageNumber / numPages) * 100);
+      const milestones = [50, 80, 100];
+
+      // Find highest milestone reached but not yet notified
+      const currentMilestone = milestones
+        .filter(m => progress >= m && !notifiedMilestones.current.has(m))
+        .pop();
+
+      if (currentMilestone) {
+        notifiedMilestones.current.add(currentMilestone);
+
+        sendTrackingEvent('milestone', {
+          progress: currentMilestone,
+          current_page: pageNumber,
+          total_pages: numPages
+        });
+      }
+
       sendTrackingEvent('page_view', { page: pageNumber });
     }
   }, [pageNumber, loading, numPages]);

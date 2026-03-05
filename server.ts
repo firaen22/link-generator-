@@ -229,16 +229,20 @@ app.post("/api/track", (req, res) => {
     if (event === 'open') {
       const totalPages = req.body.total_pages || "未知";
       text = `🔔 <b>報告已開啟</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📑 <b>總頁數：</b> ${totalPages}\n🔗 <b>ID：</b> ${file_id}`;
-    } else if (event === 'heartbeat' && duration_seconds % 60 === 0 && duration_seconds > 0) {
-      const currentPage = req.body.current_page || 1;
-      const totalPages = req.body.total_pages || 1;
-      const progress = Math.round((currentPage / totalPages) * 100);
+    } else if (event === 'milestone') {
+      const { progress, current_page, total_pages } = req.body;
+      let icon = "📊";
+      if (progress === 50) icon = "🌗";
+      if (progress === 80) icon = "🌖";
+      if (progress === 100) icon = "✅";
 
-      text = `⏱ <b>正在閱讀中...</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n⏳ <b>累計時間：</b> ${duration_seconds / 60} 分鐘\n📊 <b>目前進度：</b> 第 ${currentPage} 頁 (${progress}%)`;
-    } else if (event === 'page_view') {
-      // Optional: Notify on every page turn (can be spammy, maybe just log)
-      // text = `📄 *翻頁*\n\n👤 客戶：${client_name}\n📍 第 ${page} 頁`;
+      text = `${icon} <b>Wealth OS 閱讀進度：${progress}%</b>\n\n` +
+        `👤 <b>客戶：</b> ${client_name}\n` +
+        `📄 <b>報告：</b> ${report_name}\n` +
+        `📍 <b>位置：</b> 第 ${current_page} / ${total_pages || '?'} 頁`;
     }
+    // Commenting out heartbeat completely, keeping only milestones for clean alerts
+    // else if (event === 'heartbeat' && duration_seconds % 60 === 0 && duration_seconds > 0) { ... }
 
     if (text) {
       fetch(telegramUrl, {
