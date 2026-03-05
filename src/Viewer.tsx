@@ -299,15 +299,15 @@ export default function Viewer() {
   return (
     <div className="min-h-screen bg-[#F9FAFB] flex flex-col font-sans text-slate-900">
       {/* Professional Header */}
-      <header className="bg-white/90 backdrop-blur-md border-b border-slate-100 shadow-[0_4px_30px_rgba(0,0,0,0.03)] h-16 flex items-center justify-between px-4 sm:px-6 fixed top-0 w-full z-50 transition-all">
+      <header className="bg-white/95 backdrop-blur-md border-b border-slate-100 shadow-[0_4px_20px_rgba(0,0,0,0.03)] h-14 sm:h-16 flex items-center justify-between px-3 sm:px-6 fixed top-0 w-full z-50 transition-all">
         {/* Top subtle gold line for premium feel */}
         <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-amber-300 via-amber-400 to-amber-300"></div>
 
         {/* Left: Report Details */}
         <div className="flex items-center gap-4">
           <div className="flex flex-col">
-            <h1 className="text-sm font-bold text-blue-950 leading-tight truncate max-w-[150px] sm:max-w-xs">{reportName}</h1>
-            <span className="text-[10px] sm:text-xs text-amber-600/80 font-medium truncate max-w-[150px] sm:max-w-xs uppercase tracking-wider">
+            <h1 className="text-xs sm:text-sm font-bold text-blue-950 leading-tight truncate max-w-[140px] sm:max-w-xs">{reportName}</h1>
+            <span className="text-[9px] sm:text-xs text-amber-600/80 font-medium truncate max-w-[140px] sm:max-w-xs uppercase tracking-wider">
               Prepared for {clientName}
             </span>
           </div>
@@ -355,7 +355,7 @@ export default function Viewer() {
 
       {/* Main Content */}
       <main
-        className={`flex-1 pt-20 pb-32 bg-[#F9FAFB] flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-200 relative ${(isWindowFocused && !isScreenshotting) ? '' : 'opacity-0 blur-3xl select-none pointer-events-none'
+        className={`flex-1 pt-16 sm:pt-20 pb-28 sm:pb-32 bg-[#F9FAFB] flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-200 relative ${(isWindowFocused && !isScreenshotting) ? '' : 'opacity-0 blur-3xl select-none pointer-events-none'
           }`}
         ref={containerRef}
         onContextMenu={(e) => e.preventDefault()}
@@ -425,10 +425,10 @@ export default function Viewer() {
               />
 
               {/* Dynamic Watermark Overlay */}
-              <div className="absolute inset-0 pointer-events-none overflow-hidden z-10 opacity-[0.08] select-none flex flex-wrap gap-x-32 gap-y-32 rotate-[-30deg] scale-125 items-center justify-center">
-                {Array.from({ length: 24 }).map((_, i) => (
-                  <div key={i} className="text-xl font-bold whitespace-nowrap text-slate-900 tracking-widest uppercase">
-                    {clientName} • CONFIDENTIAL • {clientName}
+              <div className="absolute inset-0 pointer-events-none overflow-hidden z-10 opacity-[0.06] select-none flex flex-wrap gap-x-16 sm:gap-x-32 gap-y-16 sm:gap-y-32 rotate-[-30deg] scale-150 items-center justify-center">
+                {Array.from({ length: 30 }).map((_, i) => (
+                  <div key={i} className="text-sm sm:text-xl font-bold whitespace-nowrap text-slate-900 tracking-widest uppercase">
+                    {clientName} • CONFIDENTIAL
                   </div>
                 ))}
               </div>
@@ -439,43 +439,43 @@ export default function Viewer() {
 
       {/* Bottom Floating Navigation Bar */}
       {numPages && (
-        <div className="fixed bottom-8 left-1/2 transform -translate-x-1/2 z-50">
+        <div className="fixed bottom-6 sm:bottom-8 left-1/2 transform -translate-x-1/2 z-50 w-full max-w-xs sm:max-w-md px-4 pointer-events-none flex justify-center">
           <motion.div
             initial={{ y: 50, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
-            className="bg-blue-950/80 backdrop-blur-2xl text-white pl-2 pr-4 py-1.5 rounded-full shadow-[0_10px_40px_-10px_rgba(30,58,138,0.5)] border border-white/10 ring-1 ring-amber-400/20 flex items-center gap-3"
+            className="bg-blue-950/85 backdrop-blur-2xl text-white pl-1.5 pr-3 py-1 sm:py-1.5 rounded-full shadow-[0_8px_30px_-5px_rgba(30,58,138,0.5)] border border-white/10 ring-1 ring-amber-400/20 flex items-center justify-between pointer-events-auto"
           >
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-0.5 sm:gap-1">
               <button
                 onClick={previousPage}
                 disabled={pageNumber <= 1}
-                className="p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
+                className="p-1.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
                 title="Previous Page"
               >
                 <ChevronLeft className="w-5 h-5" />
               </button>
 
-              <span className="font-mono text-sm font-medium min-w-[70px] whitespace-nowrap text-center select-none text-slate-200">
+              <span className="font-mono text-sm font-medium min-w-[65px] sm:min-w-[70px] whitespace-nowrap text-center select-none text-slate-200">
                 {pageNumber} <span className="text-amber-400/60">/</span> {numPages}
               </span>
 
               <button
                 onClick={nextPage}
                 disabled={pageNumber >= numPages}
-                className="p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
+                className="p-1.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
                 title="Next Page"
               >
-                <ChevronRight className="w-5 h-5" />
+                <ChevronRight className="w-5 h-5 sm:w-5 sm:h-5" />
               </button>
             </div>
 
             {/* Divider */}
-            <div className="w-px h-6 bg-white/10"></div>
+            <div className="w-px h-5 sm:h-6 bg-white/10 mx-1 sm:mx-2"></div>
 
             {/* Mobile Zoom (Simple Toggle) */}
             <button
               onClick={() => setScale(s => s === 1 ? 1.5 : 1)}
-              className="p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full transition-colors md:hidden"
+              className="p-1.5 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full transition-colors md:hidden mr-1"
               title="Toggle Zoom"
             >
               {scale > 1 ? <ZoomOut className="w-4 h-4" /> : <ZoomIn className="w-4 h-4" />}
