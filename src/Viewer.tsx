@@ -59,7 +59,7 @@ export default function Viewer() {
 
   // Dispatch final session payload
   useEffect(() => {
-    const handleBeforeUnload = () => {
+    const handleExit = () => {
       if (hasSentSessionEndRef.current) return;
       hasSentSessionEndRef.current = true;
 
@@ -67,6 +67,9 @@ export default function Viewer() {
       updateSessionData(currentPageRef.current, durationMs, scaleRef.current);
 
       const totalActiveTime = Math.floor((Date.now() - startTimeRef.current) / 1000);
+
+      // Only send if they were here for at least some minimum seconds, or just send always.
+      if (totalActiveTime < 1) return;
 
       const payload = {
         event: 'session_end',
@@ -78,16 +81,32 @@ export default function Viewer() {
         timestamp: new Date().toISOString()
       };
 
-      const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-      navigator.sendBeacon('/api/session-end', blob);
+      // Use fetch with keepalive: true (more reliable than sendBeacon for JSON)
+      fetch('/api/session-end', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload),
+        keepalive: true
+      }).catch(err => console.error('Session end dispatch failed', err));
     };
 
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      if (!hasSentSessionEndRef.current) {
-        handleBeforeUnload();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        // We do not immediately trigger handleExit on hidden, because they might be just switching apps
+        // but since we want to capture everything before mobile browser kills us, iOS needs this.
+        // For accurate single-report we will do it on 'pagehide'.
       }
+    };
+
+    window.addEventListener('beforeunload', handleExit);
+    window.addEventListener('pagehide', handleExit);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleExit);
+      window.removeEventListener('pagehide', handleExit);
+      // Removed the unmount trigger to avoid duplicate or premature triggers during React strict mode rewrites 
     };
   }, [fileId, clientName, reportName]);
 
