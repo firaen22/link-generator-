@@ -3,7 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { Document, Page, pdfjs } from 'react-pdf';
 import {
   ChevronLeft, ChevronRight, Clock, Eye, AlertCircle,
-  ZoomIn, ZoomOut, Maximize, Minimize, Download
+  ZoomIn, ZoomOut, Maximize, Minimize, Download, FileText
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -212,13 +212,8 @@ export default function Viewer() {
         {/* Top subtle gold line for premium feel */}
         <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-amber-300 via-amber-400 to-amber-300"></div>
 
-        {/* Left: Brand & Title */}
+        {/* Left: Report Details */}
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-blue-900 rounded-lg flex items-center justify-center text-amber-400 font-bold text-sm shadow-md shadow-blue-900/20">W</div>
-            <span className="font-bold text-lg tracking-tight hidden sm:block text-blue-950">Wealth OS</span>
-          </div>
-          <div className="h-6 w-px bg-slate-200 mx-2 hidden sm:block"></div>
           <div className="flex flex-col">
             <h1 className="text-sm font-bold text-blue-950 leading-tight truncate max-w-[150px] sm:max-w-xs">{reportName}</h1>
             <span className="text-[10px] sm:text-xs text-amber-600/80 font-medium truncate max-w-[150px] sm:max-w-xs uppercase tracking-wider">
@@ -285,9 +280,9 @@ export default function Viewer() {
                   <div className="absolute inset-0 rounded-full border-t-2 border-l-2 border-blue-900 animate-[spin_1.5s_linear_infinite] opacity-80"></div>
                   {/* Inner spinning ring (Amber) */}
                   <div className="absolute inset-2 rounded-full border-b-2 border-r-2 border-amber-400 animate-[spin_2s_linear_infinite_reverse] opacity-90"></div>
-                  {/* Center logo */}
+                  {/* Center branding removed, keeping rings */}
                   <div className="h-12 w-12 bg-gradient-to-tr from-white to-slate-50 rounded-full flex items-center justify-center shadow-inner animate-pulse">
-                    <div className="w-6 h-6 bg-blue-900 rounded-md flex items-center justify-center text-amber-400 font-bold text-xs shadow-sm">W</div>
+                    <FileText className="w-6 h-6 text-blue-900 opacity-50" />
                   </div>
                 </div>
                 <div className="text-center space-y-2">
