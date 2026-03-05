@@ -3,8 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { Document, Page, pdfjs } from 'react-pdf';
 import {
   ChevronLeft, ChevronRight, Clock, Eye, AlertCircle,
-  ZoomIn, ZoomOut, Maximize, Minimize, Download, FileText,
-  ShieldCheck, ShieldAlert
+  ZoomIn, ZoomOut, Maximize, Minimize, Download, FileText
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -31,8 +30,6 @@ export default function Viewer() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isWindowFocused, setIsWindowFocused] = useState(true);
   const [isScreenshotting, setIsScreenshotting] = useState(false);
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
-  const [isReaderMode, setIsReaderMode] = useState(true); // Default to on for high-end links
 
   // Tracking refs
   const startTimeRef = useRef(Date.now());
@@ -82,16 +79,6 @@ export default function Viewer() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
-
-  // 1.5 Handle Mouse Movement for "Flashlight" effect
-  const handleMouseMove = (e: React.MouseEvent | MouseEvent) => {
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    setMousePos({
-      x: e.clientX,
-      y: e.clientY
-    });
-  };
 
   // 2. Keyboard Protection: intercept common screenshot and print commands
   useEffect(() => {
@@ -297,18 +284,7 @@ export default function Viewer() {
           }`}
         ref={containerRef}
         onContextMenu={(e) => e.preventDefault()}
-        onMouseMove={handleMouseMove}
       >
-        {/* Anti-Screenshot Flashlight Overlay */}
-        {isReaderMode && isWindowFocused && !isScreenshotting && (
-          <div
-            className="fixed inset-0 pointer-events-none z-[60] backdrop-blur-[12px] bg-white/5"
-            style={{
-              WebkitMaskImage: `radial-gradient(circle 220px at ${mousePos.x}px ${mousePos.y}px, transparent 0%, transparent 60%, black 100%)`,
-              maskImage: `radial-gradient(circle 220px at ${mousePos.x}px ${mousePos.y}px, transparent 0%, transparent 60%, black 100%)`
-            }}
-          />
-        )}
         <div className="w-full max-w-6xl flex justify-center">
           <Document
             file={pdfUrl}
@@ -445,21 +421,6 @@ export default function Viewer() {
               title="Toggle Fullscreen"
             >
               {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
-            </button>
-
-            {/* Divider */}
-            <div className="w-px h-6 bg-white/10"></div>
-
-            {/* Safety Lens Toggle */}
-            <button
-              onClick={() => setIsReaderMode(!isReaderMode)}
-              className={`p-2 rounded-xl transition-all flex items-center gap-2 ${isReaderMode ? 'bg-amber-400/20 text-amber-400' : 'hover:bg-white/10 text-slate-400'}`}
-              title={isReaderMode ? "Safety Lens Active" : "Enable Safety Lens"}
-            >
-              {isReaderMode ? <ShieldCheck className="w-4 h-4" /> : <ShieldAlert className="w-4 h-4" />}
-              <span className="text-[10px] uppercase font-bold tracking-widest hidden lg:block">
-                {isReaderMode ? "Protected" : "Standard"}
-              </span>
             </button>
           </motion.div>
         </div>
