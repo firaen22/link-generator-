@@ -37,6 +37,73 @@ export default function Viewer() {
   const hasTrackedOpenRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Advanced behavior tracking
+  const sessionDataRef = useRef<Record<number, { dwellMs: number, maxScale: number }>>({});
+  const currentPageRef = useRef(1);
+  const pageEnterTimeRef = useRef(Date.now());
+  const hasSentSessionEndRef = useRef(false);
+  const scaleRef = useRef(1.0);
+
+  useEffect(() => { scaleRef.current = scale; }, [scale]);
+
+  // Helper to accumulate telemetry
+  const updateSessionData = (pageNum: number, durationMs: number, currentScale: number) => {
+    if (!sessionDataRef.current[pageNum]) {
+      sessionDataRef.current[pageNum] = { dwellMs: 0, maxScale: 1.0 };
+    }
+    sessionDataRef.current[pageNum].dwellMs += durationMs;
+    if (currentScale > sessionDataRef.current[pageNum].maxScale) {
+      sessionDataRef.current[pageNum].maxScale = currentScale;
+    }
+  };
+
+  // Dispatch final session payload
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (hasSentSessionEndRef.current) return;
+      hasSentSessionEndRef.current = true;
+
+      const durationMs = Date.now() - pageEnterTimeRef.current;
+      updateSessionData(currentPageRef.current, durationMs, scaleRef.current);
+
+      const totalActiveTime = Math.floor((Date.now() - startTimeRef.current) / 1000);
+
+      const payload = {
+        event: 'session_end',
+        file_id: fileId,
+        client_name: clientName,
+        report_name: reportName,
+        total_duration_sec: totalActiveTime,
+        pages_data: sessionDataRef.current,
+        timestamp: new Date().toISOString()
+      };
+
+      const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+      navigator.sendBeacon('/api/session-end', blob);
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (!hasSentSessionEndRef.current) {
+        handleBeforeUnload();
+      }
+    };
+  }, [fileId, clientName, reportName]);
+
+  // Track Page Dwell & Zoom Changes
+  useEffect(() => {
+    const now = Date.now();
+    const durationMs = now - pageEnterTimeRef.current;
+
+    // Save state for previous page
+    updateSessionData(currentPageRef.current, durationMs, scaleRef.current);
+
+    // Reset loop for new tracking segment
+    currentPageRef.current = pageNumber;
+    pageEnterTimeRef.current = now;
+  }, [pageNumber, scale]);
+
   // Handle Window Resize
   useEffect(() => {
     const handleResize = () => setContainerWidth(window.innerWidth);

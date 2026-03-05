@@ -2,8 +2,12 @@ import 'dotenv/config';
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
+import OpenAI from "openai";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const aiEnabled = !!process.env.OPENAI_API_KEY;
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -278,6 +282,68 @@ app.post("/api/track", async (req, res) => {
     }
   } else {
     console.log('[TELEGRAM] Skip notification: Token or Chat ID missing');
+  }
+
+  res.json({ status: "ok" });
+});
+
+// AI-Powered Session Analysis Endpoint
+app.post("/api/session-end", async (req, res) => {
+  const { event, file_id, client_name, report_name, total_duration_sec, pages_data } = req.body;
+
+  if (event !== 'session_end') return res.json({ status: "ignored" });
+
+  console.log(`[SESSION END] ${client_name} | ${report_name} | ${total_duration_sec}s`);
+
+  if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
+    return res.json({ status: "skipped" });
+  }
+
+  const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+  let text = "";
+
+  if (aiEnabled) {
+    try {
+      // Structure the data for LLM
+      const behaviorSummary = Object.entries(pages_data || {}).map(([page, data]: [string, any]) => {
+        return `第 ${page} 頁: 停留 ${Math.round(data.dwellMs / 1000)} 秒, 最大縮放 ${data.maxScale.toFixed(1)}x`;
+      }).join('\n');
+
+      const prompt = `你現在是大蓄後台專屬智能分析引擎。目標：協助理財顧問將「市場資訊」轉化為「保險與基金銷售契機」。\n\n輸入數據：\n- 客戶名稱：${client_name}\n- 讀取報告：${report_name}\n- 總歷時：${total_duration_sec} 秒\n- 行為特徵：\n${behaviorSummary}\n\n請以冷靜專業的香港私人銀行分析師口吻，在 200 字以內，輸出三個區塊（不要使用這三個詞作為標題，直接寫出內容，用對應的 Emoji 開頭即可）：\n🧠 **客戶意圖速寫**：一句話精準總結。\n🔥 **關鍵行為拆解**：找出停留最久或放大的頁面推測痛點。\n💡 **Speed Delivery 破冰建議 (Next-Best-Action)**：一段可直接複製的 WhatsApp 繁體中文對話開場白 (要求語氣自然、專業)。\n\n注意：只輸出這三個區塊的純文本，每行用 Emoji 開頭即可，不需要其他廢話或 \`\`\` 格式。不要重複客戶名稱和報告名稱的頂部標頭。`;
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }]
+      });
+
+      const aiInsights = response.choices[0].message?.content || '無法分析該次行為。';
+
+      text = `🎯 <b>【大蓄實時偵測 - 高價值銷售機遇】</b>\n\n` +
+        `👤 <b>客戶：</b> ${client_name}\n` +
+        `📄 <b>報告：</b> ${report_name}\n` +
+        `⏱️ <b>歷時：</b> ${total_duration_sec} 秒\n\n` +
+        aiInsights;
+
+    } catch (err) {
+      console.error("[OPENAI ERROR]", err);
+      // Fallback if AI fails (e.g. Rate limit, wrong key)
+      text = `📊 <b>閱讀結算 (無 AI 分析)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n⏱️ <b>總歷時：</b> ${total_duration_sec} 秒`;
+    }
+  } else {
+    // Basic fallback if no API key is provided
+    text = `📊 <b>閱讀結算 (未設定 AI Key)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n⏱️ <b>總歷時：</b> ${total_duration_sec} 秒`;
+  }
+
+  // Send to Telegram
+  try {
+    const r = await fetch(telegramUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text: text, parse_mode: 'HTML' })
+    });
+    if (!r.ok) console.error(`Telegram API Error: ${r.status} ${r.statusText}`);
+  } catch (err) {
+    console.error('Telegram notification failed:', err);
   }
 
   res.json({ status: "ok" });
