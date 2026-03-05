@@ -370,7 +370,7 @@ export default function Viewer() {
                 <ChevronLeft className="w-5 h-5" />
               </button>
 
-              <span className="font-mono text-sm font-medium min-w-[60px] text-center select-none text-slate-200">
+              <span className="font-mono text-sm font-medium min-w-[70px] whitespace-nowrap text-center select-none text-slate-200">
                 {pageNumber} <span className="text-amber-400/60">/</span> {numPages}
               </span>
 
