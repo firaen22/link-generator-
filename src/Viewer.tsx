@@ -90,24 +90,16 @@ export default function Viewer() {
         sendTrackingEvent('security_alert', { type: 'print_attempt' });
       }
 
-      // Detect specific screenshot combos
-      const isMacScreenshot = e.metaKey && e.shiftKey && ['3', '4', '5'].includes(e.key);
-      const isWinScreenshot = (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's';
+      // Detect Windows PrintScreen
+      if (e.key === 'PrintScreen') {
+        alert("系統偵測到截圖動作，請注意文件安全。");
+        sendTrackingEvent('security_alert', { type: 'screenshot_detected_win' });
+      }
 
-      if (e.key === 'PrintScreen' || isMacScreenshot || isWinScreenshot) {
-        setIsScreenshotting(true);
-        // Force immediate DOM update to blur before screenshot fires (if possible)
-        if (containerRef.current) {
-          containerRef.current.style.filter = "blur(64px) grayscale(100%) opacity(50%)";
-        }
-
-        sendTrackingEvent('security_alert', { type: 'screenshot_detected' });
-
-        // Remove blur after a safe timeout
-        setTimeout(() => {
-          setIsScreenshotting(false);
-          if (containerRef.current) containerRef.current.style.filter = "";
-        }, 4000);
+      // Detect Mac Screenshot (Cmd + Shift)
+      if (e.metaKey && e.shiftKey) {
+        setIsWindowFocused(false);
+        sendTrackingEvent('security_alert', { type: 'potential_screenshot_mac' });
       }
     };
 
@@ -280,7 +272,7 @@ export default function Viewer() {
 
       {/* Main Content */}
       <main
-        className={`flex-1 pt-20 pb-32 bg-[#F9FAFB] flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-200 relative ${(isWindowFocused && !isScreenshotting) ? '' : 'blur-3xl grayscale opacity-50'
+        className={`flex-1 pt-20 pb-32 bg-[#F9FAFB] flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-200 relative ${(isWindowFocused && !isScreenshotting) ? '' : 'opacity-0 blur-3xl select-none pointer-events-none'
           }`}
         ref={containerRef}
         onContextMenu={(e) => e.preventDefault()}
