@@ -130,19 +130,19 @@ export default function Viewer() {
     : `https://drive.google.com/file/d/${fileId}/view`;
 
   return (
-    <div className="min-h-screen bg-[#F3F4F6] flex flex-col font-sans text-slate-900">
+    <div className="min-h-screen bg-[#F9FAFB] flex flex-col font-sans text-slate-900">
       {/* Professional Header */}
-      <header className="bg-white border-b border-slate-200 h-16 flex items-center justify-between px-4 sm:px-6 fixed top-0 w-full z-50 shadow-sm">
+      <header className="bg-white/80 backdrop-blur-md border-b border-slate-100 h-14 flex items-center justify-between px-6 fixed top-0 w-full z-50 transition-all">
         {/* Left: Brand & Title */}
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-sm shadow-md shadow-blue-200">W</div>
-            <span className="font-bold text-lg tracking-tight hidden sm:block text-slate-800">Wealth OS</span>
+            <span className="font-bold text-lg tracking-tight hidden sm:block text-[#1A1A1A]">Wealth OS</span>
           </div>
           <div className="h-6 w-px bg-slate-200 mx-2 hidden sm:block"></div>
           <div className="flex flex-col">
-            <h1 className="text-sm font-bold text-slate-900 leading-tight truncate max-w-[150px] sm:max-w-xs">{reportName}</h1>
-            <span className="text-[10px] sm:text-xs text-slate-500 font-medium truncate max-w-[150px] sm:max-w-xs">Prepared for {clientName}</span>
+            <h1 className="text-sm font-bold text-[#1A1A1A] leading-tight truncate max-w-[150px] sm:max-w-xs">{reportName}</h1>
+            <span className="text-[11px] text-slate-400 font-normal uppercase tracking-wider truncate max-w-[150px] sm:max-w-xs">Prepared for {clientName}</span>
           </div>
         </div>
 
@@ -188,7 +188,7 @@ export default function Viewer() {
 
       {/* Main Content */}
       <main
-        className="flex-1 pt-24 pb-32 px-4 flex justify-center overflow-y-auto scroll-smooth select-none"
+        className="flex-1 pt-20 pb-32 bg-[#F9FAFB] flex justify-center overflow-y-auto scroll-smooth select-none"
         ref={containerRef}
         onContextMenu={(e) => e.preventDefault()}
       >
@@ -250,7 +250,7 @@ export default function Viewer() {
                 width={Math.min(containerWidth - 32, 1000)}
                 renderTextLayer={true}
                 renderAnnotationLayer={true}
-                className="shadow-2xl shadow-slate-200/50 rounded-sm bg-white"
+                className="shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 rounded-sm bg-white"
                 loading={
                   <div className="h-[800px] w-[600px] bg-white shadow-xl rounded-sm animate-pulse"></div>
                 }
@@ -273,28 +273,32 @@ export default function Viewer() {
       {numPages && (
         <div className="fixed bottom-8 left-1/2 transform -translate-x-1/2 z-50">
           <motion.div
-            initial={{ y: 50, opacity: 0 }}
+            initial={{ y: 20, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
-            className="bg-slate-900/90 backdrop-blur-xl text-white pl-2 pr-4 py-1.5 rounded-full shadow-2xl flex items-center gap-3 border border-white/10 ring-1 ring-black/5"
+            className="bg-white/70 backdrop-blur-2xl text-slate-900 px-2 py-2 rounded-2xl shadow-[0_8px_32px_0_rgba(31,38,135,0.07)] border border-white/40 ring-1 ring-black/5 flex items-center gap-2"
           >
             <div className="flex items-center gap-1">
               <button
                 onClick={previousPage}
                 disabled={pageNumber <= 1}
-                className="p-2 hover:bg-white/10 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
+                className="p-2 hover:bg-black/5 rounded-xl disabled:opacity-30 disabled:hover:bg-transparent transition-all active:scale-95 text-slate-700"
                 title="Previous Page"
               >
                 <ChevronLeft className="w-5 h-5" />
               </button>
 
-              <span className="font-mono text-sm font-medium min-w-[60px] text-center select-none">
-                {pageNumber} <span className="text-slate-500">/</span> {numPages}
+              <div className="h-4 w-px bg-slate-200 mx-1"></div>
+
+              <span className="font-mono text-xs font-semibold tabular-nums min-w-[60px] text-center select-none">
+                {pageNumber} <span className="text-slate-400 font-normal">/</span> {numPages}
               </span>
+
+              <div className="h-4 w-px bg-slate-200 mx-1"></div>
 
               <button
                 onClick={nextPage}
                 disabled={pageNumber >= numPages}
-                className="p-2 hover:bg-white/10 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
+                className="p-2 hover:bg-black/5 rounded-xl disabled:opacity-30 disabled:hover:bg-transparent transition-all active:scale-95 text-slate-700"
                 title="Next Page"
               >
                 <ChevronRight className="w-5 h-5" />
@@ -307,7 +311,7 @@ export default function Viewer() {
             {/* Mobile Zoom (Simple Toggle) */}
             <button
               onClick={() => setScale(s => s === 1 ? 1.5 : 1)}
-              className="p-2 hover:bg-white/10 rounded-full transition-colors md:hidden"
+              className="p-2 hover:bg-black/5 rounded-xl transition-all md:hidden text-slate-700 active:scale-95"
               title="Toggle Zoom"
             >
               {scale > 1 ? <ZoomOut className="w-4 h-4" /> : <ZoomIn className="w-4 h-4" />}
@@ -324,7 +328,7 @@ export default function Viewer() {
                   setIsFullscreen(false);
                 }
               }}
-              className="p-2 hover:bg-white/10 rounded-full transition-colors hidden sm:block"
+              className="p-2 hover:bg-black/5 rounded-xl transition-all hidden sm:block text-slate-700 active:scale-95"
               title="Toggle Fullscreen"
             >
               {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
