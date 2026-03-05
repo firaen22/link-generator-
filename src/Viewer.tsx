@@ -28,6 +28,7 @@ export default function Viewer() {
   const [scale, setScale] = useState(1.0);
   const [containerWidth, setContainerWidth] = useState(window.innerWidth);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isWindowFocused, setIsWindowFocused] = useState(true);
 
   // Tracking refs
   const startTimeRef = useRef(Date.now());
@@ -41,6 +42,41 @@ export default function Viewer() {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  // 1. Monitor window focus: blur content if taking screenshots or switching apps
+  useEffect(() => {
+    const handleBlur = () => setIsWindowFocused(false);
+    const handleFocus = () => setIsWindowFocused(true);
+
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, []);
+
+  // 2. Keyboard Protection: intercept common screenshot and print commands
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Intercept print (Ctrl+P or Cmd+P)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        alert("本文件受保護，不支援列印。");
+        sendTrackingEvent('security_alert', { type: 'print_attempt' });
+      }
+
+      // Detect PrintScreen key
+      if (e.key === 'PrintScreen') {
+        alert("系統偵測到截圖動作，請注意文件安全。");
+        sendTrackingEvent('security_alert', { type: 'screenshot_detected' });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [numPages, pageNumber]);
 
   // Send tracking event to backend
   const sendTrackingEvent = (event: string, data: any = {}) => {
@@ -212,7 +248,7 @@ export default function Viewer() {
 
       {/* Main Content */}
       <main
-        className="flex-1 pt-20 pb-32 bg-[#F9FAFB] flex justify-center overflow-y-auto scroll-smooth select-none"
+        className={`flex-1 pt-20 pb-32 bg-[#F9FAFB] flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-300 ${isWindowFocused ? '' : 'blur-3xl grayscale'}`}
         ref={containerRef}
         onContextMenu={(e) => e.preventDefault()}
       >

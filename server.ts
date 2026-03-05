@@ -240,6 +240,13 @@ app.post("/api/track", (req, res) => {
         `👤 <b>客戶：</b> ${client_name}\n` +
         `📄 <b>報告：</b> ${report_name}\n` +
         `📍 <b>位置：</b> 第 ${current_page} / ${total_pages || '?'} 頁`;
+    } else if (event === 'security_alert') {
+      const { type } = req.body;
+      const actionDesc = type === 'print_attempt' ? '列印報告' : '截圖報告';
+      text = `🚨 <b>安全警報：偵測到未經授權的操作</b> 🚨\n\n` +
+        `👤 <b>客戶：</b> ${client_name}\n` +
+        `📄 <b>報告：</b> ${report_name}\n` +
+        `⚠️ <b>行為：</b> 嘗試 ${actionDesc} !!`;
     }
     // Commenting out heartbeat completely, keeping only milestones for clean alerts
     // else if (event === 'heartbeat' && duration_seconds % 60 === 0 && duration_seconds > 0) { ... }
