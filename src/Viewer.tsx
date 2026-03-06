@@ -5,7 +5,7 @@ import {
   ChevronLeft, ChevronRight, Clock, Eye, AlertCircle,
   ZoomIn, ZoomOut, Maximize, Minimize, Download, FileText, Moon, Sun, LayoutPanelTop, X
 } from 'lucide-react';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 
 // Match the API version reported in the error (5.4.296) to fix mismatch
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@5.4.296/build/pdf.worker.min.mjs`;
@@ -487,33 +487,35 @@ export default function Viewer() {
             }}
             className="flex flex-col items-center gap-8"
           >
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.4, ease: "easeOut" }}
-              className="relative"
-            >
-              <Page
-                pageNumber={pageNumber}
-                scale={scale}
-                width={Math.min(containerWidth - 32, 1000)}
-                renderTextLayer={true}
-                renderAnnotationLayer={true}
-                className="shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 rounded-sm bg-white"
-                loading={
-                  <div className="h-[800px] w-[600px] bg-white shadow-xl rounded-sm animate-pulse"></div>
-                }
-              />
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={pageNumber}
+                initial={{ opacity: 0.6 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0.6 }}
+                transition={{ duration: 0.15, ease: "easeOut" }}
+                className="relative"
+              >
+                <Page
+                  pageNumber={pageNumber}
+                  scale={scale}
+                  width={Math.min(containerWidth - 32, 1000)}
+                  renderTextLayer={true}
+                  renderAnnotationLayer={true}
+                  className="shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 rounded-sm bg-white"
+                  loading={null}
+                />
 
-              {/* Dynamic Watermark Overlay */}
-              <div className="absolute inset-0 pointer-events-none overflow-hidden z-10 opacity-[0.06] select-none flex flex-wrap gap-x-16 sm:gap-x-32 gap-y-16 sm:gap-y-32 rotate-[-30deg] scale-150 items-center justify-center">
-                {Array.from({ length: 30 }).map((_, i) => (
-                  <div key={i} className="text-sm sm:text-xl font-bold whitespace-nowrap text-slate-900 tracking-widest uppercase">
-                    {clientName} • CONFIDENTIAL
-                  </div>
-                ))}
-              </div>
-            </motion.div>
+                {/* Dynamic Watermark Overlay */}
+                <div className="absolute inset-0 pointer-events-none overflow-hidden z-10 opacity-[0.06] select-none flex flex-wrap gap-x-16 sm:gap-x-32 gap-y-16 sm:gap-y-32 rotate-[-30deg] scale-150 items-center justify-center">
+                  {Array.from({ length: 30 }).map((_, i) => (
+                    <div key={i} className="text-sm sm:text-xl font-bold whitespace-nowrap text-slate-900 tracking-widest uppercase">
+                      {clientName} • CONFIDENTIAL
+                    </div>
+                  ))}
+                </div>
+              </motion.div>
+            </AnimatePresence>
           </Document>
         </div>
 
