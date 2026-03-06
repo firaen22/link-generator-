@@ -93,8 +93,10 @@ export default function Viewer() {
   const scaleRef = useRef(1.0);
   const exitTimerRef = useRef<NodeJS.Timeout | null>(null);
   const hiddenTimestampRef = useRef<number | null>(null);
+  const numPagesRef = useRef<number | null>(null);
 
   useEffect(() => { scaleRef.current = scale; }, [scale]);
+  useEffect(() => { numPagesRef.current = numPages; }, [numPages]);
 
   // Helper to accumulate telemetry
   const updateSessionData = (pageNum: number, durationMs: number, currentScale: number) => {
@@ -128,7 +130,7 @@ export default function Viewer() {
         client_name: clientName,
         report_name: reportName,
         total_duration_sec: totalActiveTime,
-        total_pages: numPages,
+        total_pages: numPagesRef.current,
         pages_data: sessionDataRef.current,
         timestamp: new Date().toISOString()
       };
