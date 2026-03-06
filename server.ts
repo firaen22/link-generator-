@@ -300,10 +300,15 @@ app.post("/api/session-end", async (req, res) => {
     ? Math.max(...Object.keys(pages_data).map(Number))
     : 1;
 
+  const progressPercent = total_pages ? (maxReachedPage / total_pages) * 100 : 0;
+  const isDeepRead = progressPercent >= 50;
+
+  console.log(`[SESSION END] ${client_name} | Progress: ${maxReachedPage}/${total_pages} (${progressPercent.toFixed(1)}%) | AI Triggered: ${isDeepRead}`);
+
   const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
   let text = "";
 
-  if (aiEnabled) {
+  if (aiEnabled && isDeepRead) {
     try {
       // Structure the data for LLM
       const behaviorSummary = Object.entries(pages_data || {}).map(([page, data]: [string, any]) => {
@@ -440,8 +445,11 @@ ${behaviorSummary}
 
     } catch (err) {
       console.error("[GEMINI ERROR]", err);
-      text = `📊 <b>閱讀結算 (無 AI 分析)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：：</b> ${report_name}\n📖 <b>閱讀進度：</b> 讀到第 ${maxReachedPage} / ${total_pages || '?'} 頁\n⏱️ <b>總歷時：</b> ${total_duration_sec} 秒\n⚠️ 原因: ${(err as any).message}`;
+      text = `📊 <b>閱讀結算 (無 AI 分析)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📖 <b>閱讀進度：</b> 讀到第 ${maxReachedPage} / ${total_pages || '?'} 頁\n⏱️ <b>總歷時：</b> ${total_duration_sec} 秒\n⚠️ 原因: ${(err as any).message}`;
     }
+  } else if (!isDeepRead) {
+    // Progress-based skip
+    text = `📊 <b>閱讀結算 (未讀過半，跳過 AI)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📖 <b>閱讀進度：</b> 讀到第 ${maxReachedPage} / ${total_pages} 頁 (${progressPercent.toFixed(1)}%)\n⏱️ <b>總歷時：</b> ${total_duration_sec} 秒\n💡 <i>提示：讀者翻閱進度較快，建議過一陣子再視情況提供更深度的解釋。</i>`;
   } else {
     // Basic fallback if no API key is provided
     text = `📊 <b>閱讀結算 (未設定 AI Key)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📖 <b>閱讀進度：</b> 讀到第 ${maxReachedPage} / ${total_pages || '?'} 頁\n⏱️ <b>總歷時：</b> ${total_duration_sec} 秒`;
