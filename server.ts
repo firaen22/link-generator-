@@ -9,6 +9,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const apiKeys = (process.env.GEMINI_API_KEY || "").split(',').map(k => k.trim()).filter(Boolean);
 const aiEnabled = apiKeys.length > 0;
 
+// Helper to escape HTML for Telegram
+const escapeHTML = (text: string) => {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+};
+
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
@@ -366,10 +374,8 @@ ${behaviorSummary}
       const genAI = new GoogleGenerativeAI(randomKey);
 
       const modelsToTry = [
-        "gemini-3.1-flash-lite-preview",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
         "gemini-2.0-flash",
+        "gemini-1.5-flash",
         "gemini-flash-latest"
       ];
 
@@ -418,23 +424,23 @@ ${behaviorSummary}
         throw new Error(`All models failed. Last error: ${(lastError as any)?.message}`);
       }
 
-      // Sanitise possible Markdown codeblocks if the LLM leaked them
-      aiInsights = aiInsights.replace(/^```(html)?|```$/gm, '').trim();
+      // Clean response text
+      let rawAiInsights = aiInsights.replace(/^```(html)?|```$/gm, '').trim();
 
-      // Telegram Parse Mode HTML requires <b>, <i>, <u>, <s>, <a>, <code>, <pre>
-      // We manually convert common ** to <b> just in case the LLM ignored instructions
-      aiInsights = aiInsights.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+      // Escape for Telegram HTML parse mode, then restore <b> tags
+      let safeAiInsights = escapeHTML(rawAiInsights);
+      safeAiInsights = safeAiInsights.replace(/&lt;b&gt;(.*?)&lt;\/b&gt;/g, '<b>$1</b>');
+      safeAiInsights = safeAiInsights.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
 
       text = `🎯 <b>【Antigravity 實時偵測 - 銷售機遇導航】</b>\n\n` +
         `👤 <b>客戶：</b> ${client_name}\n` +
         `📄 <b>觸發場景：</b> 正在閱讀《${report_name}》\n` +
         `📖 <b>閱讀進度：</b> 讀到第 ${maxReachedPage} / ${total_pages || '?'} 頁\n\n` +
-        aiInsights;
+        safeAiInsights;
 
     } catch (err) {
       console.error("[GEMINI ERROR]", err);
-      // Fallback if AI fails (e.g. Rate limit, wrong key)
-      text = `📊 <b>閱讀結算 (無 AI 分析)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📖 <b>閱讀進度：</b> 讀到第 ${maxReachedPage} / ${total_pages || '?'} 頁\n⏱️ <b>總歷時：</b> ${total_duration_sec} 秒`;
+      text = `📊 <b>閱讀結算 (無 AI 分析)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：：</b> ${report_name}\n📖 <b>閱讀進度：</b> 讀到第 ${maxReachedPage} / ${total_pages || '?'} 頁\n⏱️ <b>總歷時：</b> ${total_duration_sec} 秒\n⚠️ 原因: ${(err as any).message}`;
     }
   } else {
     // Basic fallback if no API key is provided
@@ -448,7 +454,23 @@ ${behaviorSummary}
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text: text, parse_mode: 'HTML' })
     });
-    if (!r.ok) console.error(`Telegram API Error: ${r.status} ${r.statusText}`);
+    if (!r.ok) {
+      const errorDetail = await r.json();
+      console.error(`[TELEGRAM ERROR] Status: ${r.status}, Detail: ${JSON.stringify(errorDetail)}`);
+
+      // Fallback to plain text if HTML parsing failed
+      if (errorDetail.description?.includes('can\'t parse entities')) {
+        console.log('[TELEGRAM] Retrying with plain text fallback...');
+        await fetch(telegramUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: process.env.TELEGRAM_CHAT_ID,
+            text: text.replace(/<[^>]*>/g, '') // Strip all tags
+          })
+        });
+      }
+    }
   } catch (err) {
     console.error('Telegram notification failed:', err);
   }
