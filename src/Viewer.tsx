@@ -34,28 +34,46 @@ export default function Viewer() {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isLiquidMode, setIsLiquidMode] = useState(false);
 
-  // 1. Unified Fullscreen Control
+  // 1. Unified Fullscreen Control (with native & software fallback)
   const toggleFullscreen = async () => {
     try {
-      if (!document.fullscreenElement) {
-        await document.documentElement.requestFullscreen();
+      if (!isFullscreen) {
+        if (document.documentElement.requestFullscreen) {
+          await document.documentElement.requestFullscreen();
+        } else if ((document.documentElement as any).webkitRequestFullscreen) {
+          await (document.documentElement as any).webkitRequestFullscreen();
+        } else {
+          // Fallback (Software Focus Mode for Mobile Safari)
+          setIsFullscreen(true);
+        }
       } else {
-        if (document.exitFullscreen) {
+        if (document.exitFullscreen && document.fullscreenElement) {
           await document.exitFullscreen();
+        } else if ((document as any).webkitExitFullscreen && (document as any).webkitFullscreenElement) {
+          await (document as any).webkitExitFullscreen();
+        } else {
+          // Fallback exit
+          setIsFullscreen(false);
         }
       }
     } catch (err) {
       console.error("Fullscreen toggle error:", err);
+      setIsFullscreen(!isFullscreen); // Ensure software fallback works even on API failure
     }
   };
 
   // 2. Listen to native browser fullscreen changes (e.g. user pressing ESC)
   useEffect(() => {
     const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
+      const isNativeFull = !!(document.fullscreenElement || (document as any).webkitFullscreenElement);
+      setIsFullscreen(isNativeFull);
     };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+    };
   }, []);
 
   // Focus Mode / Personal Pacing tracking
