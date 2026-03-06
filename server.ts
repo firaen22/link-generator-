@@ -286,7 +286,8 @@ app.post("/api/track", async (req, res) => {
 
 // AI-Powered Session Analysis Endpoint
 app.post("/api/session-end", async (req, res) => {
-  const { event, file_id, client_name, report_name, total_duration_sec, total_pages, pages_data } = req.body;
+  const { event, client_name, report_name, total_duration_sec, total_pages, pages_data } = req.body;
+  console.log(`🚀 [BACKEND] 接收到分析請求: ${client_name} | ${report_name} (${total_duration_sec}s)`);
 
   if (event !== 'session_end') return res.json({ status: "ignored" });
 

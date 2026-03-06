@@ -127,11 +127,11 @@ export default function Viewer() {
       updateSessionData(currentPageRef.current, durationMs, scaleRef.current);
 
       const totalActiveTimeRaw = Math.floor((now - startTimeRef.current) / 1000);
-      // 如果是超時，也調整總歷時，扣除 30 秒閒置時間
       const totalActiveTime = isIdleTimeout ? Math.max(1, totalActiveTimeRaw - 30) : totalActiveTimeRaw;
 
-      // Only send if they were here for at least some minimum seconds, or just send always.
-      if (totalActiveTime < 1) return;
+      // 如果是 Idle Timeout 觸發，我們允許發送（即使計算後是 0s 也當作 1s）
+      // 如果是手動關閉視窗且時間小於 1 秒，則跳過
+      if (!isIdleTimeout && totalActiveTimeRaw < 1) return;
 
       hasSentSessionEndRef.current = true;
 
