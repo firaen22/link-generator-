@@ -162,10 +162,20 @@ export default function Viewer() {
       }
     };
 
+    // --- 新增：前台閒置偵測 ---
+    let fgTimer: NodeJS.Timeout;
+    const resetFgTimer = () => {
+      if (fgTimer) clearTimeout(fgTimer);
+      fgTimer = setTimeout(() => {
+        console.log("偵測到前台閒置超過 30 秒，自動結算報告...");
+        handleExit(true);
+      }, 30 * 1000); // 30 秒測試用
+    };
+
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
         hiddenTimestampRef.current = Date.now();
-        console.log("偵測到用戶離開，開始 5 分鐘倒數結算報告...");
+        console.log("偵測到用戶離開，開始 30 秒倒數結算報告...");
 
         exitTimerRef.current = setTimeout(() => {
           handleExit(true);
@@ -185,16 +195,22 @@ export default function Viewer() {
       }
     };
 
+    const userActions = ['mousemove', 'scroll', 'touchstart', 'click'];
+    userActions.forEach(e => window.addEventListener(e, resetFgTimer));
+
     window.addEventListener('beforeunload', () => handleExit());
     window.addEventListener('pagehide', () => handleExit());
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
+    resetFgTimer(); // 啟動初始前台計時
+
     return () => {
+      userActions.forEach(e => window.removeEventListener(e, resetFgTimer));
       window.removeEventListener('beforeunload', () => handleExit());
       window.removeEventListener('pagehide', () => handleExit());
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
-      // Removed the unmount trigger to avoid duplicate or premature triggers during React strict mode rewrites 
+      if (fgTimer) clearTimeout(fgTimer);
     };
   }, [fileId, clientName, reportName]);
 
