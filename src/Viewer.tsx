@@ -33,6 +33,7 @@ export default function Viewer() {
   const [showDisclaimer, setShowDisclaimer] = useState(true);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isLiquidMode, setIsLiquidMode] = useState(false);
+  const [isClosed, setIsClosed] = useState(false);
 
   // 1. Unified Fullscreen Control (with native & software fallback)
   const toggleFullscreen = async () => {
@@ -353,6 +354,39 @@ export default function Viewer() {
 
   const downloadUrl = pdfUrl;
 
+  // Safe Exit Fallback Screen (for Safari/Chrome that block tab closing)
+  if (isClosed) {
+    return (
+      <div className={`min-h-screen flex flex-col items-center justify-center font-sans ${isDarkMode ? 'bg-[#121212]' : 'bg-[#F9FAFB]'}`}>
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className={`p-8 rounded-2xl max-w-sm mx-4 w-full text-center shadow-2xl border ${isDarkMode ? 'bg-slate-900 border-slate-800 shadow-black/50' : 'bg-white border-slate-100 shadow-slate-200/50'}`}
+        >
+          <div className="w-16 h-16 bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 rounded-full flex items-center justify-center mx-auto mb-6">
+            <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <h2 className={`text-xl font-bold mb-3 ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>閱覽已安全結束</h2>
+          <p className={`text-sm leading-relaxed mb-8 ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+            為保障您的資訊安全，文件實體已被銷毀。<br /><br />
+            (若視窗無法自動關閉，請滑動關閉此 Safari/Chrome 分頁)
+          </p>
+          <button
+            onClick={() => {
+              window.open('', '_self');
+              window.close();
+            }}
+            className={`w-full font-medium py-3 px-4 rounded-xl transition-colors text-sm ${isDarkMode ? 'bg-slate-800 hover:bg-slate-700 text-slate-300' : 'bg-slate-50 hover:bg-slate-100 text-slate-600'}`}
+          >
+            強制關閉
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
     <div className={`min-h-screen flex flex-col font-sans transition-colors duration-300 ${isDarkMode ? 'bg-[#121212] text-slate-300' : 'bg-[#F9FAFB] text-slate-900'}`}>
       {/* Disclaimer Modal */}
@@ -413,16 +447,22 @@ export default function Viewer() {
                   return;
                 }
 
-                // 2. Aggressive normal browser close
+                // 2. Clear Document immediately for security and show fallback UI
+                setIsClosed(true);
+
+                // 3. Desktop / Permissive browser close
+                window.opener = null;
                 window.open('', '_self');
                 window.close();
 
-                // 3. Fallback for browsers that block window.close()
-                setTimeout(() => {
-                  window.location.href = "about:blank";
-                }, 100);
+                // 4. iOS Safari / Chrome history fallback hack (won't close tab, but exits page)
+                if (window.history.length > 1) {
+                  setTimeout(() => {
+                    window.history.back();
+                  }, 150);
+                }
               } catch (e) {
-                window.location.href = "about:blank";
+                console.warn('Tab close blocked by browser');
               }
             }}
             className={`p-1.5 sm:p-2 rounded-full transition-all ${isDarkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}
