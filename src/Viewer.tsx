@@ -30,6 +30,7 @@ export default function Viewer() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isWindowFocused, setIsWindowFocused] = useState(true);
   const [isScreenshotting, setIsScreenshotting] = useState(false);
+  const [showDisclaimer, setShowDisclaimer] = useState(true);
 
   // Tracking refs
   const startTimeRef = useRef(Date.now());
@@ -298,6 +299,48 @@ export default function Viewer() {
 
   return (
     <div className="min-h-screen bg-[#F9FAFB] flex flex-col font-sans text-slate-900">
+      {/* Disclaimer Modal */}
+      {showDisclaimer && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100"
+          >
+            <div className="px-6 py-8 sm:p-8">
+              <div className="w-12 h-12 bg-amber-50 rounded-full flex items-center justify-center mb-5 border border-amber-100/50">
+                <span className="text-xl">✨</span>
+              </div>
+
+              <h2 className="text-lg font-bold text-slate-900 mb-4 tracking-tight">專屬閱讀與免責提示</h2>
+
+              <div className="space-y-4 text-[15px] sm:text-sm text-slate-600 leading-relaxed mb-8">
+                <p>為持續提升您的服務體驗，本系統會根據您的閱讀偏好，為您智能篩選專屬的市場資訊。</p>
+                <div className="p-3.5 bg-slate-50 rounded-xl text-slate-500 text-xs sm:text-sm border border-slate-100">
+                  <strong className="text-red-800/80 font-semibold mb-1 flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> 請注意</strong>
+                  本系統推送之所有內容僅供資訊參考，不構成任何投資邀約或建議。
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row-reverse items-center gap-3">
+                <button
+                  onClick={() => setShowDisclaimer(false)}
+                  className="w-full sm:w-auto flex-1 bg-gradient-to-r from-blue-900 to-blue-950 text-white font-medium py-3 px-5 rounded-xl hover:from-blue-800 hover:to-blue-900 transition-all shadow-md shadow-blue-900/20 active:scale-[0.98]"
+                >
+                  明白並繼續
+                </button>
+                <button
+                  onClick={() => alert('私隱與免責條款：\n\n本系統會以匿名方式追蹤系統互動以提升服務質素。所有市場分析與數據僅供資訊參考，不構成任何形式的投資建議、邀約或指導。閣下在作出任何投資決定前，應獨立評估相關風險，並考慮尋求專業意見。投資涉及風險，證券價格可升可跌。')}
+                  className="w-full sm:w-auto text-xs font-medium text-slate-500 hover:text-slate-800 py-3 px-4 rounded-xl hover:bg-slate-50 transition-colors"
+                >
+                  了解私隱與免責詳情
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
       {/* Professional Header */}
       <header className="bg-white/95 backdrop-blur-md border-b border-slate-100 shadow-[0_4px_20px_rgba(0,0,0,0.03)] h-14 sm:h-16 flex items-center justify-between px-3 sm:px-6 fixed top-0 w-full z-50 transition-all">
         {/* Top subtle gold line for premium feel */}
