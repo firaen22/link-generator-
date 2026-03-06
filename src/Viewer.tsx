@@ -34,6 +34,18 @@ export default function Viewer() {
   const [isLiquidMode, setIsLiquidMode] = useState(false);
   const [isClosed, setIsClosed] = useState(false);
 
+  // Expose exit handler for manual closing
+  const handleExitRef = useRef<(() => void) | null>(null);
+
+  const handleManualClose = () => {
+    if (handleExitRef.current) handleExitRef.current();
+    setIsClosed(true);
+    // 延遲一點點確保存檔後嘗試自動關閉分頁
+    setTimeout(() => {
+      window.close();
+    }, 300);
+  };
+
   // 1. Unified Fullscreen Control (with native & software fallback)
   const toggleFullscreen = async () => {
     try {
@@ -167,6 +179,8 @@ export default function Viewer() {
         }
       }
     };
+
+    handleExitRef.current = handleExit;
 
     window.addEventListener('beforeunload', () => handleExit());
     window.addEventListener('pagehide', () => handleExit());
@@ -535,7 +549,7 @@ export default function Viewer() {
             }
           `}</style>
         )}
-        <div className="w-full max-w-6xl flex justify-center">
+        <div className="w-full max-w-6xl flex flex-col items-center pb-32">
           <Document
             file={pdfUrl}
             onLoadSuccess={onDocumentLoadSuccess}
@@ -611,6 +625,24 @@ export default function Viewer() {
               </motion.div>
             </AnimatePresence>
           </Document>
+
+          {/* Manual Close Button underneath document */}
+          {numPages && (
+            <div className="mt-8 mb-8 w-full flex justify-center">
+              <button
+                onClick={handleManualClose}
+                className={`flex items-center gap-2 px-6 py-3.5 rounded-2xl font-medium transition-all shadow-lg hover:shadow-xl active:scale-95 border ${isDarkMode
+                    ? 'bg-slate-800 text-slate-300 hover:bg-slate-700 border-slate-700 shadow-black/40'
+                    : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-200/80 shadow-slate-200/50'
+                  }`}
+              >
+                <div className="bg-red-500/10 p-1.5 rounded-full">
+                  <X className="w-5 h-5 text-red-500" />
+                </div>
+                安全結束並關閉報告
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Floating AI Pacing / Reading Target Tag */}
