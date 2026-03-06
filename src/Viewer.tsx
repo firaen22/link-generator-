@@ -3,7 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { Document, Page, pdfjs } from 'react-pdf';
 import {
   ChevronLeft, ChevronRight, Clock, Eye, AlertCircle,
-  ZoomIn, ZoomOut, Maximize, Minimize, Download, FileText, Moon, Sun, LayoutPanelTop
+  ZoomIn, ZoomOut, Maximize, Minimize, Download, FileText, Moon, Sun, LayoutPanelTop, X
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -360,8 +360,24 @@ export default function Viewer() {
         {/* Top subtle gold line for premium feel */}
         <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-amber-300 via-amber-400 to-amber-300"></div>
 
-        {/* Left: Report Details */}
-        <div className="flex items-center gap-4">
+        {/* Left: Close & Report Details */}
+        <div className="flex items-center gap-3 sm:gap-4">
+          <button
+            onClick={() => {
+              if (window.history.length > 1) {
+                window.history.back();
+              } else {
+                window.close();
+                // Fallback for browsers that don't allow window.close() on non-script-opened tabs
+                setTimeout(() => window.location.href = "about:blank", 100);
+              }
+            }}
+            className={`p-1.5 sm:p-2 rounded-full transition-all ${isDarkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}
+            title="關閉報告"
+          >
+            <X className="w-5 h-5 sm:w-6 sm:h-6" />
+          </button>
+
           <div className="flex flex-col">
             <h1 className={`text-xs sm:text-sm font-bold leading-tight truncate max-w-[140px] sm:max-w-xs ${isDarkMode ? 'text-slate-100' : 'text-blue-950'}`}>{reportName}</h1>
             <span className="text-[9px] sm:text-xs text-amber-500/90 font-medium truncate max-w-[140px] sm:max-w-xs uppercase tracking-wider">
