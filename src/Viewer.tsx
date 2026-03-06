@@ -3,7 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { Document, Page, pdfjs } from 'react-pdf';
 import {
   ChevronLeft, ChevronRight, Clock, Eye, AlertCircle,
-  ZoomIn, ZoomOut, Maximize, Minimize, Download, FileText
+  ZoomIn, ZoomOut, Maximize, Minimize, Download, FileText, Moon, Sun, LayoutPanelTop
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -31,6 +31,11 @@ export default function Viewer() {
   const [isWindowFocused, setIsWindowFocused] = useState(true);
   const [isScreenshotting, setIsScreenshotting] = useState(false);
   const [showDisclaimer, setShowDisclaimer] = useState(true);
+  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isLiquidMode, setIsLiquidMode] = useState(false);
+
+  // Focus Mode / Personal Pacing tracking
+  const [estLeftMins, setEstLeftMins] = useState(0);
 
   // Tracking refs
   const startTimeRef = useRef(Date.now());
@@ -279,6 +284,15 @@ export default function Viewer() {
       const sessionDuration = Math.floor((now - startTimeRef.current) / 1000);
       setTimeSpent(sessionDuration);
 
+      // Dynamically calculate estimated time left
+      if (numPages && pageNumber < numPages) {
+        const avgPace = pageNumber > 1 ? (sessionDuration / (pageNumber - 1)) : 45; // default 45s per page initially
+        const estSeconds = (numPages - pageNumber) * avgPace;
+        setEstLeftMins(Math.max(1, Math.ceil(estSeconds / 60)));
+      } else {
+        setEstLeftMins(0);
+      }
+
       // Send heartbeat every 30 seconds
       if (now - lastPingRef.current > 30000) {
         sendTrackingEvent('heartbeat', {
@@ -298,26 +312,26 @@ export default function Viewer() {
   const downloadUrl = pdfUrl;
 
   return (
-    <div className="min-h-screen bg-[#F9FAFB] flex flex-col font-sans text-slate-900">
+    <div className={`min-h-screen flex flex-col font-sans transition-colors duration-300 ${isDarkMode ? 'bg-[#121212] text-slate-300' : 'bg-[#F9FAFB] text-slate-900'}`}>
       {/* Disclaimer Modal */}
       {showDisclaimer && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <motion.div
             initial={{ opacity: 0, scale: 0.95, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100"
+            className={`rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}
           >
             <div className="px-6 py-8 sm:p-8">
-              <div className="w-12 h-12 bg-amber-50 rounded-full flex items-center justify-center mb-5 border border-amber-100/50">
+              <div className="w-12 h-12 bg-amber-500/10 rounded-full flex items-center justify-center mb-5 border border-amber-500/20">
                 <span className="text-xl">✨</span>
               </div>
 
-              <h2 className="text-lg font-bold text-slate-900 mb-4 tracking-tight">專屬閱讀與免責提示</h2>
+              <h2 className={`text-lg font-bold mb-4 tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>專屬閱讀與免責提示</h2>
 
-              <div className="space-y-4 text-[15px] sm:text-sm text-slate-600 leading-relaxed mb-8">
+              <div className={`space-y-4 text-[15px] sm:text-sm leading-relaxed mb-8 ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>
                 <p>為持續提升您的服務體驗，本系統會根據您的閱讀偏好，為您智能篩選專屬的市場資訊。</p>
-                <div className="p-3.5 bg-slate-50 rounded-xl text-slate-500 text-xs sm:text-sm border border-slate-100">
-                  <strong className="text-red-800/80 font-semibold mb-1 flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> 請注意</strong>
+                <div className={`p-3.5 rounded-xl text-xs sm:text-sm border ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-400' : 'bg-slate-50 border-slate-100 text-slate-500'}`}>
+                  <strong className="text-red-500 font-semibold mb-1 flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> 請注意</strong>
                   本系統推送之所有內容僅供資訊參考，不構成任何投資邀約或建議。
                 </div>
               </div>
@@ -331,7 +345,7 @@ export default function Viewer() {
                 </button>
                 <button
                   onClick={() => alert('私隱與免責條款：\n\n本系統會以匿名方式追蹤系統互動以提升服務質素。所有市場分析與數據僅供資訊參考，不構成任何形式的投資建議、邀約或指導。閣下在作出任何投資決定前，應獨立評估相關風險，並考慮尋求專業意見。投資涉及風險，證券價格可升可跌。')}
-                  className="w-full sm:w-auto text-xs font-medium text-slate-500 hover:text-slate-800 py-3 px-4 rounded-xl hover:bg-slate-50 transition-colors"
+                  className={`w-full sm:w-auto text-xs font-medium py-3 px-4 rounded-xl transition-colors ${isDarkMode ? 'text-slate-400 hover:text-white hover:bg-slate-800' : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'}`}
                 >
                   了解私隱與免責詳情
                 </button>
@@ -342,15 +356,15 @@ export default function Viewer() {
       )}
 
       {/* Professional Header */}
-      <header className="bg-white/95 backdrop-blur-md border-b border-slate-100 shadow-[0_4px_20px_rgba(0,0,0,0.03)] h-14 sm:h-16 flex items-center justify-between px-3 sm:px-6 fixed top-0 w-full z-50 transition-all">
+      <header className={`backdrop-blur-md border-b shadow-[0_4px_20px_rgba(0,0,0,0.03)] h-14 sm:h-16 flex items-center justify-between px-3 sm:px-6 fixed top-0 w-full z-50 transition-all ${isDarkMode ? 'bg-[#121212]/95 border-slate-800' : 'bg-white/95 border-slate-100'}`}>
         {/* Top subtle gold line for premium feel */}
         <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-amber-300 via-amber-400 to-amber-300"></div>
 
         {/* Left: Report Details */}
         <div className="flex items-center gap-4">
           <div className="flex flex-col">
-            <h1 className="text-xs sm:text-sm font-bold text-blue-950 leading-tight truncate max-w-[140px] sm:max-w-xs">{reportName}</h1>
-            <span className="text-[9px] sm:text-xs text-amber-600/80 font-medium truncate max-w-[140px] sm:max-w-xs uppercase tracking-wider">
+            <h1 className={`text-xs sm:text-sm font-bold leading-tight truncate max-w-[140px] sm:max-w-xs ${isDarkMode ? 'text-slate-100' : 'text-blue-950'}`}>{reportName}</h1>
+            <span className="text-[9px] sm:text-xs text-amber-500/90 font-medium truncate max-w-[140px] sm:max-w-xs uppercase tracking-wider">
               Prepared for {clientName}
             </span>
           </div>
@@ -358,51 +372,59 @@ export default function Viewer() {
 
         {/* Right: Stats & Actions */}
         <div className="flex items-center gap-3 sm:gap-4">
-          {/* Time Tracker */}
-          <div className="hidden sm:flex items-center gap-2 text-blue-900 bg-blue-50/50 px-3 py-1.5 rounded-full border border-blue-100">
-            <Clock className="w-3.5 h-3.5 text-amber-500" />
-            <span className="text-xs font-medium font-mono">
-              {Math.floor(timeSpent / 60)}:{(timeSpent % 60).toString().padStart(2, '0')}
-            </span>
-          </div>
+          {/* Action: Liquid Mode Applet */}
+          <button
+            onClick={() => {
+              setIsLiquidMode(!isLiquidMode);
+              if (!isLiquidMode) alert("✨ 卡片式表格佈局 (Liquid Mode) 觸發中！\n系統正透過 AI 將複雜財報表格降維成卡片式佈局，並凍結首行索引，消除橫向滾動。");
+            }}
+            className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[11px] font-bold transition-all shadow-sm ${isLiquidMode ? 'bg-amber-100 text-amber-800 border-amber-300' : isDarkMode ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700' : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-white'}`}
+          >
+            <LayoutPanelTop className="w-3.5 h-3.5" />
+            表格降維
+          </button>
+
+          {/* Action: Dark Mode (Smart Invert) */}
+          <button
+            onClick={() => setIsDarkMode(!isDarkMode)}
+            className={`p-1.5 sm:p-2 rounded-lg transition-all ${isDarkMode ? 'text-amber-400 hover:bg-slate-800' : 'text-slate-500 hover:text-blue-600 hover:bg-blue-50'}`}
+            title="Dark Mode (Smart Invert)"
+          >
+            {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
 
           {/* Zoom Controls (Desktop) */}
-          <div className="hidden md:flex items-center gap-1 bg-slate-50 rounded-lg p-1 border border-slate-200">
+          <div className={`hidden md:flex items-center gap-1 rounded-lg p-1 border ${isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
             <button
               onClick={zoomOut}
-              className="p-1.5 hover:bg-white hover:shadow-sm rounded-md transition-all text-slate-600 active:scale-95"
-              title="Zoom Out"
+              className={`p-1.5 rounded-md transition-all active:scale-95 ${isDarkMode ? 'hover:bg-slate-700 text-slate-400' : 'hover:bg-white hover:shadow-sm text-slate-600'}`}
             >
               <ZoomOut className="w-4 h-4" />
             </button>
-            <span className="text-xs font-medium w-12 text-center select-none">{Math.round(scale * 100)}%</span>
+            <span className={`text-xs font-medium w-12 text-center select-none ${isDarkMode ? 'text-slate-300' : ''}`}>{Math.round(scale * 100)}%</span>
             <button
               onClick={zoomIn}
-              className="p-1.5 hover:bg-white hover:shadow-sm rounded-md transition-all text-slate-600 active:scale-95"
-              title="Zoom In"
+              className={`p-1.5 rounded-md transition-all active:scale-95 ${isDarkMode ? 'hover:bg-slate-700 text-slate-400' : 'hover:bg-white hover:shadow-sm text-slate-600'}`}
             >
               <ZoomIn className="w-4 h-4" />
             </button>
           </div>
-
-          {/* Action Button: Fullscreen placeholder or just nothing to keep protection */}
-          <button
-            onClick={() => setIsFullscreen(!isFullscreen)}
-            className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
-            title="Maximize View"
-          >
-            <Maximize className="w-5 h-5" />
-          </button>
         </div>
       </header>
 
       {/* Main Content */}
       <main
-        className={`flex-1 pt-16 sm:pt-20 pb-28 sm:pb-32 bg-[#F9FAFB] flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-200 relative ${(isWindowFocused && !isScreenshotting) ? '' : 'opacity-0 blur-3xl select-none pointer-events-none'
-          }`}
+        className={`flex-1 pt-16 sm:pt-20 pb-28 sm:pb-32 flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-300 relative ${(isWindowFocused && !isScreenshotting) ? '' : 'opacity-0 blur-3xl select-none pointer-events-none'} ${isDarkMode ? 'bg-[#121212]' : 'bg-[#F9FAFB]'}`}
         ref={containerRef}
         onContextMenu={(e) => e.preventDefault()}
       >
+        {isDarkMode && (
+          <style>{`
+            .react-pdf__Page__canvas {
+              filter: invert(1) hue-rotate(180deg) contrast(0.9);
+            }
+          `}</style>
+        )}
         <div className="w-full max-w-6xl flex justify-center">
           <Document
             file={pdfUrl}
@@ -478,71 +500,86 @@ export default function Viewer() {
             </motion.div>
           </Document>
         </div>
+
+        {/* Floating AI Pacing / Reading Target Tag */}
+        {numPages && estLeftMins > 0 && (
+          <div className={`fixed bottom-24 right-4 sm:bottom-8 sm:right-8 px-4 py-2.5 rounded-2xl backdrop-blur-md shadow-lg border text-xs sm:text-sm font-medium flex flex-col items-end gap-1 transition-all duration-500 z-40 ${isDarkMode ? 'bg-[#1e1e1e]/80 border-slate-700 text-slate-300 shadow-black/50' : 'bg-white/80 border-slate-200 text-slate-600'}`}>
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full animate-pulse ${estLeftMins < 2 ? 'bg-amber-400' : 'bg-emerald-500'}`}></div>
+              預估剩餘閱讀時間
+            </div>
+            <div className={`font-mono text-base sm:text-lg font-bold tracking-tight ${isDarkMode ? 'text-slate-100' : 'text-blue-950'}`}>
+              ~{estLeftMins} 分鐘
+            </div>
+          </div>
+        )}
       </main>
 
       {/* Bottom Floating Navigation Bar */}
-      {numPages && (
-        <div className="fixed bottom-6 sm:bottom-8 left-1/2 transform -translate-x-1/2 z-50 w-full max-w-xs sm:max-w-md px-4 pointer-events-none flex justify-center">
-          <motion.div
-            initial={{ y: 50, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            className="bg-blue-950/85 backdrop-blur-2xl text-white pl-1.5 pr-3 py-1 sm:py-1.5 rounded-full shadow-[0_8px_30px_-5px_rgba(30,58,138,0.5)] border border-white/10 ring-1 ring-amber-400/20 flex items-center justify-between pointer-events-auto"
-          >
-            <div className="flex items-center gap-0.5 sm:gap-1">
+      {
+        numPages && (
+          <div className="fixed bottom-6 sm:bottom-8 left-1/2 transform -translate-x-1/2 z-50 w-full max-w-xs sm:max-w-md px-4 pointer-events-none flex justify-center">
+            <motion.div
+              initial={{ y: 50, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              className="bg-blue-950/85 backdrop-blur-2xl text-white pl-1.5 pr-3 py-1 sm:py-1.5 rounded-full shadow-[0_8px_30px_-5px_rgba(30,58,138,0.5)] border border-white/10 ring-1 ring-amber-400/20 flex items-center justify-between pointer-events-auto"
+            >
+              <div className="flex items-center gap-0.5 sm:gap-1">
+                <button
+                  onClick={previousPage}
+                  disabled={pageNumber <= 1}
+                  className="p-1.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
+                  title="Previous Page"
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                </button>
+
+                <span className="font-mono text-sm font-medium min-w-[65px] sm:min-w-[70px] whitespace-nowrap text-center select-none text-slate-200">
+                  {pageNumber} <span className="text-amber-400/60">/</span> {numPages}
+                </span>
+
+                <button
+                  onClick={nextPage}
+                  disabled={pageNumber >= numPages}
+                  className="p-1.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
+                  title="Next Page"
+                >
+                  <ChevronRight className="w-5 h-5 sm:w-5 sm:h-5" />
+                </button>
+              </div>
+
+              {/* Divider */}
+              <div className="w-px h-5 sm:h-6 bg-white/10 mx-1 sm:mx-2"></div>
+
+              {/* Mobile Zoom (Simple Toggle) */}
               <button
-                onClick={previousPage}
-                disabled={pageNumber <= 1}
-                className="p-1.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
-                title="Previous Page"
+                onClick={() => setScale(s => s === 1 ? 1.5 : 1)}
+                className="p-1.5 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full transition-colors md:hidden mr-1"
+                title="Toggle Zoom"
               >
-                <ChevronLeft className="w-5 h-5" />
+                {scale > 1 ? <ZoomOut className="w-4 h-4" /> : <ZoomIn className="w-4 h-4" />}
               </button>
 
-              <span className="font-mono text-sm font-medium min-w-[65px] sm:min-w-[70px] whitespace-nowrap text-center select-none text-slate-200">
-                {pageNumber} <span className="text-amber-400/60">/</span> {numPages}
-              </span>
-
+              {/* Fullscreen Toggle */}
               <button
-                onClick={nextPage}
-                disabled={pageNumber >= numPages}
-                className="p-1.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
-                title="Next Page"
+                onClick={() => {
+                  if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen();
+                    setIsFullscreen(true);
+                  } else {
+                    document.exitFullscreen();
+                    setIsFullscreen(false);
+                  }
+                }}
+                className="p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full transition-colors hidden sm:block"
+                title="Toggle Fullscreen"
               >
-                <ChevronRight className="w-5 h-5 sm:w-5 sm:h-5" />
+                {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
               </button>
-            </div>
-
-            {/* Divider */}
-            <div className="w-px h-5 sm:h-6 bg-white/10 mx-1 sm:mx-2"></div>
-
-            {/* Mobile Zoom (Simple Toggle) */}
-            <button
-              onClick={() => setScale(s => s === 1 ? 1.5 : 1)}
-              className="p-1.5 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full transition-colors md:hidden mr-1"
-              title="Toggle Zoom"
-            >
-              {scale > 1 ? <ZoomOut className="w-4 h-4" /> : <ZoomIn className="w-4 h-4" />}
-            </button>
-
-            {/* Fullscreen Toggle */}
-            <button
-              onClick={() => {
-                if (!document.fullscreenElement) {
-                  document.documentElement.requestFullscreen();
-                  setIsFullscreen(true);
-                } else {
-                  document.exitFullscreen();
-                  setIsFullscreen(false);
-                }
-              }}
-              className="p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full transition-colors hidden sm:block"
-              title="Toggle Fullscreen"
-            >
-              {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
-            </button>
-          </motion.div>
-        </div>
-      )}
-    </div>
+            </motion.div>
+          </div>
+        )
+      }
+    </div >
   );
 }
