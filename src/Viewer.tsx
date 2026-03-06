@@ -22,7 +22,6 @@ export default function Viewer() {
 
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
-  const notifiedMilestones = useRef<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
   const [timeSpent, setTimeSpent] = useState(0);
   const [scale, setScale] = useState(1.0);
@@ -92,6 +91,7 @@ export default function Viewer() {
   const pageEnterTimeRef = useRef(Date.now());
   const hasSentSessionEndRef = useRef(false);
   const scaleRef = useRef(1.0);
+  const exitTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => { scaleRef.current = scale; }, [scale]);
 
@@ -110,7 +110,6 @@ export default function Viewer() {
   useEffect(() => {
     const handleExit = () => {
       if (hasSentSessionEndRef.current) return;
-      hasSentSessionEndRef.current = true;
 
       const durationMs = Date.now() - pageEnterTimeRef.current;
       updateSessionData(currentPageRef.current, durationMs, scaleRef.current);
@@ -120,12 +119,15 @@ export default function Viewer() {
       // Only send if they were here for at least some minimum seconds, or just send always.
       if (totalActiveTime < 1) return;
 
+      hasSentSessionEndRef.current = true;
+
       const payload = {
         event: 'session_end',
         file_id: fileId,
         client_name: clientName,
         report_name: reportName,
         total_duration_sec: totalActiveTime,
+        total_pages: numPages,
         pages_data: sessionDataRef.current,
         timestamp: new Date().toISOString()
       };
@@ -143,18 +145,30 @@ export default function Viewer() {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
-        // We do not immediately trigger handleExit on hidden, because they might be just switching apps
-        // but since we want to capture everything before mobile browser kills us, iOS needs this.
-        // For accurate single-report we will do it on 'pagehide'.
+        // --- 進入 5 分鐘凍結倒數 ---
+        console.log("偵測到用戶離開，開始 5 分鐘倒數結算報告...");
+        exitTimerRef.current = setTimeout(() => {
+          handleExit();
+        }, 5 * 60 * 1000); // 5 分鐘
+      } else if (document.visibilityState === 'visible') {
+        // --- 用戶在 5 分鐘內回來了，取消倒數 ---
+        if (exitTimerRef.current) {
+          console.log("用戶在時限內返回，取消報告結算。");
+          clearTimeout(exitTimerRef.current);
+          exitTimerRef.current = null;
+        }
       }
     };
 
     window.addEventListener('beforeunload', handleExit);
     window.addEventListener('pagehide', handleExit);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('beforeunload', handleExit);
       window.removeEventListener('pagehide', handleExit);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
       // Removed the unmount trigger to avoid duplicate or premature triggers during React strict mode rewrites 
     };
   }, [fileId, clientName, reportName]);
@@ -283,27 +297,9 @@ export default function Viewer() {
     });
   }
 
-  // Track page views and milestones when pageNumber changes
+  // Track page views when pageNumber changes
   useEffect(() => {
     if (!loading && numPages) {
-      const progress = Math.round((pageNumber / numPages) * 100);
-      const milestones = [50, 80, 100];
-
-      // Find highest milestone reached but not yet notified
-      const currentMilestone = milestones
-        .filter(m => progress >= m && !notifiedMilestones.current.has(m))
-        .pop();
-
-      if (currentMilestone) {
-        notifiedMilestones.current.add(currentMilestone);
-
-        sendTrackingEvent('milestone', {
-          progress: currentMilestone,
-          current_page: pageNumber,
-          total_pages: numPages
-        });
-      }
-
       sendTrackingEvent('page_view', { page: pageNumber });
     }
   }, [pageNumber, loading, numPages]);

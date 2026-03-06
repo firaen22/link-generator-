@@ -237,17 +237,6 @@ app.post("/api/track", async (req, res) => {
     if (event === 'open') {
       const totalPages = req.body.total_pages || "未知";
       text = `🔔 <b>報告已開啟</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📑 <b>總頁數：</b> ${totalPages}\n🔗 <b>ID：</b> ${file_id}`;
-    } else if (event === 'milestone') {
-      const { progress, current_page, total_pages } = req.body;
-      let icon = "📊";
-      if (progress === 50) icon = "🌗";
-      if (progress === 80) icon = "🌖";
-      if (progress === 100) icon = "✅";
-
-      text = `${icon} <b>閱讀進度：${progress}%</b>\n\n` +
-        `👤 <b>客戶：</b> ${client_name}\n` +
-        `📄 <b>報告：</b> ${report_name}\n` +
-        `📍 <b>位置：</b> 第 ${current_page} / ${total_pages || '?'} 頁`;
     } else if (event === 'security_alert') {
       const { type } = req.body;
       let actionDesc = '截圖報告';
@@ -289,15 +278,19 @@ app.post("/api/track", async (req, res) => {
 
 // AI-Powered Session Analysis Endpoint
 app.post("/api/session-end", async (req, res) => {
-  const { event, file_id, client_name, report_name, total_duration_sec, pages_data } = req.body;
+  const { event, file_id, client_name, report_name, total_duration_sec, total_pages, pages_data } = req.body;
 
   if (event !== 'session_end') return res.json({ status: "ignored" });
 
-  console.log(`[SESSION END] ${client_name} | ${report_name} | ${total_duration_sec}s`);
+  console.log(`[SESSION END] ${client_name} | ${report_name} | ${total_duration_sec}s | Pages: ${total_pages}`);
 
   if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
     return res.json({ status: "skipped" });
   }
+
+  const maxReachedPage = pages_data && Object.keys(pages_data).length > 0
+    ? Math.max(...Object.keys(pages_data).map(Number))
+    : 1;
 
   const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
   let text = "";
@@ -316,7 +309,8 @@ app.post("/api/session-end", async (req, res) => {
 1. 客戶姓名：${client_name}
 2. 報告名稱：${report_name}
 3. 閱讀總歷時：${total_duration_sec} 秒
-4. 逐頁行為矩陣（Page-Level Biometrics）：
+4. 閱讀進度：讀到第 ${maxReachedPage} / ${total_pages || '?'} 頁
+5. 逐頁行為矩陣（Page-Level Biometrics）：
 ${behaviorSummary}
 
 🧠 分析指令：請從以下維度進行深度解碼，並嚴格遵循 HTML 格式輸出（使用 <b> 標籤，不含 Markdown）：
@@ -372,17 +366,18 @@ ${behaviorSummary}
 
       text = `🎯 <b>【Antigravity 實時偵測 - 銷售機遇導航】</b>\n\n` +
         `👤 <b>客戶：</b> ${client_name}\n` +
-        `📄 <b>觸發場景：</b> 正在閱讀《${report_name}》\n\n` +
+        `📄 <b>觸發場景：</b> 正在閱讀《${report_name}》\n` +
+        `📖 <b>閱讀進度：</b> 讀到第 ${maxReachedPage} / ${total_pages || '?'} 頁\n\n` +
         aiInsights;
 
     } catch (err) {
       console.error("[GEMINI ERROR]", err);
       // Fallback if AI fails (e.g. Rate limit, wrong key)
-      text = `📊 <b>閱讀結算 (無 AI 分析)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n⏱️ <b>總歷時：</b> ${total_duration_sec} 秒`;
+      text = `📊 <b>閱讀結算 (無 AI 分析)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📖 <b>閱讀進度：</b> 讀到第 ${maxReachedPage} / ${total_pages || '?'} 頁\n⏱️ <b>總歷時：</b> ${total_duration_sec} 秒`;
     }
   } else {
     // Basic fallback if no API key is provided
-    text = `📊 <b>閱讀結算 (未設定 AI Key)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n⏱️ <b>總歷時：</b> ${total_duration_sec} 秒`;
+    text = `📊 <b>閱讀結算 (未設定 AI Key)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📖 <b>閱讀進度：</b> 讀到第 ${maxReachedPage} / ${total_pages || '?'} 頁\n⏱️ <b>總歷時：</b> ${total_duration_sec} 秒`;
   }
 
   // Send to Telegram
