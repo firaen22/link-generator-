@@ -455,8 +455,8 @@ export default function Viewer() {
       {/* Main Content - 專注模式下動態調整 Padding 與背景色 */}
       <main
         className={`flex-1 flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-500 ease-in-out relative ${isFullscreen
-            ? 'pt-4 sm:pt-6 bg-slate-900' // 全螢幕：極小頂部留白 + 沉浸式深色背景
-            : `pt-16 sm:pt-20 ${isDarkMode ? 'bg-[#121212]' : 'bg-[#F9FAFB]'}` // 正常：預留 Header 空間 + 使用者選的深淺色背景
+          ? 'pt-4 sm:pt-6 bg-slate-900' // 全螢幕：極小頂部留白 + 沉浸式深色背景
+          : `pt-16 sm:pt-20 ${isDarkMode ? 'bg-[#121212]' : 'bg-[#F9FAFB]'}` // 正常：預留 Header 空間 + 使用者選的深淺色背景
           } ${(isWindowFocused && !isScreenshotting)
             ? ''
             : 'opacity-0 blur-3xl select-none pointer-events-none' // 資安防護
@@ -611,7 +611,7 @@ export default function Viewer() {
               {/* Fullscreen Toggle */}
               <button
                 onClick={toggleFullscreen}
-                className="p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full transition-colors hidden sm:block"
+                className="p-1.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full transition-colors block"
                 title={isFullscreen ? "Exit Fullscreen" : "Maximize View"}
               >
                 {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
