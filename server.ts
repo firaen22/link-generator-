@@ -309,33 +309,34 @@ app.post("/api/session-end", async (req, res) => {
         return `第 ${page} 頁: 停留 ${Math.round(data.dwellMs / 1000)} 秒, 最大縮放 ${data.maxScale.toFixed(1)}x`;
       }).join('\n');
 
-      const prompt = `你是「大蓄 (Wealth OS)」系統內核的 AI 分析引擎 Antigravity。你的任務是接收客戶在 PDF 閱讀器中的物理微互動數據，極速進行語義轉譯與心理診斷，生成一份專供前線理財顧問在 Telegram 閱讀的「高價值銷售導航情報」。
+      const prompt = `你是金融科技系統內核的 AI 分析引擎「Antigravity」。你的任務是接收來自客戶邊緣設備（Edge Device）的高階「被動觸控物理指標」，並結合「Deep Search 市場深研數據」，進行即時的行為財務學解碼。你必須將這些冰冷的數據，轉化為一份專供前線理財顧問在 Telegram 上快速閱讀的「高價值銷售導航情報」。
 
 📥 輸入數據解析：
-1. Client_Info: ${client_name}
-2. Behavioral_Biometrics: 
+1. Client_Profile: ${client_name}
+2. Edge_Biometrics: 
    - 總歷時: ${total_duration_sec} 秒
-   - 頁面停頓與放大數據:
+   - 頁面停頓與放大數據 (Scroll_Decay_k, Pressure_Variance_Sigma2, Zoom_Intensity_M, Directional_Vector):
 ${behaviorSummary}
-3. Report_Name: ${report_name}
-4. App_State: 正常閱讀結束。
+3. Search_Intent: (無)
+4. Deep_Search_Context: (由你結合 ${report_name} 即時生成)
+5. App_State: 正常閱讀結束。
 
-請嚴格按照以下 HTML 標籤格式輸出（使用 <b> 標籤代替 Markdown 的 **，不要包含多餘的問候或 \`\`\`html 標籤。請勿包含最頂部的 Telegram Alert 標頭，只返回以下四個區塊）：
+請絕對精煉，摒棄任何廢話、問候語或自我介紹。直接輸出以下 HTML 標籤格式（使用 <b> 標籤代替 Markdown 的 **，不要包含多餘的 \`\`\`html 標籤），確保顧問能在 5 秒內抓到重點。必須使用香港金融慣用語（如：理專、回贈、派息、美股、保費融資、下行保護）。請勿包含最頂部的 Telegram Alert 標頭，只返回以下四個區塊：
 
-🧠 <b>心理與行為診斷：</b>
-- <b>標籤：</b> [ Emoji + 心理偏誤名稱 ]
-- <b>意圖速寫：</b> (一句話說明客戶當下在想什麼)
+🧠 <b>心理防線與行為診斷：</b>
+- <b>標籤：</b> [ Emoji + 心理偏誤/認知狀態 ]
+- <b>意圖解碼：</b> (用一句話說明客戶當下最真實的心理狀態)
+
+🔬 <b>微觀體徵與系統狀態：</b>
+- <b>物理訊號：</b> (精簡說明關鍵指標，如滑動急煞、縮放強度、壓力變異數)
+- <b>系統應對：</b> 偵測結束，已生成銷售導航。
 
 📊 <b>量化衝擊與 Deep Search 洞察：</b>
 - <b>Z-Score：</b> [數值] | <b>情緒分：</b> [數值] | <b>衝擊度：</b> [數值]/100
-- <b>市場研判：</b> (一句話結合報告主題進行市場研判)
+- <b>市場研判：</b> (一句話總結 Deep Search 結果，提供一個能擊中客戶痛點的最新動態)
 
-🔥 <b>微觀行為與系統狀態：</b>
-- ⚡ <b>行為：</b> (總結上述各頁面的互動重點)
-- 🛡️ <b>系統：</b> 偵測結束，已生成銷售導航。
-
-💡 <b>Speed Delivery 破冰建議 (Next-Best-Action)：</b>
-(提供一段可直接複製的 WhatsApp 繁體中文開場白段落，必須使用香港金融慣用語，針對其心理偏誤，提供精準對策。)`;
+💡 <b>Speed Delivery 破冰話術 (Next-Best-Action)：</b>
+(提供一段可直接複製發送的 WhatsApp/通話開場白。必須針對其心理偏誤提供精準對策！)`;
 
       const model = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
 
@@ -352,7 +353,7 @@ ${behaviorSummary}
 
       text = `🎯 <b>【Antigravity 實時偵測 - 銷售機遇導航】</b>\n\n` +
         `👤 <b>客戶：</b> ${client_name}\n` +
-        `📄 <b>場景：</b> 正在研讀《${report_name}》\n\n` +
+        `📄 <b>觸發場景：</b> 正在閱讀《${report_name}》\n\n` +
         aiInsights;
 
     } catch (err) {
