@@ -34,6 +34,30 @@ export default function Viewer() {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isLiquidMode, setIsLiquidMode] = useState(false);
 
+  // 1. Unified Fullscreen Control
+  const toggleFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      } else {
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        }
+      }
+    } catch (err) {
+      console.error("Fullscreen toggle error:", err);
+    }
+  };
+
+  // 2. Listen to native browser fullscreen changes (e.g. user pressing ESC)
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
   // Focus Mode / Personal Pacing tracking
   const [estLeftMins, setEstLeftMins] = useState(0);
 
@@ -355,8 +379,8 @@ export default function Viewer() {
         </div>
       )}
 
-      {/* Professional Header */}
-      <header className={`backdrop-blur-md border-b shadow-[0_4px_20px_rgba(0,0,0,0.03)] h-14 sm:h-16 flex items-center justify-between px-3 sm:px-6 fixed top-0 w-full z-50 transition-all ${isDarkMode ? 'bg-[#121212]/95 border-slate-800' : 'bg-white/95 border-slate-100'}`}>
+      {/* Professional Header - 專注模式下自動往上滑動隱藏 */}
+      <header className={`backdrop-blur-md border-b shadow-[0_4px_20px_rgba(0,0,0,0.03)] h-14 sm:h-16 flex items-center justify-between px-3 sm:px-6 fixed top-0 w-full z-50 transition-all duration-300 ease-in-out ${isFullscreen ? '-translate-y-full' : 'translate-y-0'} ${isDarkMode ? 'bg-[#121212]/95 border-slate-800' : 'bg-white/95 border-slate-100'}`}>
         {/* Top subtle gold line for premium feel */}
         <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-amber-300 via-amber-400 to-amber-300"></div>
 
@@ -428,9 +452,15 @@ export default function Viewer() {
         </div>
       </header>
 
-      {/* Main Content */}
+      {/* Main Content - 專注模式下動態調整 Padding 與背景色 */}
       <main
-        className={`flex-1 pt-16 sm:pt-20 pb-28 sm:pb-32 flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-300 relative ${(isWindowFocused && !isScreenshotting) ? '' : 'opacity-0 blur-3xl select-none pointer-events-none'} ${isDarkMode ? 'bg-[#121212]' : 'bg-[#F9FAFB]'}`}
+        className={`flex-1 flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-500 ease-in-out relative ${isFullscreen
+            ? 'pt-4 sm:pt-6 bg-slate-900' // 全螢幕：極小頂部留白 + 沉浸式深色背景
+            : `pt-16 sm:pt-20 ${isDarkMode ? 'bg-[#121212]' : 'bg-[#F9FAFB]'}` // 正常：預留 Header 空間 + 使用者選的深淺色背景
+          } ${(isWindowFocused && !isScreenshotting)
+            ? ''
+            : 'opacity-0 blur-3xl select-none pointer-events-none' // 資安防護
+          }`}
         ref={containerRef}
         onContextMenu={(e) => e.preventDefault()}
       >
@@ -580,17 +610,9 @@ export default function Viewer() {
 
               {/* Fullscreen Toggle */}
               <button
-                onClick={() => {
-                  if (!document.fullscreenElement) {
-                    document.documentElement.requestFullscreen();
-                    setIsFullscreen(true);
-                  } else {
-                    document.exitFullscreen();
-                    setIsFullscreen(false);
-                  }
-                }}
+                onClick={toggleFullscreen}
                 className="p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full transition-colors hidden sm:block"
-                title="Toggle Fullscreen"
+                title={isFullscreen ? "Exit Fullscreen" : "Maximize View"}
               >
                 {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
               </button>
