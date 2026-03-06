@@ -111,27 +111,19 @@ export default function Viewer() {
 
   // Dispatch final session payload
   useEffect(() => {
-    const handleExit = (isIdleTimeout = false) => {
+    const handleExit = () => {
+      // 若已發送，則跳過
       if (hasSentSessionEndRef.current) return;
 
       const now = Date.now();
-      let durationMs = now - pageEnterTimeRef.current;
-
-      // --- 新增：閒置補償邏輯 ---
-      if (isIdleTimeout) {
-        // 如果是超時觸發，扣除等待時間（30秒測試用），確保數據準確
-        durationMs = Math.max(0, durationMs - (30 * 1000));
-      }
-      // -----------------------
+      const durationMs = now - pageEnterTimeRef.current;
 
       updateSessionData(currentPageRef.current, durationMs, scaleRef.current);
 
-      const totalActiveTimeRaw = Math.floor((now - startTimeRef.current) / 1000);
-      const totalActiveTime = isIdleTimeout ? Math.max(1, totalActiveTimeRaw - 30) : totalActiveTimeRaw;
+      const totalActiveTime = Math.floor((now - startTimeRef.current) / 1000);
 
-      // 如果是 Idle Timeout 觸發，我們允許發送（即使計算後是 0s 也當作 1s）
-      // 如果是手動關閉視窗且時間小於 1 秒，則跳過
-      if (!isIdleTimeout && totalActiveTimeRaw < 1) return;
+      // 如果時間太短 (< 2s)，防誤觸不發送
+      if (totalActiveTime < 2) return;
 
       hasSentSessionEndRef.current = true;
 
@@ -146,13 +138,11 @@ export default function Viewer() {
         timestamp: new Date().toISOString()
       };
 
-      // 改用 navigator.sendBeacon 以確保在 Safari 背景關閉時能夠最高機率送出
       try {
         const url = '/api/session-end';
         const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
         navigator.sendBeacon(url, blob);
       } catch (err) {
-        // Fallback
         fetch('/api/session-end', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -162,55 +152,30 @@ export default function Viewer() {
       }
     };
 
-    // --- 新增：前台閒置偵測 ---
-    let fgTimer: NodeJS.Timeout;
-    const resetFgTimer = () => {
-      if (fgTimer) clearTimeout(fgTimer);
-      fgTimer = setTimeout(() => {
-        console.log("偵測到前台閒置超過 30 秒，自動結算報告...");
-        handleExit(true);
-      }, 30 * 1000); // 30 秒測試用
-    };
-
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
-        hiddenTimestampRef.current = Date.now();
-        console.log("偵測到用戶離開，開始 30 秒倒數結算報告...");
-
-        exitTimerRef.current = setTimeout(() => {
-          handleExit(true);
-        }, 30 * 1000); // 30 秒測試用
+        console.log("偵測到用戶離開分頁，立即結算分析報告...");
+        handleExit();
       } else if (document.visibilityState === 'visible') {
-        const timeAway = hiddenTimestampRef.current ? (Date.now() - hiddenTimestampRef.current) : 0;
-        hiddenTimestampRef.current = null;
-
-        if (timeAway >= 30 * 1000) {
-          console.log(`客戶離開超過 30 秒 (${Math.round(timeAway / 1000)}s)，立即結算上一次的對話報告`);
-          handleExit(true);
-        } else {
-          console.log("用戶在時限內返回，取消報告結算。");
-          if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
-          exitTimerRef.current = null;
+        // 客戶返回了，如果之前已經發送過報告，那我們當作新的開始
+        if (hasSentSessionEndRef.current) {
+          console.log("用戶重返報告，開啟全新會話 tracking...");
+          hasSentSessionEndRef.current = false;
+          startTimeRef.current = Date.now();
+          pageEnterTimeRef.current = Date.now();
+          sessionDataRef.current = {};
         }
       }
     };
-
-    const userActions = ['mousemove', 'scroll', 'touchstart', 'click'];
-    userActions.forEach(e => window.addEventListener(e, resetFgTimer));
 
     window.addEventListener('beforeunload', () => handleExit());
     window.addEventListener('pagehide', () => handleExit());
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    resetFgTimer(); // 啟動初始前台計時
-
     return () => {
-      userActions.forEach(e => window.removeEventListener(e, resetFgTimer));
       window.removeEventListener('beforeunload', () => handleExit());
       window.removeEventListener('pagehide', () => handleExit());
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
-      if (fgTimer) clearTimeout(fgTimer);
     };
   }, [fileId, clientName, reportName]);
 
