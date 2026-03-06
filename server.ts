@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -351,7 +351,27 @@ ${behaviorSummary}
 💡 <b>Next-Best-Action 破冰話術：</b>
 (提供一段極具專業感且針對其「糾結點」的破冰文字，可直接複製發送)`;
 
-      const model = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
+      const model = genAI.getGenerativeModel({
+        model: "gemini-3.1-flash-lite-preview",
+        safetySettings: [
+          {
+            category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+            threshold: HarmBlockThreshold.BLOCK_NONE,
+          },
+          {
+            category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+            threshold: HarmBlockThreshold.BLOCK_NONE,
+          },
+          {
+            category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+            threshold: HarmBlockThreshold.BLOCK_NONE,
+          },
+          {
+            category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+            threshold: HarmBlockThreshold.BLOCK_NONE,
+          },
+        ]
+      });
 
       const result = await model.generateContent(prompt);
       const response = await result.response;
