@@ -375,8 +375,8 @@ export default function Viewer() {
           </p>
           <button
             onClick={() => {
-              window.open('', '_self');
               window.close();
+              window.location.href = "about:blank";
             }}
             className={`w-full font-medium py-3 px-4 rounded-xl transition-colors text-sm ${isDarkMode ? 'bg-slate-800 hover:bg-slate-700 text-slate-300' : 'bg-slate-50 hover:bg-slate-100 text-slate-600'}`}
           >
@@ -451,16 +451,9 @@ export default function Viewer() {
                 setIsClosed(true);
 
                 // 3. Desktop / Permissive browser close
-                window.opener = null;
-                window.open('', '_self');
                 window.close();
+                window.location.href = "about:blank";
 
-                // 4. iOS Safari / Chrome history fallback hack (won't close tab, but exits page)
-                if (window.history.length > 1) {
-                  setTimeout(() => {
-                    window.history.back();
-                  }, 150);
-                }
               } catch (e) {
                 console.warn('Tab close blocked by browser');
               }
