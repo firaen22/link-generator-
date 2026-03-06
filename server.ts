@@ -309,18 +309,50 @@ app.post("/api/session-end", async (req, res) => {
         return `第 ${page} 頁: 停留 ${Math.round(data.dwellMs / 1000)} 秒, 最大縮放 ${data.maxScale.toFixed(1)}x`;
       }).join('\n');
 
-      const prompt = `你現在是大蓄後台專屬智能分析引擎。目標：協助理財顧問將「市場資訊」轉化為「保險與基金銷售契機」。\n\n輸入數據：\n- 客戶名稱：${client_name}\n- 讀取報告：${report_name}\n- 總歷時：${total_duration_sec} 秒\n- 行為特徵：\n${behaviorSummary}\n\n請以冷靜專業的香港私人銀行分析師口吻，在 200 字以內，輸出三個區塊（不要使用這三個詞作為標題，直接寫出內容，用對應的 Emoji 開頭即可）：\n🧠 **客戶意圖速寫**：一句話精準總結。\n🔥 **關鍵行為拆解**：找出停留最久或放大的頁面推測痛點。\n💡 **Speed Delivery 破冰建議 (Next-Best-Action)**：一段可直接複製的 WhatsApp 繁體中文對話開場白 (要求語氣自然、專業)。\n\n注意：只輸出這三個區塊的純文本，每行用 Emoji 開頭即可，不需要其他廢話或 \`\`\` 格式。不要重複客戶名稱和報告名稱的頂部標頭。`;
+      const prompt = `你是「大蓄 (Wealth OS)」系統內核的 AI 分析引擎 Antigravity。你的任務是接收客戶在 PDF 閱讀器中的物理微互動數據，極速進行語義轉譯與心理診斷，生成一份專供前線理財顧問在 Telegram 閱讀的「高價值銷售導航情報」。
+
+📥 輸入數據解析：
+1. Client_Info: ${client_name}
+2. Behavioral_Biometrics: 
+   - 總歷時: ${total_duration_sec} 秒
+   - 頁面停頓與放大數據:
+${behaviorSummary}
+3. Report_Name: ${report_name}
+4. App_State: 正常閱讀結束。
+
+請嚴格按照以下 HTML 標籤格式輸出（使用 <b> 標籤代替 Markdown 的 **，不要包含多餘的問候或 \`\`\`html 標籤。請勿包含最頂部的 Telegram Alert 標頭，只返回以下四個區塊）：
+
+🧠 <b>心理與行為診斷：</b>
+- <b>標籤：</b> [ Emoji + 心理偏誤名稱 ]
+- <b>意圖速寫：</b> (一句話說明客戶當下在想什麼)
+
+📊 <b>量化衝擊與 Deep Search 洞察：</b>
+- <b>Z-Score：</b> [數值] | <b>情緒分：</b> [數值] | <b>衝擊度：</b> [數值]/100
+- <b>市場研判：</b> (一句話結合報告主題進行市場研判)
+
+🔥 <b>微觀行為與系統狀態：</b>
+- ⚡ <b>行為：</b> (總結上述各頁面的互動重點)
+- 🛡️ <b>系統：</b> 偵測結束，已生成銷售導航。
+
+💡 <b>Speed Delivery 破冰建議 (Next-Best-Action)：</b>
+(提供一段可直接複製的 WhatsApp 繁體中文開場白段落，必須使用香港金融慣用語，針對其心理偏誤，提供精準對策。)`;
 
       const model = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
 
       const result = await model.generateContent(prompt);
       const response = await result.response;
-      const aiInsights = response.text() || '無法分析該次行為。';
+      let aiInsights = response.text() || '無法分析該次行為。';
 
-      text = `🎯 <b>【大蓄實時偵測 - 高價值銷售機遇】</b>\n\n` +
+      // Sanitise possible Markdown codeblocks if the LLM leaked them
+      aiInsights = aiInsights.replace(/^```(html)?|```$/gm, '').trim();
+
+      // Telegram Parse Mode HTML requires <b>, <i>, <u>, <s>, <a>, <code>, <pre>
+      // We manually convert common ** to <b> just in case the LLM ignored instructions
+      aiInsights = aiInsights.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+
+      text = `🎯 <b>【Antigravity 實時偵測 - 銷售機遇導航】</b>\n\n` +
         `👤 <b>客戶：</b> ${client_name}\n` +
-        `📄 <b>報告：</b> ${report_name}\n` +
-        `⏱️ <b>歷時：</b> ${total_duration_sec} 秒\n\n` +
+        `📄 <b>場景：</b> 正在研讀《${report_name}》\n\n` +
         aiInsights;
 
     } catch (err) {
