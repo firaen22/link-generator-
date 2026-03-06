@@ -406,12 +406,23 @@ export default function Viewer() {
         <div className="flex items-center gap-3 sm:gap-4">
           <button
             onClick={() => {
-              if (window.history.length > 1) {
-                window.history.back();
-              } else {
+              try {
+                // 1. Try to close if running inside Telegram Mini App
+                if ((window as any).Telegram && (window as any).Telegram.WebApp) {
+                  (window as any).Telegram.WebApp.close();
+                  return;
+                }
+
+                // 2. Aggressive normal browser close
+                window.open('', '_self');
                 window.close();
-                // Fallback for browsers that don't allow window.close() on non-script-opened tabs
-                setTimeout(() => window.location.href = "about:blank", 100);
+
+                // 3. Fallback for browsers that block window.close()
+                setTimeout(() => {
+                  window.location.href = "about:blank";
+                }, 100);
+              } catch (e) {
+                window.location.href = "about:blank";
               }
             }}
             className={`p-1.5 sm:p-2 rounded-full transition-all ${isDarkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}
