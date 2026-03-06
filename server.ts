@@ -351,31 +351,57 @@ ${behaviorSummary}
 💡 <b>Next-Best-Action 破冰話術：</b>
 (提供一段極具專業感且針對其「糾結點」的破冰文字，可直接複製發送)`;
 
-      const model = genAI.getGenerativeModel({
-        model: "gemini-3.1-flash-lite-preview",
-        safetySettings: [
-          {
-            category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-            threshold: HarmBlockThreshold.BLOCK_NONE,
-          },
-          {
-            category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-            threshold: HarmBlockThreshold.BLOCK_NONE,
-          },
-          {
-            category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-            threshold: HarmBlockThreshold.BLOCK_NONE,
-          },
-          {
-            category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-            threshold: HarmBlockThreshold.BLOCK_NONE,
-          },
-        ]
-      });
+      const modelsToTry = [
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash"
+      ];
 
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      let aiInsights = response.text() || '無法分析該次行為。';
+      let aiInsights = '';
+      let success = false;
+      let lastError = null;
+
+      for (const modelName of modelsToTry) {
+        try {
+          console.log(`[GEMINI] Trying model: ${modelName}`);
+          const model = genAI.getGenerativeModel({
+            model: modelName,
+            safetySettings: [
+              {
+                category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                threshold: HarmBlockThreshold.BLOCK_NONE,
+              },
+              {
+                category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                threshold: HarmBlockThreshold.BLOCK_NONE,
+              },
+              {
+                category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+                threshold: HarmBlockThreshold.BLOCK_NONE,
+              },
+              {
+                category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                threshold: HarmBlockThreshold.BLOCK_NONE,
+              },
+            ]
+          });
+
+          const result = await model.generateContent(prompt);
+          const response = await result.response;
+          aiInsights = response.text() || '無法分析該次行為。';
+          success = true;
+          console.log(`[GEMINI] Model ${modelName} succeeded.`);
+          break; // Stop trying if successful
+        } catch (err) {
+          console.warn(`[GEMINI WARN] Model ${modelName} failed:`, (err as any).message);
+          lastError = err;
+        }
+      }
+
+      if (!success) {
+        throw new Error(`All models failed. Last error: ${(lastError as any)?.message}`);
+      }
 
       // Sanitise possible Markdown codeblocks if the LLM leaked them
       aiInsights = aiInsights.replace(/^```(html)?|```$/gm, '').trim();
