@@ -6,8 +6,8 @@ import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/ge
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const aiEnabled = !!process.env.GEMINI_API_KEY;
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+const apiKeys = (process.env.GEMINI_API_KEY || "").split(',').map(k => k.trim()).filter(Boolean);
+const aiEnabled = apiKeys.length > 0;
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -350,6 +350,10 @@ ${behaviorSummary}
 
 💡 <b>Next-Best-Action 破冰話術：</b>
 (提供一段極具專業感且針對其「糾結點」的破冰文字，可直接複製發送)`;
+
+      // Select a random API key for simple load balancing
+      const randomKey = apiKeys[Math.floor(Math.random() * apiKeys.length)];
+      const genAI = new GoogleGenerativeAI(randomKey);
 
       const modelsToTry = [
         "gemini-3.1-flash-lite-preview",
