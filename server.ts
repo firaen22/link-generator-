@@ -309,34 +309,53 @@ app.post("/api/session-end", async (req, res) => {
         return `第 ${page} 頁: 停留 ${Math.round(data.dwellMs / 1000)} 秒, 最大縮放 ${data.maxScale.toFixed(1)}x`;
       }).join('\n');
 
-      const prompt = `你是金融科技系統內核的 AI 分析引擎「Antigravity」。你的任務是接收來自客戶邊緣設備（Edge Device）的高階「被動觸控物理指標」，並結合「Deep Search 市場深研數據」，進行即時的行為財務學解碼。你必須將這些冰冷的數據，轉化為一份專供前線理財顧問在 Telegram 上快速閱讀的「高價值銷售導航情報」。
+      const prompt = `你是金融科技系統「Antigravity」的高階行為財務學分析引擎。
+你的任務是解析來自 Viewer.tsx 的邊緣設備數據（Edge Metrics），並結合 Deep Search 市場邏輯，為理財顧問提供一份「客戶心理特徵與銷售導航報告」。
 
-📥 輸入數據解析：
-1. Client_Profile: ${client_name}
-2. Edge_Biometrics: 
-   - 總歷時: ${total_duration_sec} 秒
-   - 頁面停頓與放大數據 (Scroll_Decay_k, Pressure_Variance_Sigma2, Zoom_Intensity_M, Directional_Vector):
+📥 本次會話輸入數據：
+1. 客戶姓名：${client_name}
+2. 報告名稱：${report_name}
+3. 閱讀總歷時：${total_duration_sec} 秒
+4. 逐頁行為矩陣（Page-Level Biometrics）：
 ${behaviorSummary}
-3. Search_Intent: (無)
-4. Deep_Search_Context: (由你結合 ${report_name} 即時生成)
-5. App_State: 正常閱讀結束。
 
-請絕對精煉，摒棄任何廢話、問候語或自我介紹。直接輸出以下 HTML 標籤格式（使用 <b> 標籤代替 Markdown 的 **，不要包含多餘的 \`\`\`html 標籤），確保顧問能在 5 秒內抓到重點。必須使用香港金融慣用語（如：理專、回贈、派息、美股、保費融資、下行保護）。請勿包含最頂部的 Telegram Alert 標頭，只返回以下四個區塊：
+🧠 分析指令：請從以下維度進行深度解碼，並嚴格遵循 HTML 格式輸出（使用 <b> 標籤，不含 Markdown）：
 
-🧠 <b>心理防線與行為診斷：</b>
-- <b>標籤：</b> [ Emoji + 心理偏誤/認知狀態 ]
-- <b>意圖解碼：</b> (用一句話說明客戶當下最真實的心理狀態)
+1. 🔍 閱讀模式與行為診斷：
+   - 如果某頁停留時間極長且 maxScale > 1.5x：判定為「深鑽表格數據」。分析其是否在比對利息、配息或下行保護條款。
+   - 如果出現「滑動急煞」或「重覆縮放」：判定為「挫折迴圈 (Frustration Loop)」，顯示客戶對該處數據感到焦慮或難以理解。
+   - 標記心理偏誤：如「損失規避」（對負面數據停留久）或「定錨效應」（反覆對比歷史績效）。
 
-🔬 <b>微觀體徵與系統狀態：</b>
-- <b>物理訊號：</b> (精簡說明關鍵指標，如滑動急煞、縮放強度、壓力變異數)
-- <b>系統應對：</b> 偵測結束，已生成銷售導航。
+2. 📊 閱讀配速與確定性分析：
+   - 計算平均每頁配速。若速度遠超 240 WPM，標記為「掠奪式閱讀/無耐心」；若穩定且緩慢，標記為「高確定性心流」。
+   - 預估剩餘閱讀抗拒感：分析客戶是否因篇幅過長而產生「認知疲勞」。
 
-📊 <b>量化衝擊與 Deep Search 洞察：</b>
+3. 📊 量化指標 (Quant Impact)：
+   - Z-Score：行為異常值（與標準閱讀曲線的偏離度）。
+   - 情緒分：基於縮放強度與停留時間推算的心理喚醒度。
+   - 衝擊度：該章節內容對其資產組合的潛在影響係數。
+
+4. 💡 Speed Delivery 銷售導航 (NBA)：
+   - 針對偵測到的「行為熱點」提供一段 WhatsApp 破冰話術。
+   - 必須使用香港金融術語（如：理專、保費融資、派息、K線、美股）。
+
+輸出格式要求：
+直接輸出以下四個區塊，嚴格禁止任何廢話或開場白：
+
+🧠 <b>行為心理診斷：</b>
+- <b>標籤：</b> [ Emoji + 心理偏誤標籤 ]
+- <b>意圖解碼：</b> (描述客戶在特定頁面的數據糾結或興趣點)
+
+🔬 <b>微觀體徵與導航狀態：</b>
+- <b>物理訊號：</b> (描述縮放強度、表格停留、滑動節奏等指標)
+- <b>建議優化：</b> (如：建議下次開啟 Liquid Mode 或簡化此章節卡片化)
+
+📊 <b>量化衝擊與市場研判：</b>
 - <b>Z-Score：</b> [數值] | <b>情緒分：</b> [數值] | <b>衝擊度：</b> [數值]/100
-- <b>市場研判：</b> (一句話總結 Deep Search 結果，提供一個能擊中客戶痛點的最新動態)
+- <b>市場焦點：</b> (結合報告主題，給出一個當下最能擊中其痛點的市場動態)
 
-💡 <b>Speed Delivery 破冰話術 (Next-Best-Action)：</b>
-(提供一段可直接複製發送的 WhatsApp/通話開場白。必須針對其心理偏誤提供精準對策！)`;
+💡 <b>Next-Best-Action 破冰話術：</b>
+(提供一段極具專業感且針對其「糾結點」的破冰文字，可直接複製發送)`;
 
       const model = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
 
