@@ -92,6 +92,7 @@ export default function Viewer() {
   const hasSentSessionEndRef = useRef(false);
   const scaleRef = useRef(1.0);
   const exitTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const hiddenTimestampRef = useRef<number | null>(null);
 
   useEffect(() => { scaleRef.current = scale; }, [scale]);
 
@@ -132,29 +133,41 @@ export default function Viewer() {
         timestamp: new Date().toISOString()
       };
 
-      // Use fetch with keepalive: true (more reliable than sendBeacon for JSON)
-      fetch('/api/session-end', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload),
-        keepalive: true
-      }).catch(err => console.error('Session end dispatch failed', err));
+      // 改用 navigator.sendBeacon 以確保在 Safari 背景關閉時能夠最高機率送出
+      try {
+        const url = '/api/session-end';
+        const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+        navigator.sendBeacon(url, blob);
+      } catch (err) {
+        // Fallback
+        fetch('/api/session-end', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          keepalive: true
+        }).catch(e => console.error('Session end dispatch failed', e));
+      }
     };
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
-        // --- 進入 5 分鐘凍結倒數 ---
+        hiddenTimestampRef.current = Date.now();
         console.log("偵測到用戶離開，開始 5 分鐘倒數結算報告...");
+
         exitTimerRef.current = setTimeout(() => {
           handleExit();
         }, 5 * 60 * 1000); // 5 分鐘
       } else if (document.visibilityState === 'visible') {
-        // --- 用戶在 5 分鐘內回來了，取消倒數 ---
-        if (exitTimerRef.current) {
+        // 檢查他們被「凍結」了多長時間（解決手機瀏覽器強制暫停 JS 導致 setTimeout 沒執行的問題）
+        const timeAway = hiddenTimestampRef.current ? (Date.now() - hiddenTimestampRef.current) : 0;
+        hiddenTimestampRef.current = null;
+
+        if (timeAway >= 5 * 60 * 1000) {
+          console.log(`客戶離開超過 5 分鐘 (${Math.round(timeAway / 1000)}s)，立即結算上一次的對話報告`);
+          handleExit();
+        } else {
           console.log("用戶在時限內返回，取消報告結算。");
-          clearTimeout(exitTimerRef.current);
+          if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
           exitTimerRef.current = null;
         }
       }
