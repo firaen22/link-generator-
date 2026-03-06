@@ -111,13 +111,24 @@ export default function Viewer() {
 
   // Dispatch final session payload
   useEffect(() => {
-    const handleExit = () => {
+    const handleExit = (isIdleTimeout = false) => {
       if (hasSentSessionEndRef.current) return;
 
-      const durationMs = Date.now() - pageEnterTimeRef.current;
+      const now = Date.now();
+      let durationMs = now - pageEnterTimeRef.current;
+
+      // --- 新增：閒置補償邏輯 ---
+      if (isIdleTimeout) {
+        // 如果是超時觸發，扣除等待時間（30秒測試用），確保數據準確
+        durationMs = Math.max(0, durationMs - (30 * 1000));
+      }
+      // -----------------------
+
       updateSessionData(currentPageRef.current, durationMs, scaleRef.current);
 
-      const totalActiveTime = Math.floor((Date.now() - startTimeRef.current) / 1000);
+      const totalActiveTimeRaw = Math.floor((now - startTimeRef.current) / 1000);
+      // 如果是超時，也調整總歷時，扣除 30 秒閒置時間
+      const totalActiveTime = isIdleTimeout ? Math.max(1, totalActiveTimeRaw - 30) : totalActiveTimeRaw;
 
       // Only send if they were here for at least some minimum seconds, or just send always.
       if (totalActiveTime < 1) return;
@@ -157,16 +168,15 @@ export default function Viewer() {
         console.log("偵測到用戶離開，開始 5 分鐘倒數結算報告...");
 
         exitTimerRef.current = setTimeout(() => {
-          handleExit();
+          handleExit(true);
         }, 30 * 1000); // 30 秒測試用
       } else if (document.visibilityState === 'visible') {
-        // 檢查他們被「凍結」了多長時間（解決手機瀏覽器強制暫停 JS 導致 setTimeout 沒執行的問題）
         const timeAway = hiddenTimestampRef.current ? (Date.now() - hiddenTimestampRef.current) : 0;
         hiddenTimestampRef.current = null;
 
         if (timeAway >= 30 * 1000) {
           console.log(`客戶離開超過 30 秒 (${Math.round(timeAway / 1000)}s)，立即結算上一次的對話報告`);
-          handleExit();
+          handleExit(true);
         } else {
           console.log("用戶在時限內返回，取消報告結算。");
           if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
@@ -175,13 +185,13 @@ export default function Viewer() {
       }
     };
 
-    window.addEventListener('beforeunload', handleExit);
-    window.addEventListener('pagehide', handleExit);
+    window.addEventListener('beforeunload', () => handleExit());
+    window.addEventListener('pagehide', () => handleExit());
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      window.removeEventListener('beforeunload', handleExit);
-      window.removeEventListener('pagehide', handleExit);
+      window.removeEventListener('beforeunload', () => handleExit());
+      window.removeEventListener('pagehide', () => handleExit());
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
       // Removed the unmount trigger to avoid duplicate or premature triggers during React strict mode rewrites 
