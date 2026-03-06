@@ -158,14 +158,14 @@ export default function Viewer() {
 
         exitTimerRef.current = setTimeout(() => {
           handleExit();
-        }, 5 * 60 * 1000); // 5 分鐘
+        }, 30 * 1000); // 30 秒測試用
       } else if (document.visibilityState === 'visible') {
         // 檢查他們被「凍結」了多長時間（解決手機瀏覽器強制暫停 JS 導致 setTimeout 沒執行的問題）
         const timeAway = hiddenTimestampRef.current ? (Date.now() - hiddenTimestampRef.current) : 0;
         hiddenTimestampRef.current = null;
 
-        if (timeAway >= 5 * 60 * 1000) {
-          console.log(`客戶離開超過 5 分鐘 (${Math.round(timeAway / 1000)}s)，立即結算上一次的對話報告`);
+        if (timeAway >= 30 * 1000) {
+          console.log(`客戶離開超過 30 秒 (${Math.round(timeAway / 1000)}s)，立即結算上一次的對話報告`);
           handleExit();
         } else {
           console.log("用戶在時限內返回，取消報告結算。");
