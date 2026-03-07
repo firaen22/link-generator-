@@ -30,22 +30,35 @@ export default function App() {
     setIsUploading(true);
     try {
       // 1. 上傳檔案並取得乾淨網址 (移除 token)
+      console.log("Starting upload...");
       const fileName = `${Date.now().toString(36)}_${file.name}`;
-      const storageRef = ref(storage, `r/${fileName}`);
-      const snapshot = await uploadBytes(storageRef, file);
-      const fullURL = await getDownloadURL(snapshot.ref);
-      const cleanFileURL = fullURL.split('&token=')[0];
+      const storageRef = ref(storage, `reports/${fileName}`); // Reverted 'r/' -> 'reports/'
+
+      let cleanFileURL = "";
+      try {
+        const snapshot = await uploadBytes(storageRef, file);
+        const fullURL = await getDownloadURL(snapshot.ref);
+        cleanFileURL = fullURL.split('&token=')[0];
+      } catch (uploadError) {
+        console.error("Firebase Upload Error:", uploadError);
+        throw new Error(`Firebase 上傳失敗：${uploadError instanceof Error ? uploadError.message : "權限不足"}`);
+      }
 
       // 2. 打包並壓縮數據
-      const payload = {
-        c: clientName || "貴客",
-        r: reportName || "Document",
-        t: linkTitle,
-        d: description,
-        i: previewImage,
-        f: cleanFileURL
-      };
-      const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
+      let compressed = "";
+      try {
+        const payload = {
+          c: clientName || "貴客",
+          r: reportName || "Document",
+          t: linkTitle,
+          d: description,
+          i: previewImage,
+          f: cleanFileURL
+        };
+        compressed = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
+      } catch (compError) {
+        throw new Error("數據壓縮失敗");
+      }
 
       // 3. 準備長連結
       const origin = window.location.origin;
@@ -56,39 +69,44 @@ export default function App() {
       const dubDomain = import.meta.env.VITE_DUB_DOMAIN;
 
       if (!dubApiKey || !dubDomain) {
-        // Fallback to long link if Dub.co isn't configured
+        console.warn("Dub.co configuration missing, using long link.");
         setGeneratedLink(longLink);
         setCopied(false);
-        setIsUploading(false);
         return;
       }
 
-      const response = await fetch("https://api.dub.co/links", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${dubApiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          url: longLink,
-          domain: dubDomain,
-          title: linkTitle ? `${linkTitle}：${clientName || "貴客"}` : `專案報告：${clientName || "貴客"}`,
-          description: description || "為您整理的最新市場動態。",
-        }),
-      });
+      try {
+        const response = await fetch("https://api.dub.co/links", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${dubApiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            url: longLink,
+            domain: dubDomain,
+            title: linkTitle ? `${linkTitle}：${clientName || "貴客"}` : `專案報告：${clientName || "貴客"}`,
+            description: description || "為您整理的最新市場動態。",
+          }),
+        });
 
-      if (!response.ok) {
-        console.error("Dub API Error:", await response.text());
-        setGeneratedLink(longLink); // Fallback
-      } else {
-        const data = await response.json();
-        setGeneratedLink(data.shortLink);
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error("Dub API Error:", errorText);
+          setGeneratedLink(longLink); // Fallback to long link
+        } else {
+          const data = await response.json();
+          setGeneratedLink(data.shortLink);
+        }
+      } catch (dubErr) {
+        console.error("Dub.co API call failed:", dubErr);
+        setGeneratedLink(longLink); // Fallback to long link
       }
       setCopied(false);
 
     } catch (error) {
       console.error("生成過程中出錯:", error);
-      alert("生成失敗，請稍後再試。");
+      alert(error instanceof Error ? error.message : "發生未知錯誤");
     } finally {
       setIsUploading(false);
     }
