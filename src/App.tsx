@@ -44,7 +44,8 @@ export default function App() {
 
           // Direct upload to Firebase (supports large files)
           const snapshot = await uploadBytes(storageRef, file);
-          const downloadURL = await getDownloadURL(snapshot.ref);
+          const fullURL = await getDownloadURL(snapshot.ref);
+          const downloadURL = fullURL.split('&token=')[0];
 
           // Encode the URL as base64 with vblob_ prefix for the Viewer
           const safeBase64 = btoa(downloadURL).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
