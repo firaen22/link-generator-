@@ -3,6 +3,7 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
+import LZString from 'lz-string';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,16 +31,38 @@ console.log(`Telegram Chat ID: ${process.env.TELEGRAM_CHAT_ID ? '✅ LOADED' : '
 console.log('------------------------------');
 
 // API Route for the Link Preview (Supports both old and new shorter path)
-app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
+app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
   const { file_id } = req.params;
-  const { client_name, name, report_name, preview_image, c, r, i, d, desc, t, title: tParam } = req.query;
+  const { q, client_name, name, report_name, preview_image, c, r, i, d, desc, t, title: tParam } = req.query;
 
   // Handle shorthand or full names
-  const cName = (c || name || client_name || "貴客") as string;
-  const rName = (r || report_name || "Document") as string;
-  const imageParam = (i || preview_image) as string;
-  const descParam = (d || desc) as string;
-  const titleParam = (t || tParam) as string;
+  let cName = (c || name || client_name || "貴客") as string;
+  let rName = (r || report_name || "Document") as string;
+  let imageParam = (i || preview_image) as string;
+  let descParam = (d || desc) as string;
+  let titleParam = (t || tParam) as string;
+  let finalFileId = file_id || "";
+
+  // Handle compressed payload if present
+  if (q && typeof q === 'string') {
+    try {
+      const decoded = JSON.parse(LZString.decompressFromEncodedURIComponent(q));
+      if (decoded) {
+        if (decoded.c) cName = decoded.c;
+        if (decoded.r) rName = decoded.r;
+        if (decoded.i) imageParam = decoded.i;
+        if (decoded.d) descParam = decoded.d;
+        if (decoded.t) titleParam = decoded.t;
+        if (decoded.f) {
+          // Encode the full URL for the viewer logic
+          const safeBase64 = Buffer.from(decoded.f).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+          finalFileId = `vblob_${safeBase64}`;
+        }
+      }
+    } catch (e) {
+      console.error("Failed to decode compressed payload:", e);
+    }
+  }
 
   // Professional OG Image (Keep file size small for WhatsApp ~ < 300KB)
   let ogImage = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop";
@@ -60,8 +83,10 @@ app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
   const description = descParam || "為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
 
   // Target URL: Points to our internal Viewer
-  // Pass shortened params to viewer as well
-  const viewerUrl = `${process.env.APP_URL || ''}/view/${file_id}?c=${encodeURIComponent(cName)}&r=${encodeURIComponent(rName)}`;
+  // If we have 'q', we pass 'q' to viewer, otherwise we pass file_id and params
+  const viewerUrl = q
+    ? `${process.env.APP_URL || ''}/view?q=${encodeURIComponent(q as string)}`
+    : `${process.env.APP_URL || ''}/view/${finalFileId}?c=${encodeURIComponent(cName)}&r=${encodeURIComponent(rName)}`;
 
   // Send Telegram Notification (Fire and Forget)
   if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {

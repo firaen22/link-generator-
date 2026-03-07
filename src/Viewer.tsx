@@ -13,12 +13,35 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@5.4.296/buil
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
+import LZString from 'lz-string';
+
 export default function Viewer() {
-  const { fileId } = useParams();
+  const { fileId: fileIdParam } = useParams();
   const [searchParams] = useSearchParams();
   const [loadError, setLoadError] = useState<string | null>(null);
-  const clientName = searchParams.get('c') || searchParams.get('client_name') || searchParams.get('name') || '貴客';
-  const reportName = searchParams.get('r') || searchParams.get('report_name') || 'Document';
+
+  // Initial values from query/params
+  const q = searchParams.get('q');
+  let clientName = searchParams.get('c') || searchParams.get('client_name') || searchParams.get('name') || '貴客';
+  let reportName = searchParams.get('r') || searchParams.get('report_name') || 'Document';
+  let initialFileId = fileIdParam;
+  let fileFromProp = '';
+
+  // Handle compressed payload
+  if (q) {
+    try {
+      const decoded = JSON.parse(LZString.decompressFromEncodedURIComponent(q));
+      if (decoded) {
+        if (decoded.c) clientName = decoded.c;
+        if (decoded.r) reportName = decoded.r;
+        if (decoded.f) fileFromProp = decoded.f;
+      }
+    } catch (e) {
+      console.error("Failed to decode compressed payload:", e);
+    }
+  }
+
+  const fileId = initialFileId || (fileFromProp ? `vblob_${btoa(fileFromProp).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}` : '');
 
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);

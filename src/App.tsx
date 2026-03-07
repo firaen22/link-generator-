@@ -4,10 +4,11 @@
  */
 
 import React, { useState, useRef } from 'react';
-import { Link, Copy, Check, FileText, Share2, UploadCloud } from 'lucide-react';
+import { Copy, Check, Share2, UploadCloud } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "./firebase";
+import LZString from 'lz-string';
 
 export default function App() {
   const [clientName, setClientName] = useState('');
@@ -18,72 +19,79 @@ export default function App() {
   const [generatedLink, setGeneratedLink] = useState('');
   const [copied, setCopied] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [uploadedFileId, setUploadedFileId] = useState('');
-  const [lastFileFingerprint, setLastFileFingerprint] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    let targetFileId = '';
-
-    // Handle Firebase Upload
     const file = fileInputRef.current?.files?.[0];
-    if (file) {
-      const currentFingerprint = `${file.name}-${file.size}`;
+    if (!file) return alert("請選擇檔案上傳");
 
-      // Skip upload if it's the same file we already uploaded
-      if (uploadedFileId && lastFileFingerprint === currentFingerprint) {
-        targetFileId = uploadedFileId;
-      } else {
-        setIsUploading(true);
-        try {
-          // Create a unique file path in storage
-          const storageRef = ref(storage, `reports/${Date.now()}_${file.name}`);
+    setIsUploading(true);
+    try {
+      // 1. 上傳檔案並取得乾淨網址 (移除 token)
+      const fileName = `${Date.now().toString(36)}_${file.name}`;
+      const storageRef = ref(storage, `r/${fileName}`);
+      const snapshot = await uploadBytes(storageRef, file);
+      const fullURL = await getDownloadURL(snapshot.ref);
+      const cleanFileURL = fullURL.split('&token=')[0];
 
-          // Direct upload to Firebase (supports large files)
-          const snapshot = await uploadBytes(storageRef, file);
-          const fullURL = await getDownloadURL(snapshot.ref);
-          const downloadURL = fullURL.split('&token=')[0];
+      // 2. 打包並壓縮數據
+      const payload = {
+        c: clientName || "貴客",
+        r: reportName || "Document",
+        t: linkTitle,
+        d: description,
+        i: previewImage,
+        f: cleanFileURL
+      };
+      const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
 
-          // Encode the URL as base64 with vblob_ prefix for the Viewer
-          const safeBase64 = btoa(downloadURL).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-          targetFileId = `vblob_${safeBase64}`;
+      // 3. 準備長連結
+      const origin = window.location.origin;
+      const longLink = `${origin}/s?q=${compressed}`;
 
-          // Cache the results
-          setUploadedFileId(targetFileId);
-          setLastFileFingerprint(currentFingerprint);
-        } catch (error) {
-          console.error('Firebase 上傳失敗', error);
-          alert(`上傳失敗：${error instanceof Error ? error.message : '請檢查網路或 Firebase 設定'}`);
-          setIsUploading(false);
-          return;
-        }
+      // 4. 自動呼叫 Dub.co API 生成短連結
+      const dubApiKey = import.meta.env.VITE_DUB_API_KEY;
+      const dubDomain = import.meta.env.VITE_DUB_DOMAIN;
+
+      if (!dubApiKey || !dubDomain) {
+        // Fallback to long link if Dub.co isn't configured
+        setGeneratedLink(longLink);
+        setCopied(false);
         setIsUploading(false);
+        return;
       }
+
+      const response = await fetch("https://api.dub.co/links", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${dubApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          url: longLink,
+          domain: dubDomain,
+          title: linkTitle ? `${linkTitle}：${clientName || "貴客"}` : `專案報告：${clientName || "貴客"}`,
+          description: description || "為您整理的最新市場動態。",
+        }),
+      });
+
+      if (!response.ok) {
+        console.error("Dub API Error:", await response.text());
+        setGeneratedLink(longLink); // Fallback
+      } else {
+        const data = await response.json();
+        setGeneratedLink(data.shortLink);
+      }
+      setCopied(false);
+
+    } catch (error) {
+      console.error("生成過程中出錯:", error);
+      alert("生成失敗，請稍後再試。");
+    } finally {
+      setIsUploading(false);
     }
-
-    if (!targetFileId) {
-      alert("請選擇檔案上傳");
-      return;
-    }
-
-    // --- Blobs are already shortened in the upload block ---
-    let finalId = targetFileId;
-
-    const origin = window.location.origin;
-    const params = new URLSearchParams();
-    // Shorthand: c=client, r=report, i=image, d=description, t=title
-    if (clientName) params.append('c', clientName);
-    if (reportName) params.append('r', reportName);
-    if (previewImage) params.append('i', previewImage);
-    if (description) params.append('d', description);
-    if (linkTitle) params.append('t', linkTitle);
-
-    const link = `${origin}/s/${finalId}?${params.toString()}`;
-    setGeneratedLink(link);
-    setCopied(false);
   };
 
   const copyToClipboard = () => {

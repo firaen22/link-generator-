@@ -10,6 +10,7 @@ createRoot(document.getElementById('root')!).render(
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<App />} />
+        <Route path="/view" element={<Viewer />} />
         <Route path="/view/:fileId" element={<Viewer />} />
       </Routes>
     </BrowserRouter>
