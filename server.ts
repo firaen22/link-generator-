@@ -174,6 +174,7 @@ app.get("/api/pdf/:file_id", async (req, res) => {
 
         const path = Buffer.from(base64, 'base64').toString('utf8');
         const bucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || "market-update-56e1c.firebasestorage.app";
+        console.log(`[PROXY_F] Using bucket: ${bucket}`);
 
         // Reconstruct encoded path (Firebase expects / to be %2F)
         const encodedPath = encodeURIComponent(path);

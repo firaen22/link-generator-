@@ -8,7 +8,8 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 
 // Match the API version reported in the error (5.4.296) to fix mismatch
-pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+// Use a stable CDN for the PDF worker to avoid version mismatch issues
+pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
 
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -482,6 +483,16 @@ export default function Viewer() {
   // Forced Proxy Mode: Always route through backend to bypass CORS
   const pdfUrl = `/api/pdf/${fileId}`;
 
+  // Debugging logs
+  useEffect(() => {
+    console.log('[VIEWER] Initializing with:', {
+      fileId,
+      pdfUrl,
+      clientName,
+      reportName
+    });
+  }, [fileId, pdfUrl]);
+
   const downloadUrl = pdfUrl;
 
   // Safe Exit Fallback Screen (for Safari/Chrome that block tab closing)
@@ -697,10 +708,26 @@ export default function Viewer() {
                   This usually happens if the file permissions are restricted, or the file is too large.
                 </p>
                 {loadError && (
-                  <div className="text-[10px] text-red-400 font-mono bg-red-50/50 px-2 py-1 rounded">
-                    Error Details: {loadError}
+                  <div className="text-[10px] text-red-500 font-mono bg-red-50/50 px-3 py-2 rounded-lg border border-red-100 max-w-sm mb-4">
+                    <b>載入錯誤：</b> {loadError}
                   </div>
                 )}
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => window.location.reload()}
+                    className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg text-sm font-medium hover:bg-slate-200"
+                  >
+                    重試加載
+                  </button>
+                  <a
+                    href={pdfUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
+                  >
+                    直接開啟 PDF
+                  </a>
+                </div>
               </div>
             }
             onLoadError={(error) => {
