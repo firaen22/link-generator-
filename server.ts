@@ -3,6 +3,23 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
+import Database from 'better-sqlite3';
+
+const db = new Database('analytics.db');
+
+// 初始化表格
+db.exec(`
+  CREATE TABLE IF NOT EXISTS sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_name TEXT,
+    report_name TEXT,
+    file_id TEXT,
+    duration_sec INTEGER,
+    total_pages INTEGER,
+    max_page INTEGER,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -288,7 +305,7 @@ app.post("/api/track", async (req, res) => {
 
 // AI-Powered Session Analysis Endpoint
 app.post("/api/session-end", async (req, res) => {
-  const { event, client_name, report_name, total_duration_sec, total_pages, pages_data } = req.body;
+  const { event, client_name, report_name, file_id, total_duration_sec, total_pages, pages_data } = req.body;
   console.log(`🚀 [BACKEND] 接收到分析請求: ${client_name} | ${report_name} (${total_duration_sec}s)`);
 
   if (event !== 'session_end') return res.json({ status: "ignored" });
@@ -302,6 +319,14 @@ app.post("/api/session-end", async (req, res) => {
   const maxReachedPage = pages_data && Object.keys(pages_data).length > 0
     ? Math.max(...Object.keys(pages_data).map(Number))
     : 1;
+
+  // 儲存到數據庫
+  try {
+    const stmt = db.prepare('INSERT INTO sessions (client_name, report_name, file_id, duration_sec, total_pages, max_page) VALUES (?, ?, ?, ?, ?, ?)');
+    stmt.run(client_name, report_name, file_id, total_duration_sec, total_pages, maxReachedPage);
+  } catch (dbErr) {
+    console.error('[DB ERROR] Failed to save session:', dbErr);
+  }
 
   const progressPercent = total_pages ? (maxReachedPage / total_pages) * 100 : 0;
   const isDeepRead = progressPercent >= 50;
@@ -487,6 +512,21 @@ ${behaviorSummary}
   }
 
   res.json({ status: "ok" });
+});
+
+// 新增 Dashboard 數據 API
+app.get("/api/dashboard-stats", (req, res) => {
+  try {
+    const stats = {
+      total_views: db.prepare('SELECT COUNT(*) as count FROM sessions').get().count,
+      avg_duration: db.prepare('SELECT AVG(duration_sec) as avg FROM sessions').get().avg || 0,
+      recent_sessions: db.prepare('SELECT * FROM sessions ORDER BY timestamp DESC LIMIT 10').all()
+    };
+    res.json(stats);
+  } catch (err) {
+    console.error('[DB ERROR] Stats query failed:', err);
+    res.status(500).json({ error: "Failed to fetch stats" });
+  }
 });
 
 // For Vercel Serverless Functions
