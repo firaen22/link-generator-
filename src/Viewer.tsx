@@ -41,10 +41,20 @@ export default function Viewer() {
     }
   }
 
+  const toUrlSafeBase64 = (str: string) => {
+    // btoa is for binary strings (Latin1 only). Path names should be ASCII, which is fine.
+    try {
+      return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    } catch (e) {
+      console.error("Base64 encoding error (likely Unicode in filename):", e);
+      return btoa(encodeURIComponent(str)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+  };
+
   const fileId = initialFileId || (fileFromProp ? (
     fileFromProp.startsWith('reports/')
-      ? `f_${btoa(fileFromProp).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`
-      : `vblob_${btoa(fileFromProp).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`
+      ? `f_${toUrlSafeBase64(fileFromProp)}`
+      : `vblob_${toUrlSafeBase64(fileFromProp)}`
   ) : '');
 
   const [numPages, setNumPages] = useState<number | null>(null);
