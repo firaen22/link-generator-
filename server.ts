@@ -402,27 +402,45 @@ ${behaviorSummary}
       let success = false;
       let lastError: any = null;
 
+      const modelsToTry = [
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash"
+      ];
+
       // Rotate through all available keys until one succeeds
       const startIndex = Math.floor(Math.random() * apiKeys.length);
       for (let i = 0; i < apiKeys.length; i++) {
         const keyIndex = (startIndex + i) % apiKeys.length;
         const currentKey = apiKeys[keyIndex];
 
-        try {
-          const genAI = new GoogleGenerativeAI(currentKey);
-          const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-          const result = await model.generateContent(prompt);
-          aiInsights = result.response.text() || '無法分析。';
-          success = true;
-          console.log(`[GEMINI] Key ${keyIndex + 1}/${apiKeys.length} success.`);
-          break;
-        } catch (err) {
-          const errMsg = (err as any).message || '';
-          console.warn(`[GEMINI WARN] Key ${keyIndex + 1} failed: ${errMsg.slice(0, 50)}...`);
-          lastError = err;
-          // If it's a safety error or something not quota related, we might still want to try other keys
-          // but usually we just move to the next key.
+        // Inside each key, try different models
+        for (const modelName of modelsToTry) {
+          try {
+            const genAI = new GoogleGenerativeAI(currentKey);
+            const model = genAI.getGenerativeModel({ model: modelName });
+
+            // Set a short timeout for the AI call to fail fast and move to next model/key
+            const result = await Promise.race([
+              model.generateContent(prompt),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 15000))
+            ]) as any;
+
+            aiInsights = result.response.text() || '無法分析。';
+            success = true;
+            console.log(`[GEMINI] Key ${keyIndex + 1} | Model ${modelName} success.`);
+            break;
+          } catch (err) {
+            const errMsg = (err as any).message || '';
+            console.warn(`[GEMINI WARN] Key ${keyIndex + 1} | Model ${modelName} failed: ${errMsg.slice(0, 50)}...`);
+            lastError = err;
+            // If it's a model mismatch or quota, the inner loop continues to next model
+          }
         }
+        if (success) break;
       }
 
       if (!success) {
