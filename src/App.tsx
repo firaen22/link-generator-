@@ -77,48 +77,9 @@ export default function App() {
       const origin = window.location.origin;
       const longLink = `${origin}/s?q=${compressed}`;
 
-      // 4. Generate short link via Dub.co
-      const dubApiKey = import.meta.env.VITE_DUB_API_KEY;
-      const dubDomain = import.meta.env.VITE_DUB_DOMAIN;
-
-      if (!dubApiKey || !dubDomain) {
-        console.warn('[DUB] Missing VITE_DUB_API_KEY or VITE_DUB_DOMAIN, using long link.');
-        setGeneratedLink(longLink);
-        setCopied(false);
-        return;
-      }
-
-      try {
-        const dubRes = await fetch('https://api.dub.co/links', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${dubApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            url: longLink,
-            domain: dubDomain,
-            title: linkTitle
-              ? `${linkTitle}：${clientName || '貴客'}`
-              : `專案報告：${clientName || '貴客'}`,
-            description: description || '為您整理的最新市場動態。',
-          }),
-        });
-
-        if (!dubRes.ok) {
-          const errText = await dubRes.text();
-          console.error('[DUB] API Error:', errText);
-          setGeneratedLink(longLink);
-        } else {
-          const data = await dubRes.json();
-          setGeneratedLink(data.shortLink);
-        }
-      } catch (dubErr) {
-        console.error('[DUB] Request failed:', dubErr);
-        setGeneratedLink(longLink);
-      }
+      // 4. 使用長連結 (已移除 Dub.co 整合)
+      setGeneratedLink(longLink);
       setCopied(false);
-
     } catch (error) {
       console.error("生成過程中出錯:", error);
       alert(error instanceof Error ? error.message : "發生未知錯誤");
@@ -126,6 +87,7 @@ export default function App() {
       setIsUploading(false);
     }
   };
+
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(generatedLink);
