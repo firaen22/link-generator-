@@ -178,11 +178,13 @@ app.get("/api/pdf/:file_id", async (req, res) => {
         // Reconstruct encoded path (Firebase expects / to be %2F)
         const encodedPath = encodeURIComponent(path);
         blobUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media`;
+        console.log(`[PROXY_F] Path: ${path} | Final URL: ${blobUrl}`);
       } else {
         // Old full URL Base64
         let base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
         while (base64.length % 4) base64 += '=';
         blobUrl = Buffer.from(base64, 'base64').toString('utf8');
+        console.log(`[PROXY_V] URL: ${blobUrl}`);
       }
 
       console.log(`[PROXY] Fetching: ${blobUrl}`);

@@ -8,7 +8,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 
 // Match the API version reported in the error (5.4.296) to fix mismatch
-pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@5.4.296/build/pdf.worker.min.mjs`;
+pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@5.5.207/build/pdf.worker.min.mjs`;
 
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -42,12 +42,13 @@ export default function Viewer() {
   }
 
   const toUrlSafeBase64 = (str: string) => {
-    // btoa is for binary strings (Latin1 only). Path names should be ASCII, which is fine.
+    // Standard trick to btoa Unicode strings: utf-8 -> latin1 -> btoa
     try {
-      return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      const latin1 = unescape(encodeURIComponent(str));
+      return btoa(latin1).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     } catch (e) {
-      console.error("Base64 encoding error (likely Unicode in filename):", e);
-      return btoa(encodeURIComponent(str)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      console.error("Base64 encoding error:", e);
+      return "";
     }
   };
 
