@@ -22,6 +22,7 @@ export default function App() {
   const [isUploading, setIsUploading] = useState(false);
   const [shortLink, setShortLink] = useState('');
   const [isShortening, setIsShortening] = useState(false);
+  const [lastCompressed, setLastCompressed] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const SESSION_CACHE_KEY = 'pw_uploaded_files';
@@ -76,24 +77,13 @@ export default function App() {
         throw new Error("數據壓縮失敗");
       }
 
-      // 3. 產生 6 碼隨機短 ID 並寫入 Firestore
-      const shortId = Math.random().toString(36).substring(2, 8);
+      setLastCompressed(compressed);
 
-      try {
-        await setDoc(doc(db, "links", shortId), {
-          q: compressed, // 把原本超長的亂碼存進資料庫
-          createdAt: new Date().toISOString()
-        });
-      } catch (dbError) {
-        console.error("Firestore 儲存失敗:", dbError);
-        throw new Error("無法產生短網址，請確認 Firebase 資料庫已啟用");
-      }
-
-      // 4. 生成專屬短連結 (格式: 網址/l/短代碼)
+      // 3. 準備長連結
       const origin = window.location.origin;
-      const internalLink = `${origin}/l/${shortId}`;
+      const longLink = `${origin}/s?q=${compressed}`;
 
-      setGeneratedLink(internalLink);
+      setGeneratedLink(longLink);
       setShortLink('');
       setCopied(false);
     } catch (error) {
@@ -106,24 +96,24 @@ export default function App() {
 
 
   const handleShorten = async () => {
-    if (!generatedLink) return;
+    if (!lastCompressed) return;
     setIsShortening(true);
     try {
-      const response = await fetch('/api/shorten', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: generatedLink }),
+      // 1. 產生 6 碼隨機短 ID 並寫入 Firestore
+      const shortId = Math.random().toString(36).substring(2, 8);
+
+      await setDoc(doc(db, "links", shortId), {
+        q: lastCompressed,
+        createdAt: new Date().toISOString()
       });
-      const data = await response.json();
 
-      if (!response.ok) {
-        throw new Error(data.error || '縮網址失敗');
-      }
-
-      setShortLink(data.shortLink);
+      // 2. 生成專屬短連結
+      const origin = window.location.origin;
+      const internalShortLink = `${origin}/l/${shortId}`;
+      setShortLink(internalShortLink);
     } catch (error) {
-      console.error("縮網址過程發生錯誤:", error);
-      alert(error instanceof Error ? error.message : "縮網址時發生未知錯誤");
+      console.error("生成短連結失敗:", error);
+      alert("無法產生短連結，請檢查 Firebase 設定");
     } finally {
       setIsShortening(false);
     }
@@ -303,7 +293,7 @@ export default function App() {
                   disabled={isShortening}
                   className="w-full flex justify-center py-2 px-4 border border-indigo-200 text-indigo-700 bg-indigo-50 rounded-xl hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed text-sm font-semibold mt-1"
                 >
-                  {isShortening ? '🔄 正在轉換短連結...' : '✨ 將長連結轉為 Dub.co 短連結'}
+                  {isShortening ? '🔄 正在轉換短連結...' : '✨ 將長連結轉為 Firestore 短連結'}
                 </button>
               )}
             </div>
