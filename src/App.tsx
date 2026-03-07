@@ -108,7 +108,8 @@ export default function App() {
       });
 
       // 2. 生成專屬短連結
-      const origin = window.location.origin;
+      const customDomain = import.meta.env.VITE_APP_URL;
+      const origin = customDomain ? (customDomain.endsWith('/') ? customDomain.slice(0, -1) : customDomain) : window.location.origin;
       const internalShortLink = `${origin}/l/${shortId}`;
       setShortLink(internalShortLink);
     } catch (error) {
