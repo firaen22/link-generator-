@@ -91,34 +91,89 @@ export default function Viewer() {
   // Focus Mode / Personal Pacing tracking
   const [estLeftMins, setEstLeftMins] = useState(0);
 
+  // 0. Session Identity
+  const sessionIdRef = useRef(crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15));
+
   // Tracking refs
   const startTimeRef = useRef(Date.now());
   const lastPingRef = useRef(Date.now());
   const hasTrackedOpenRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // 1. Activity Monitoring (Active vs Passive)
+  const lastActivityRef = useRef(Date.now());
+  const isActiveRef = useRef(true);
+  const activeTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    const updateActivity = () => {
+      lastActivityRef.current = Date.now();
+      if (!isActiveRef.current) {
+        isActiveRef.current = true;
+        // console.log("[TRACK] User background -> active");
+      }
+    };
+
+    const activityEvents = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
+    activityEvents.forEach(e => window.addEventListener(e, updateActivity, { passive: true }));
+
+    // Checker: If no activity for 30s, mark as passive
+    const interval = setInterval(() => {
+      const now = Date.now();
+      if (now - lastActivityRef.current > 30000 && isActiveRef.current) {
+        isActiveRef.current = false;
+        // console.log("[TRACK] User active -> idle");
+      }
+    }, 1000);
+
+    return () => {
+      activityEvents.forEach(e => window.removeEventListener(e, updateActivity));
+      clearInterval(interval);
+    };
+  }, []);
+
   // Advanced behavior tracking
-  const sessionDataRef = useRef<Record<number, { dwellMs: number, maxScale: number }>>({});
+  const sessionDataRef = useRef<Record<number, { dwellMs: number, activeDwellMs: number, maxScale: number }>>({});
+  const navigationPathRef = useRef<number[]>([]);
   const currentPageRef = useRef(1);
   const pageEnterTimeRef = useRef(Date.now());
   const hasSentSessionEndRef = useRef(false);
   const scaleRef = useRef(1.0);
-  const exitTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const hiddenTimestampRef = useRef<number | null>(null);
   const numPagesRef = useRef<number | null>(null);
 
   useEffect(() => { scaleRef.current = scale; }, [scale]);
   useEffect(() => { numPagesRef.current = numPages; }, [numPages]);
 
+  // LocalStorage Key for this specific report session
+  const storageKey = `ag_report_log_${fileId}_${clientName}`;
+
   // Helper to accumulate telemetry
-  const updateSessionData = (pageNum: number, durationMs: number, currentScale: number) => {
+  const updateSessionData = (pageNum: number, durationMs: number, currentScale: number, wasActive: boolean) => {
     if (!sessionDataRef.current[pageNum]) {
-      sessionDataRef.current[pageNum] = { dwellMs: 0, maxScale: 1.0 };
+      sessionDataRef.current[pageNum] = { dwellMs: 0, activeDwellMs: 0, maxScale: 1.0 };
     }
     sessionDataRef.current[pageNum].dwellMs += durationMs;
+    if (wasActive) {
+      sessionDataRef.current[pageNum].activeDwellMs += durationMs;
+    }
     if (currentScale > sessionDataRef.current[pageNum].maxScale) {
       sessionDataRef.current[pageNum].maxScale = currentScale;
     }
+
+    // Update navigation path if it's a new entry point
+    if (navigationPathRef.current[navigationPathRef.current.length - 1] !== pageNum) {
+      navigationPathRef.current.push(pageNum);
+    }
+
+    // Persist to LocalStorage for robustness
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({
+        pages_data: sessionDataRef.current,
+        path: navigationPathRef.current,
+        startTime: startTimeRef.current,
+        sessionId: sessionIdRef.current
+      }));
+    } catch (e) { /* ignore quota issues */ }
   };
 
   // Dispatch final session payload
@@ -130,7 +185,7 @@ export default function Viewer() {
       const now = Date.now();
       const durationMs = now - pageEnterTimeRef.current;
 
-      updateSessionData(currentPageRef.current, durationMs, scaleRef.current);
+      updateSessionData(currentPageRef.current, durationMs, scaleRef.current, isActiveRef.current);
 
       const totalActiveTime = Math.floor((now - startTimeRef.current) / 1000);
 
@@ -141,14 +196,19 @@ export default function Viewer() {
 
       const payload = {
         event: 'session_end',
+        session_id: sessionIdRef.current,
         file_id: fileId,
         client_name: clientName,
         report_name: reportName,
         total_duration_sec: totalActiveTime,
         total_pages: numPagesRef.current,
         pages_data: sessionDataRef.current,
+        navigation_path: navigationPathRef.current,
         timestamp: new Date().toISOString()
       };
+
+      // Clear LocalStorage on successful (attempted) send
+      localStorage.removeItem(storageKey);
 
       try {
         const url = '/api/session-end';
@@ -176,6 +236,8 @@ export default function Viewer() {
           startTimeRef.current = Date.now();
           pageEnterTimeRef.current = Date.now();
           sessionDataRef.current = {};
+          navigationPathRef.current = [];
+          // Note: Keep sessionId same to link segments? User requested "UUID per initialization", so we keep it.
         }
       }
     };
@@ -185,6 +247,19 @@ export default function Viewer() {
     window.addEventListener('beforeunload', () => handleExit());
     window.addEventListener('pagehide', () => handleExit());
     document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Initial check for recovery
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        sessionDataRef.current = parsed.pages_data || {};
+        navigationPathRef.current = parsed.path || [];
+        if (parsed.startTime) startTimeRef.current = parsed.startTime;
+        if (parsed.sessionId) sessionIdRef.current = parsed.sessionId;
+        console.log(`[TRACK] Recovered session ${sessionIdRef.current.slice(0, 8)} from LocalStorage`);
+      } catch (e) { }
+    }
 
     return () => {
       window.removeEventListener('beforeunload', () => handleExit());
@@ -199,7 +274,7 @@ export default function Viewer() {
     const durationMs = now - pageEnterTimeRef.current;
 
     // Save state for previous page
-    updateSessionData(currentPageRef.current, durationMs, scaleRef.current);
+    updateSessionData(currentPageRef.current, durationMs, scaleRef.current, isActiveRef.current);
 
     // Reset loop for new tracking segment
     currentPageRef.current = pageNumber;
@@ -279,6 +354,7 @@ export default function Viewer() {
   const sendTrackingEvent = (event: string, data: any = {}) => {
     const payload = {
       event,
+      session_id: sessionIdRef.current,
       file_id: fileId,
       client_name: clientName,
       report_name: reportName,
@@ -632,8 +708,8 @@ export default function Viewer() {
               <button
                 onClick={handleManualClose}
                 className={`flex items-center gap-2 px-6 py-3.5 rounded-2xl font-medium transition-all shadow-lg hover:shadow-xl active:scale-95 border ${isDarkMode
-                    ? 'bg-slate-800 text-slate-300 hover:bg-slate-700 border-slate-700 shadow-black/40'
-                    : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-200/80 shadow-slate-200/50'
+                  ? 'bg-slate-800 text-slate-300 hover:bg-slate-700 border-slate-700 shadow-black/40'
+                  : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-200/80 shadow-slate-200/50'
                   }`}
               >
                 <div className="bg-red-500/10 p-1.5 rounded-full">
