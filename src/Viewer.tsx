@@ -482,16 +482,6 @@ export default function Viewer() {
   // Forced Proxy Mode: Always route through backend to bypass CORS
   const pdfUrl = `/api/pdf/${fileId}`;
 
-  // Debugging logs
-  useEffect(() => {
-    console.log('[VIEWER] Initializing with:', {
-      fileId,
-      pdfUrl,
-      clientName,
-      reportName
-    });
-  }, [fileId, pdfUrl]);
-
   const downloadUrl = pdfUrl;
 
   // Safe Exit Fallback Screen (for Safari/Chrome that block tab closing)
@@ -718,14 +708,6 @@ export default function Viewer() {
                   >
                     重試加載
                   </button>
-                  <a
-                    href={pdfUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
-                  >
-                    直接開啟 PDF
-                  </a>
                 </div>
               </div>
             }
