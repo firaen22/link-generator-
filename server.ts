@@ -398,12 +398,36 @@ ${behaviorSummary}
 💡 <b>NBA 破冰話術：</b>
 (提供一段專業文字)`;
 
-      const randomKey = apiKeys[Math.floor(Math.random() * apiKeys.length)];
-      const genAI = new GoogleGenerativeAI(randomKey);
-      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+      let aiInsights = '';
+      let success = false;
+      let lastError: any = null;
 
-      const result = await model.generateContent(prompt);
-      let aiInsights = result.response.text() || '無法分析。';
+      // Rotate through all available keys until one succeeds
+      const startIndex = Math.floor(Math.random() * apiKeys.length);
+      for (let i = 0; i < apiKeys.length; i++) {
+        const keyIndex = (startIndex + i) % apiKeys.length;
+        const currentKey = apiKeys[keyIndex];
+
+        try {
+          const genAI = new GoogleGenerativeAI(currentKey);
+          const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+          const result = await model.generateContent(prompt);
+          aiInsights = result.response.text() || '無法分析。';
+          success = true;
+          console.log(`[GEMINI] Key ${keyIndex + 1}/${apiKeys.length} success.`);
+          break;
+        } catch (err) {
+          const errMsg = (err as any).message || '';
+          console.warn(`[GEMINI WARN] Key ${keyIndex + 1} failed: ${errMsg.slice(0, 50)}...`);
+          lastError = err;
+          // If it's a safety error or something not quota related, we might still want to try other keys
+          // but usually we just move to the next key.
+        }
+      }
+
+      if (!success) {
+        throw lastError || new Error("All API keys exhausted or failed.");
+      }
 
       let rawAiInsights = aiInsights.replace(/^```(html)?|```$/gm, '').trim();
       let safeAiInsights = escapeHTML(rawAiInsights);
