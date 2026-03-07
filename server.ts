@@ -78,19 +78,18 @@ app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
     : `專案報告：${cName}`;
   const description = descParam || "為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
 
-  // Target URL: Points to our internal Viewer
-  // Pass shortened params to viewer as well
-  const viewerUrl = `${process.env.APP_URL || ''}/view/${file_id}?c=${encodeURIComponent(cName)}&r=${encodeURIComponent(rName)}`;
+  // --- Pre-flight: Determine Base URL (Critical for OG tags) ---
+  const host = req.get('host') || 'link-generator.vercel.app';
+  const protocol = req.headers['x-forwarded-proto'] || (host.includes('localhost') ? 'http' : 'https');
+  const baseUrl = process.env.APP_URL || `${protocol}://${host}`;
+
+  const absoluteUrl = `${baseUrl}/s/${file_id}${req.url.includes('?') ? '?' + req.url.split('?')[1] : ''}`;
+  const viewerUrl = `${baseUrl}/view/${file_id}?c=${encodeURIComponent(cName)}&r=${encodeURIComponent(rName)}`;
 
   // Send Telegram Notification (Fire and Forget)
   if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
     const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-
-    // Telegram HTML Format
-    const text = `🔔 <b>閱讀通知</b>\n\n` +
-      `👤 <b>客戶：</b> ${cName}\n` +
-      `📄 <b>報告：</b> ${rName} (${file_id})\n` +
-      `⏰ <b>時間：</b> 剛剛`;
+    const text = `🔔 <b>閱讀通知</b>\n\n👤 <b>客戶：</b> ${cName}\n📄 <b>報告：</b> ${rName} (${file_id})\n⏰ <b>時間：</b> 剛剛`;
 
     fetch(telegramUrl, {
       method: 'POST',
@@ -105,60 +104,71 @@ app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
         if (!r.ok) console.error(`Telegram API Error (Share): ${r.status} ${r.statusText}`);
       })
       .catch(err => console.error('Telegram notification failed (Share):', err));
-  } else {
-    console.log('[TELEGRAM] Skip share notification: Token or Chat ID missing');
   }
 
-  // 安全轉義用於 HTML 屬性
-  const safeTitle = escapeHTML(title);
-  const safeDesc = escapeHTML(description);
-  const safeImage = escapeHTML(ogImage);
+  // --- OG Tag Redesign Logic ---
 
+  // 1. Metadata Sanitization
+  const sanitize = (text: string) => text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const safeTitle = sanitize(title);
+  const safeDesc = sanitize(description);
+  const safeImage = sanitize(ogImage);
+
+  // 2. Crawler Detection
+  const userAgent = req.headers['user-agent'] || '';
+  const isCrawler = /WhatsApp|facebookexternalhit|TelegramBot|Twitterbot|Slackbot/i.test(userAgent);
+
+  // 5. Redesigned HTML Shell
   const html = `<!DOCTYPE html>
 <html lang="zh-HK">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>${safeTitle}</title>
-    
-    <!-- WhatsApp & Social Media Tags -->
+    <meta name="description" content="${safeDesc}" />
+
+    <!-- Open Graph / WhatsApp -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="${absoluteUrl}" />
     <meta property="og:title" content="${safeTitle}" />
     <meta property="og:description" content="${safeDesc}" />
     <meta property="og:image" content="${safeImage}" />
+    <meta property="og:image:secure_url" content="${safeImage}" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:image:type" content="image/jpeg" />
-    <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Antigravity 財富管理" />
-    
+
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="${safeTitle}" />
     <meta name="twitter:description" content="${safeDesc}" />
     <meta name="twitter:image" content="${safeImage}" />
-    
+
+    ${isCrawler ? '' : `
     <style>
-        body { font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
-        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin-bottom: 20px; }
+        body { font-family: -apple-system, system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; margin-bottom: 16px; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .container { text-align: center; }
+        .container { text-align: center; padding: 20px; }
     </style>
-    
     <script>
-        // 延遲 0.8 秒跳轉，確保 OG Tag 被抓取
-        setTimeout(function() {
-            window.location.href = "${viewerUrl}";
-        }, 800);
+        // Use a faster redirection for humans
+        window.location.replace("${viewerUrl}");
     </script>
+    `}
 </head>
 <body>
+    ${isCrawler ? '' : `
     <div class="container">
         <div class="loader"></div>
-        <p>正在為您開啟專屬市場報告...</p>
+        <p style="font-size: 14px; font-weight: 500;">正在進入專屬報告...</p>
     </div>
+    `}
 </body>
-</html>`;
+</html>`.trim();
 
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 });
 
