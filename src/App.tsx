@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useRef } from 'react';
-import { Link, Copy, Check, FileText, Share2, UploadCloud, BarChart3 } from 'lucide-react';
+import { Link, Copy, Check, FileText, Share2, UploadCloud } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "./firebase";
@@ -114,10 +114,6 @@ export default function App() {
             <div className="bg-indigo-600 w-12 h-12 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-200">
               <Share2 className="w-6 h-6 text-white" />
             </div>
-            <Link to="/dashboard" className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 bg-indigo-50 px-3 py-1.5 rounded-full transition-all">
-              <BarChart3 className="w-3.5 h-3.5" />
-              查看數據
-            </Link>
           </div>
           <h1 className="text-3xl font-bold tracking-tight text-slate-900">Link Generator</h1>
           <p className="text-slate-500 mt-2">Create professional preview links for WhatsApp sharing.</p>
