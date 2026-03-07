@@ -159,7 +159,7 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
 });
 
 // 新增：自家 Firestore 短連結解析路由
-app.get("/l/:shortId", async (req, res) => {
+app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
   const { shortId } = req.params;
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
   const userAgent = req.headers['user-agent'] || '';
@@ -172,17 +172,23 @@ app.get("/l/:shortId", async (req, res) => {
 
   try {
     const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links/${shortId}`;
+    console.log(`[SHORT_LINK] Resolving ID: ${shortId} via ${docUrl}`);
+
     const response = await fetch(docUrl);
 
     if (!response.ok) {
-      console.error(`Firestore fetch failed (${response.status}) for ID: ${shortId}`);
-      return res.status(404).send("找不到此連結或連結已失效");
+      const errorText = await response.text();
+      console.error(`[SHORT_LINK] Firestore error (${response.status}) for ID: ${shortId}: ${errorText}`);
+      return res.status(404).send(`找不到此連結 (${shortId}) 或連結已失效 (Status: ${response.status})`);
     }
 
     const data = await response.json();
     const q = data.fields?.q?.stringValue;
 
-    if (!q) return res.status(404).send("連結內容損毀");
+    if (!q) {
+      console.error(`[SHORT_LINK] Fields 'q' not found in ID: ${shortId}`, data);
+      return res.status(404).send("連結內容損毀 (Data Empty)");
+    }
 
     let cName = "貴客";
     let rName = "Document";
