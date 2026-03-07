@@ -109,9 +109,17 @@ app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
 
   // 轉義屬性值中的雙引號，避免破壞 HTML
   const clean = (str: string) => str.replace(/"/g, '&quot;');
+
+  // 自動探測 Base URL (這是 WhatsApp 抓取圖片的關鍵，必須是絕對路徑)
+  const host = req.get('host');
+  // Vercel 通常使用 https，本地開發使用 http
+  const protocol = req.headers['x-forwarded-proto'] || 'https';
+  const baseUrl = process.env.APP_URL || `${protocol}://${host}`;
+
   const safeTitle = clean(title);
   const safeDesc = clean(description);
-  const currentUrl = `${process.env.APP_URL || ''}/s/${file_id}${req.url.includes('?') ? '?' + req.url.split('?')[1] : ''}`;
+  const safeImage = clean(ogImage);
+  const currentUrl = `${baseUrl}/s/${file_id}${req.url.includes('?') ? '?' + req.url.split('?')[1] : ''}`;
 
   const html = `<!DOCTYPE html>
 <html lang="zh-HK">
@@ -126,8 +134,8 @@ app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
     <meta property="og:url" content="${currentUrl}" />
     <meta property="og:title" content="${safeTitle}" />
     <meta property="og:description" content="${safeDesc}" />
-    <meta property="og:image" content="${ogImage}" />
-    <meta property="og:image:alt" content="${safeTitle}" />
+    <meta property="og:image" content="${safeImage}" />
+    <meta property="og:image:secure_url" content="${safeImage}" />
     <meta property="og:site_name" content="Antigravity 財富管理" />
 
     <!-- Twitter -->
@@ -135,12 +143,12 @@ app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
     <meta name="twitter:url" content="${currentUrl}" />
     <meta name="twitter:title" content="${safeTitle}" />
     <meta name="twitter:description" content="${safeDesc}" />
-    <meta name="twitter:image" content="${ogImage}" />
+    <meta name="twitter:image" content="${safeImage}" />
 
     <!-- Meta for other platforms -->
     <meta itemprop="name" content="${safeTitle}">
     <meta itemprop="description" content="${safeDesc}">
-    <meta itemprop="image" content="${ogImage}">
+    <meta itemprop="image" content="${safeImage}">
     
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
