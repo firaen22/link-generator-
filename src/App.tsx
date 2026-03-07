@@ -92,7 +92,7 @@ export default function App() {
 
         if (!response.ok) {
           const errorText = await response.text();
-          console.error("Dub API Error:", errorText);
+          console.error("Dub API 詳細錯誤訊息:", errorText);
           setGeneratedLink(longLink); // Fallback to long link
         } else {
           const data = await response.json();
