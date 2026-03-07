@@ -37,8 +37,8 @@ export default function App() {
       let cleanFileURL = "";
       try {
         const snapshot = await uploadBytes(storageRef, file);
-        const fullURL = await getDownloadURL(snapshot.ref);
-        cleanFileURL = fullURL.split('&token=')[0];
+        // Use shorter internal path instead of the full generic URL
+        cleanFileURL = snapshot.ref.fullPath;
       } catch (uploadError) {
         console.error("Firebase Upload Error:", uploadError);
         throw new Error(`Firebase 上傳失敗：${uploadError instanceof Error ? uploadError.message : "權限不足"}`);
@@ -53,7 +53,7 @@ export default function App() {
           t: linkTitle,
           d: description,
           i: previewImage,
-          f: cleanFileURL
+          f: cleanFileURL // Now a shorter path if it's Firebase
         };
         compressed = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
       } catch (compError) {

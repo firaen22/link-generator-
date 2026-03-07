@@ -54,9 +54,10 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
         if (decoded.d) descParam = decoded.d;
         if (decoded.t) titleParam = decoded.t;
         if (decoded.f) {
-          // Encode the full URL for the viewer logic
-          const safeBase64 = Buffer.from(decoded.f).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-          finalFileId = `vblob_${safeBase64}`;
+          const isFirebasePath = decoded.f.startsWith('reports/');
+          // Base64 encode the string (path or full URL)
+          const base64 = Buffer.from(decoded.f).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+          finalFileId = isFirebasePath ? `f_${base64}` : `vblob_${base64}`;
         }
       }
     } catch (e) {
@@ -166,11 +167,14 @@ app.get("/api/pdf/:file_id", async (req, res) => {
     try {
       let blobUrl = "";
       if (file_id.startsWith('f_')) {
-        // Decompress shorter Firebase ID
-        const bucketPrefix = "https://firebasestorage.googleapis.com/v0/b/market-update-56e1c.firebasestorage.app/o/";
+        // Decompress shorter Firebase ID (Expected path example: "reports/file.pdf")
+        const bucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || "market-update-56e1c.firebasestorage.app";
         const base64 = file_id.slice(2).replace(/-/g, '+').replace(/_/g, '/');
         const path = Buffer.from(base64, 'base64').toString('utf8');
-        blobUrl = bucketPrefix + path;
+
+        // Firebase Storage Download URL format:
+        // https://firebasestorage.googleapis.com/v0/b/[BUCKET]/o/[PATH_ENCODED]?alt=media
+        blobUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(path)}?alt=media`;
       } else {
         // Old full URL Base64
         const base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');

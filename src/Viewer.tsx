@@ -41,7 +41,11 @@ export default function Viewer() {
     }
   }
 
-  const fileId = initialFileId || (fileFromProp ? `vblob_${btoa(fileFromProp).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}` : '');
+  const fileId = initialFileId || (fileFromProp ? (
+    fileFromProp.startsWith('reports/')
+      ? `f_${btoa(fileFromProp).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`
+      : `vblob_${btoa(fileFromProp).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`
+  ) : '');
 
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
