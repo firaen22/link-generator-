@@ -21,7 +21,7 @@ export default function App() {
   const [isUploading, setIsUploading] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const uploadedFilesRef = useRef<Map<string, string>>(new Map()); // Stores "name_size" -> cleanFileURL
+  const SESSION_CACHE_KEY = 'pw_uploaded_files';
 
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,27 +30,30 @@ export default function App() {
 
     setIsUploading(true);
     try {
-      // 0. Check for existing upload in this session
+      // 0. Check sessionStorage for same file in this session
       const fileIdentifier = `${file.name}_${file.size}`;
-      let cleanFileURL = uploadedFilesRef.current.get(fileIdentifier);
+      const sessionCache = JSON.parse(sessionStorage.getItem(SESSION_CACHE_KEY) || '{}');
+      let cleanFileURL: string = sessionCache[fileIdentifier] || '';
 
       if (cleanFileURL) {
-        console.log("File already uploaded in this session, reusing URL.");
+        console.log('File already uploaded this session, reusing path:', cleanFileURL);
       } else {
-        // 1. 上傳檔案並取得乾淨網址 (移除 token)
-        console.log("Starting upload...");
+        // 1. Upload to Firebase
+        console.log('Starting upload...');
         const fileName = `${Date.now().toString(36)}_${file.name}`;
-        const storageRef = ref(storage, `reports/${fileName}`); // Reverted 'r/' -> 'reports/'
+        const storageRef = ref(storage, `reports/${fileName}`);
 
         try {
           const snapshot = await uploadBytes(storageRef, file);
-          // Use shorter internal path instead of the full generic URL
           cleanFileURL = snapshot.ref.fullPath;
-          // Store for deduplication
-          uploadedFilesRef.current.set(fileIdentifier, cleanFileURL);
+          // Persist to sessionStorage for dedup
+          sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({
+            ...sessionCache,
+            [fileIdentifier]: cleanFileURL,
+          }));
         } catch (uploadError) {
-          console.error("Firebase Upload Error:", uploadError);
-          throw new Error(`Firebase 上傳失敗：${uploadError instanceof Error ? uploadError.message : "權限不足"}`);
+          console.error('Firebase Upload Error:', uploadError);
+          throw new Error(`Firebase 上傳失敗：${uploadError instanceof Error ? uploadError.message : '權限不足'}`);
         }
       }
 
@@ -74,31 +77,45 @@ export default function App() {
       const origin = window.location.origin;
       const longLink = `${origin}/s?q=${compressed}`;
 
-      // 4. 自動呼叫後端 API 生成短連結 (不再直接暴露 Dub API Key)
+      // 4. Generate short link via Dub.co
+      const dubApiKey = import.meta.env.VITE_DUB_API_KEY;
+      const dubDomain = import.meta.env.VITE_DUB_DOMAIN;
+
+      if (!dubApiKey || !dubDomain) {
+        console.warn('[DUB] Missing VITE_DUB_API_KEY or VITE_DUB_DOMAIN, using long link.');
+        setGeneratedLink(longLink);
+        setCopied(false);
+        return;
+      }
+
       try {
-        const response = await fetch("/api/shorten", {
-          method: "POST",
+        const dubRes = await fetch('https://api.dub.co/links', {
+          method: 'POST',
           headers: {
-            "Content-Type": "application/json",
+            Authorization: `Bearer ${dubApiKey}`,
+            'Content-Type': 'application/json',
           },
           body: JSON.stringify({
             url: longLink,
-            title: linkTitle ? `${linkTitle}：${clientName || "貴客"}` : `專案報告：${clientName || "貴客"}`,
-            description: description || "為您整理的最新市場動態。",
+            domain: dubDomain,
+            title: linkTitle
+              ? `${linkTitle}：${clientName || '貴客'}`
+              : `專案報告：${clientName || '貴客'}`,
+            description: description || '為您整理的最新市場動態。',
           }),
         });
 
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          console.error("短連結生成失敗:", errorData.error || "未知錯誤");
-          setGeneratedLink(longLink); // Fallback to long link
+        if (!dubRes.ok) {
+          const errText = await dubRes.text();
+          console.error('[DUB] API Error:', errText);
+          setGeneratedLink(longLink);
         } else {
-          const data = await response.json();
+          const data = await dubRes.json();
           setGeneratedLink(data.shortLink);
         }
-      } catch (backendErr) {
-        console.error("後端 API 呼叫失敗:", backendErr);
-        setGeneratedLink(longLink); // Fallback to long link
+      } catch (dubErr) {
+        console.error('[DUB] Request failed:', dubErr);
+        setGeneratedLink(longLink);
       }
       setCopied(false);
 
