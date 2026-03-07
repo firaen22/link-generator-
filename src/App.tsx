@@ -7,7 +7,8 @@ import React, { useState, useRef } from 'react';
 import { Copy, Check, Share2, UploadCloud } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { storage } from "./firebase";
+import { doc, setDoc } from "firebase/firestore";
+import { storage, db } from "./firebase";
 import LZString from 'lz-string';
 
 export default function App() {
@@ -75,12 +76,24 @@ export default function App() {
         throw new Error("數據壓縮失敗");
       }
 
-      // 3. 準備長連結
-      const origin = window.location.origin;
-      const longLink = `${origin}/s?q=${compressed}`;
+      // 3. 產生 6 碼隨機短 ID 並寫入 Firestore
+      const shortId = Math.random().toString(36).substring(2, 8);
 
-      // 4. 使用長連結 (已移除 Dub.co 整合)
-      setGeneratedLink(longLink);
+      try {
+        await setDoc(doc(db, "links", shortId), {
+          q: compressed, // 把原本超長的亂碼存進資料庫
+          createdAt: new Date().toISOString()
+        });
+      } catch (dbError) {
+        console.error("Firestore 儲存失敗:", dbError);
+        throw new Error("無法產生短網址，請確認 Firebase 資料庫已啟用");
+      }
+
+      // 4. 生成專屬短連結 (格式: 網址/l/短代碼)
+      const origin = window.location.origin;
+      const internalLink = `${origin}/l/${shortId}`;
+
+      setGeneratedLink(internalLink);
       setShortLink('');
       setCopied(false);
     } catch (error) {

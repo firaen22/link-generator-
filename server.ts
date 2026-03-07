@@ -158,7 +158,122 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
   res.send(html);
 });
 
-// Proxy Endpoint for PDF (Streams from Google Drive or redirects to Vercel Blob)
+// 新增：自家 Firestore 短連結解析路由
+app.get("/l/:shortId", async (req, res) => {
+  const { shortId } = req.params;
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID;
+
+  if (!projectId) {
+    return res.status(500).send("伺服器缺少 Firebase Project ID 設定");
+  }
+
+  try {
+    // 技巧：使用 Firebase REST API 讀取，這樣 Node.js 端就不用另外安裝/設定 Admin SDK
+    const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links/${shortId}`;
+    const response = await fetch(docUrl);
+
+    if (!response.ok) {
+      return res.status(404).send("找不到此連結或連結已失效");
+    }
+
+    const data = await response.json();
+    const q = data.fields?.q?.stringValue; // 把長字串 q 拿回來
+
+    if (!q) return res.status(404).send("連結內容損毀");
+
+    // --- 接下來我們用拿回來的 q 來解碼，產生 WhatsApp 預覽 ---
+    let cName = "貴客";
+    let rName = "Document";
+    let imageParam = "";
+    let descParam = "";
+    let titleParam = "";
+
+    try {
+      const decoded = JSON.parse(LZString.decompressFromEncodedURIComponent(q));
+      if (decoded) {
+        if (decoded.c) cName = decoded.c;
+        if (decoded.r) rName = decoded.r;
+        if (decoded.i) imageParam = decoded.i;
+        if (decoded.d) descParam = decoded.d;
+        if (decoded.t) titleParam = decoded.t;
+      }
+    } catch (e) {
+      console.error("解碼失敗:", e);
+    }
+
+    // 處理圖片 (自動修正 meee.com.tw)
+    let ogImage = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop";
+    if (imageParam && imageParam.startsWith('http')) {
+      ogImage = imageParam;
+      if (ogImage.includes('meee.com.tw') && !ogImage.includes('i.meee.com.tw')) {
+        ogImage = ogImage.replace('meee.com.tw', 'i.meee.com.tw') + '.png';
+      }
+    }
+
+    // 處理標題與描述
+    const title = titleParam
+      ? (titleParam.includes('：') || titleParam.includes(':') ? titleParam : `${titleParam}：${cName}`)
+      : `專案報告：${cName}`;
+    const description = descParam || "為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
+
+    // 最終要跳轉給客戶看的目標網址 (帶回長字串給前端 Viewer 解析)
+    const viewerUrl = `${process.env.APP_URL || ''}/view?q=${encodeURIComponent(q)}`;
+
+    // (選用) 發送 Telegram 通知：告訴你有人點了短連結
+    if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+      const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+      const text = `🔔 <b>閱讀通知 (短連結)</b>\n\n👤 <b>客戶：</b> ${cName}\n📄 <b>報告：</b> ${rName}\n🔗 <b>ID：</b> ${shortId}\n⏰ <b>時間：</b> 剛剛`;
+      fetch(telegramUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' })
+      }).catch(err => console.error('TG通知失敗:', err));
+    }
+
+    // 輸出 HTML 讓 WhatsApp 抓取預覽圖，並自動跳轉
+    const html = `
+    <!DOCTYPE html>
+    <html lang="zh-HK">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${title}</title>
+        <meta property="og:title" content="${title}" />
+        <meta property="og:description" content="${description}" />
+        <meta property="og:image" content="${ogImage}" />
+        <meta property="og:type" content="website" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:image" content="${ogImage}" />
+        
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
+            .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin-bottom: 20px; }
+            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+            .container { text-align: center; }
+        </style>
+        
+        <script>
+            setTimeout(function() {
+                window.location.href = "${viewerUrl}";
+            }, 800);
+        </script>
+    </head>
+    <body>
+        <div class="container">
+            <div class="loader"></div>
+            <p>正在為您開啟專屬市場報告...</p>
+        </div>
+    </body>
+    </html>`;
+
+    res.send(html);
+  } catch (error) {
+    console.error("Firestore 短連結讀取錯誤:", error);
+    res.status(500).send("系統發生錯誤，無法載入報告");
+  }
+});
+
+// Proxy Endpoint for PDF
 app.get("/api/pdf/:file_id", async (req, res) => {
   const { file_id } = req.params;
 
