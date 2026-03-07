@@ -91,14 +91,19 @@ export default function App() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Preview Data
-  const previewTitle = reportName && clientName
-    ? `${reportName} for ${clientName}`
-    : reportName
-      ? `${reportName} for Client`
-      : clientName
-        ? `Document for ${clientName}`
-        : "Document for Client";
+  // Preview Data logic aligned with server.ts
+  const previewCName = clientName || "貴客";
+  const previewTitleActual = linkTitle
+    ? (linkTitle.includes('：') || linkTitle.includes(':') ? linkTitle : `${linkTitle}：${previewCName}`)
+    : `專案報告：${previewCName}`;
+
+  const previewDescActual = description || "為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
+
+  // Image logic including server-side meee.com.tw auto-fix
+  let previewImageActual = previewImage || "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop";
+  if (previewImageActual.includes('meee.com.tw') && !previewImageActual.includes('i.meee.com.tw')) {
+    previewImageActual = previewImageActual.replace('meee.com.tw', 'i.meee.com.tw') + '.png';
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row font-sans text-slate-900">
@@ -276,7 +281,7 @@ export default function App() {
               {/* Image */}
               <div className="h-40 bg-slate-200 relative overflow-hidden">
                 <img
-                  src={previewImage || "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop"}
+                  src={previewImageActual}
                   alt="Preview"
                   className="w-full h-full object-cover"
                   onError={(e) => {
@@ -289,10 +294,10 @@ export default function App() {
               {/* Text Content */}
               <div className="p-3 bg-[#f0f2f5]">
                 <h3 className="font-semibold text-slate-900 text-sm leading-tight mb-1 line-clamp-2">
-                  {previewTitle}
+                  {previewTitleActual}
                 </h3>
                 <p className="text-xs text-slate-500 line-clamp-2 mb-1">
-                  Please review the shared document. Click to open in Google Drive.
+                  {previewDescActual}
                 </p>
                 <p className="text-[10px] text-slate-400 uppercase tracking-wide">
                   {window.location.host || 'your-app-url.com'}

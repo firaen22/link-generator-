@@ -100,12 +100,14 @@ app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
       <meta property="og:title" content="${title}" />
       <meta property="og:description" content="${description}" />
       <meta property="og:image" content="${ogImage}" />
+      <meta property="og:image:alt" content="${title}" />
       <meta property="og:type" content="website" />
+      <meta property="og:site_name" content="Antigravity 財富管理" />
       <meta name="twitter:card" content="summary_large_image" />
       <meta name="twitter:image" content="${ogImage}" />
       
       <style>
-          body { font-family: -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f9f9f9; color: #333; }
+          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
           .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin-bottom: 20px; }
           @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
           .container { text-align: center; }
