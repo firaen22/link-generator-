@@ -444,6 +444,46 @@ ${behaviorSummary}
   res.json({ status: "ok" });
 });
 
+// Short Link Generation Endpoint (Secure Dub.co Integration)
+app.post("/api/shorten", async (req, res) => {
+  const { url, title, description } = req.body;
+
+  const dubApiKey = process.env.DUB_API_KEY;
+  const dubDomain = process.env.DUB_DOMAIN;
+
+  if (!dubApiKey || !dubDomain) {
+    console.warn("[SHORTEN] Dub.co configuration missing on server.");
+    return res.status(501).json({ error: "Shortener not configured" });
+  }
+
+  try {
+    const response = await fetch("https://api.dub.co/links", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${dubApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url,
+        domain: dubDomain,
+        title: title || "專案報告",
+        description: description || "為您整理的最新市場動態。",
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("[SHORTEN] Dub API Error:", errorText);
+      return res.status(response.status).json({ error: errorText });
+    }
+
+    const data = await response.json();
+    res.json({ shortLink: data.shortLink });
+  } catch (err) {
+    console.error("[SHORTEN] Internal Error:", err);
+    res.status(500).json({ error: "Internal server error during shortening" });
+  }
+});
 
 // For Vercel Serverless Functions
 export default app;

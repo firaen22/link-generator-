@@ -64,42 +64,30 @@ export default function App() {
       const origin = window.location.origin;
       const longLink = `${origin}/s?q=${compressed}`;
 
-      // 4. 自動呼叫 Dub.co API 生成短連結
-      const dubApiKey = import.meta.env.VITE_DUB_API_KEY;
-      const dubDomain = import.meta.env.VITE_DUB_DOMAIN;
-
-      if (!dubApiKey || !dubDomain) {
-        console.warn("Dub.co configuration missing, using long link.");
-        setGeneratedLink(longLink);
-        setCopied(false);
-        return;
-      }
-
+      // 4. 自動呼叫後端 API 生成短連結 (不再直接暴露 Dub API Key)
       try {
-        const response = await fetch("https://api.dub.co/links", {
+        const response = await fetch("/api/shorten", {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${dubApiKey}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
             url: longLink,
-            domain: dubDomain,
             title: linkTitle ? `${linkTitle}：${clientName || "貴客"}` : `專案報告：${clientName || "貴客"}`,
             description: description || "為您整理的最新市場動態。",
           }),
         });
 
         if (!response.ok) {
-          const errorText = await response.text();
-          console.error("Dub API 詳細錯誤訊息:", errorText);
+          const errorData = await response.json().catch(() => ({}));
+          console.error("短連結生成失敗:", errorData.error || "未知錯誤");
           setGeneratedLink(longLink); // Fallback to long link
         } else {
           const data = await response.json();
           setGeneratedLink(data.shortLink);
         }
-      } catch (dubErr) {
-        console.error("Dub.co API call failed:", dubErr);
+      } catch (backendErr) {
+        console.error("後端 API 呼叫失敗:", backendErr);
         setGeneratedLink(longLink); // Fallback to long link
       }
       setCopied(false);
