@@ -19,6 +19,8 @@ export default function App() {
   const [generatedLink, setGeneratedLink] = useState('');
   const [copied, setCopied] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [shortLink, setShortLink] = useState('');
+  const [isShortening, setIsShortening] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const SESSION_CACHE_KEY = 'pw_uploaded_files';
@@ -79,6 +81,7 @@ export default function App() {
 
       // 4. 使用長連結 (已移除 Dub.co 整合)
       setGeneratedLink(longLink);
+      setShortLink('');
       setCopied(false);
     } catch (error) {
       console.error("生成過程中出錯:", error);
@@ -89,8 +92,32 @@ export default function App() {
   };
 
 
+  const handleShorten = async () => {
+    if (!generatedLink) return;
+    setIsShortening(true);
+    try {
+      const response = await fetch('/api/shorten', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: generatedLink }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || '縮網址失敗');
+      }
+
+      setShortLink(data.shortLink);
+    } catch (error) {
+      console.error("縮網址過程發生錯誤:", error);
+      alert(error instanceof Error ? error.message : "縮網址時發生未知錯誤");
+    } finally {
+      setIsShortening(false);
+    }
+  };
+
   const copyToClipboard = () => {
-    navigator.clipboard.writeText(generatedLink);
+    navigator.clipboard.writeText(shortLink || generatedLink);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -237,21 +264,35 @@ export default function App() {
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
               Ready to Share
             </label>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 block w-full p-3 bg-white border border-slate-200 rounded-xl text-xs font-mono text-slate-600 break-all shadow-sm">
-                {generatedLink}
-              </code>
-              <button
-                onClick={copyToClipboard}
-                className="flex-shrink-0 p-3 bg-white border border-slate-200 rounded-xl hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-600 transition-all cursor-pointer shadow-sm group"
-                title="Copy to clipboard"
-              >
-                {copied ? (
-                  <Check className="w-5 h-5 text-green-500" />
-                ) : (
-                  <Copy className="w-5 h-5 text-slate-400 group-hover:text-indigo-500" />
-                )}
-              </button>
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <code className="flex-1 block w-full p-3 bg-white border border-slate-200 rounded-xl text-xs font-mono text-slate-600 break-all shadow-sm">
+                  {shortLink || generatedLink}
+                </code>
+                <button
+                  onClick={copyToClipboard}
+                  className="flex-shrink-0 p-3 bg-white border border-slate-200 rounded-xl hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-600 transition-all cursor-pointer shadow-sm group"
+                  title="Copy to clipboard"
+                >
+                  {copied ? (
+                    <Check className="w-5 h-5 text-green-500" />
+                  ) : (
+                    <Copy className="w-5 h-5 text-slate-400 group-hover:text-indigo-500" />
+                  )}
+                </button>
+              </div>
+
+              {/* 當還沒產生短連結時，顯示轉換按鈕 */}
+              {!shortLink && (
+                <button
+                  type="button"
+                  onClick={handleShorten}
+                  disabled={isShortening}
+                  className="w-full flex justify-center py-2 px-4 border border-indigo-200 text-indigo-700 bg-indigo-50 rounded-xl hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed text-sm font-semibold mt-1"
+                >
+                  {isShortening ? '🔄 正在轉換短連結...' : '✨ 將長連結轉為 Dub.co 短連結'}
+                </button>
+              )}
             </div>
           </motion.div>
         )}

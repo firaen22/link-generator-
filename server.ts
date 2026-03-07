@@ -269,6 +269,44 @@ app.get("/api/pdf/:file_id", async (req, res) => {
   }
 });
 
+// 新增：Dub.co 短連結轉換 API 端點
+app.post("/api/shorten", async (req, res) => {
+  const { url } = req.body;
+
+  if (!url) {
+    return res.status(400).json({ error: "請提供需要縮短的網址 (url)" });
+  }
+
+  if (!process.env.DUB_API_KEY) {
+    console.error("缺少 DUB_API_KEY 環境變數");
+    return res.status(500).json({ error: "伺服器未設定短連結 API 金鑰" });
+  }
+
+  try {
+    const dubResponse = await fetch("https://api.dub.co/links", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.DUB_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ url }), // 將長連結傳給 Dub.co
+    });
+
+    if (!dubResponse.ok) {
+      const errorText = await dubResponse.text();
+      console.error("Dub.co API 錯誤:", dubResponse.status, errorText);
+      throw new Error(`Dub.co API 錯誤: ${dubResponse.status}`);
+    }
+
+    const data = await dubResponse.json();
+    res.json({ shortLink: data.shortLink }); // 回傳短連結
+  } catch (error) {
+    console.error("縮網址失敗:", error);
+    res.status(500).json({ error: "無法產生短連結，請稍後再試" });
+  }
+});
+
+
 // Tracking Endpoint
 app.post("/api/track", async (req, res) => {
   const { event, client_name, report_name, file_id, duration_seconds, page } = req.body;
