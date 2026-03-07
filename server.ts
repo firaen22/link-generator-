@@ -107,44 +107,62 @@ app.get(["/api/share/:file_id", "/s/:file_id"], (req, res) => {
     console.log('[TELEGRAM] Skip share notification: Token or Chat ID missing');
   }
 
-  const html = `
-  <!DOCTYPE html>
-  <html lang="zh-HK">
-  <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>${title}</title>
-      <meta property="og:title" content="${title}" />
-      <meta property="og:description" content="${description}" />
-      <meta property="og:image" content="${ogImage}" />
-      <meta property="og:image:alt" content="${title}" />
-      <meta property="og:type" content="website" />
-      <meta property="og:site_name" content="Antigravity 財富管理" />
-      <meta name="twitter:card" content="summary_large_image" />
-      <meta name="twitter:image" content="${ogImage}" />
-      
-      <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
-          .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin-bottom: 20px; }
-          @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-          .container { text-align: center; }
-      </style>
-      
-      <script>
-          // 延遲 0.8 秒跳轉，確保 OG Tag 被抓取，也給客戶一點「載入中」的專業感
-          setTimeout(function() {
-              window.location.href = "${viewerUrl}";
-          }, 800);
-      </script>
-  </head>
-  <body>
-      <div class="container">
-          <div class="loader"></div>
-          <p>正在為您開啟專屬市場報告...</p>
-      </div>
-  </body>
-  </html>
-  `;
+  // 轉義屬性值中的雙引號，避免破壞 HTML
+  const clean = (str: string) => str.replace(/"/g, '&quot;');
+  const safeTitle = clean(title);
+  const safeDesc = clean(description);
+  const currentUrl = `${process.env.APP_URL || ''}/s/${file_id}${req.url.includes('?') ? '?' + req.url.split('?')[1] : ''}`;
+
+  const html = `<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${safeTitle}</title>
+    <meta name="description" content="${safeDesc}" />
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="${currentUrl}" />
+    <meta property="og:title" content="${safeTitle}" />
+    <meta property="og:description" content="${safeDesc}" />
+    <meta property="og:image" content="${ogImage}" />
+    <meta property="og:image:alt" content="${safeTitle}" />
+    <meta property="og:site_name" content="Antigravity 財富管理" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="${currentUrl}" />
+    <meta name="twitter:title" content="${safeTitle}" />
+    <meta name="twitter:description" content="${safeDesc}" />
+    <meta name="twitter:image" content="${ogImage}" />
+
+    <!-- Meta for other platforms -->
+    <meta itemprop="name" content="${safeTitle}">
+    <meta itemprop="description" content="${safeDesc}">
+    <meta itemprop="image" content="${ogImage}">
+    
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin-bottom: 20px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .container { text-align: center; }
+    </style>
+    
+    <script>
+        // 延遲跳轉以利爬蟲抓取
+        setTimeout(function() {
+            window.location.href = "${viewerUrl}";
+        }, 800);
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="loader"></div>
+        <p>正在為您開啟專屬市場報告...</p>
+    </div>
+</body>
+</html>`;
 
   res.send(html);
 });
