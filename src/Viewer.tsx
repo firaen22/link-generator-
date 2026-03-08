@@ -331,16 +331,6 @@ export default function Viewer() {
     document.addEventListener('mouseenter', handleMouseEnter);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    // High-frequency "Paranoia" Check (captures fast mouse-shortcuts that events might miss)
-    let animationFrameId: number;
-    const checkFocus = () => {
-      if (!document.hasFocus() && isWindowFocused) {
-        setIsWindowFocused(false);
-      }
-      animationFrameId = requestAnimationFrame(checkFocus);
-    };
-    animationFrameId = requestAnimationFrame(checkFocus);
-
     return () => {
       window.removeEventListener('blur', handleBlur);
       window.removeEventListener('focus', handleFocus);
@@ -653,9 +643,9 @@ export default function Viewer() {
         className={`cs-mask flex-1 flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-500 ease-in-out relative ${isFullscreen
           ? 'pt-4 sm:pt-6 bg-slate-900' // 全螢幕：極小頂部留白 + 沉浸式深色背景
           : `pt-16 sm:pt-20 ${isDarkMode ? 'bg-[#121212]' : 'bg-[#F9FAFB]'}` // 正常：預留 Header 空間 + 使用者選的深淺色背景
-          } ${(isWindowFocused && !isScreenshotting)
+          } ${(isWindowFocused || isFullscreen)
             ? ''
-            : 'opacity-0 blur-3xl select-none pointer-events-none' // 資安防護
+            : 'opacity-0 blur-3xl select-none pointer-events-none' // 資安防護 - 僅在離開頁面時模糊
           }`}
         ref={containerRef}
         onContextMenu={(e) => e.preventDefault()}
