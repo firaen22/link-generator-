@@ -322,17 +322,18 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       // Fix missing padding
       while (base64.length % 4) base64 += '=';
       blobUrl = Buffer.from(base64, 'base64').toString('utf8');
+      console.log(`[PDF_PROXY] vblob_ ID: ${file_id.slice(0, 15)}... | Resolved URL: ${blobUrl.split('?')[0]}...`);
     } else {
       return res.status(400).send("Invalid file ID format.");
     }
 
-    console.log(`[PDF_PROXY] Processing: ${file_id.slice(0, 10)}... -> ${blobUrl.slice(0, 60)}...`);
+    const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || "market-update-56e1c";
+    console.log(`[PDF_PROXY] Request: ${file_id.slice(0, 10)}... | Project: ${projectId}`);
 
     // 2. Fetch with browser-like headers to avoid bot filters
     const response = await fetch(blobUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-        'Referer': 'https://firebasestorage.googleapis.com/'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
       }
     });
 
