@@ -1,25 +1,28 @@
 {
     "version": 2,
-    "rewrites": [
+    "routes": [
         {
-            "source": "/api/(.*)",
-            "destination": "/api/[...path]"
+            "src": "/api/(.*)",
+            "dest": "/api/[...path]"
         },
         {
-            "source": "/s",
-            "destination": "/api/share"
+            "src": "/s",
+            "dest": "/api/[...path]"
         },
         {
-            "source": "/s/(.*)",
-            "destination": "/api/share"
+            "src": "/s/(.*)",
+            "dest": "/api/[...path]"
         },
         {
-            "source": "/l/(.*)",
-            "destination": "/api/l/$1"
+            "src": "/l/(.*)",
+            "dest": "/api/[...path]"
         },
         {
-            "source": "/(.*)",
-            "destination": "/index.html"
+            "handle": "filesystem"
+        },
+        {
+            "src": "/(.*)",
+            "dest": "/index.html"
         }
     ]
 }
