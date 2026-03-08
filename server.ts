@@ -288,101 +288,65 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
 app.get("/api/pdf/:file_id", async (req, res) => {
   const { file_id } = req.params;
 
-  // Handle Firebase/Blob proxy
-  if (file_id.startsWith('vblob_') || file_id.startsWith('f_')) {
-    try {
-      let blobUrl = "";
-      if (file_id.startsWith('f_')) {
-        // Decompress shorter Firebase ID (Expected path example: "reports/file.pdf")
-        let base64 = file_id.slice(2).replace(/-/g, '+').replace(/_/g, '/');
-        // Add back padding if missing
-        while (base64.length % 4) base64 += '=';
-
-        const path = Buffer.from(base64, 'base64').toString('utf8');
-        const bucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || "market-update-56e1c.firebasestorage.app";
-        console.log(`[PROXY_F] Using bucket: ${bucket}`);
-
-        // Reconstruct encoded path (Firebase expects / to be %2F)
-        const encodedPath = encodeURIComponent(path);
-        blobUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media`;
-        console.log(`[PROXY_F] Path: ${path} | Final URL: ${blobUrl}`);
-      } else {
-        // Old full URL Base64
-        let base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
-        while (base64.length % 4) base64 += '=';
-        blobUrl = Buffer.from(base64, 'base64').toString('utf8');
-        console.log(`[PROXY_V] URL: ${blobUrl}`);
-      }
-
-      console.log(`[PROXY] Fetching: ${blobUrl}`);
-      const response = await fetch(blobUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-          'Referer': 'https://firebasestorage.googleapis.com/'
-        }
-      });
-      if (!response.ok) throw new Error(`Firebase storage fetch failed: ${response.status} ${response.statusText}`);
-
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", 'inline; filename="report.pdf"');
-
-      // Use streaming to mitigate Vercel 10s timeout
-      if (response.body) {
-        // @ts-ignore
-        const reader = response.body.getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          res.write(value);
-        }
-        res.end();
-      } else {
-        const arrayBuffer = await response.arrayBuffer();
-        res.send(Buffer.from(arrayBuffer));
-      }
-      return;
-    } catch (error) {
-      console.error("Vblob Proxy Error:", error);
-      res.status(404).send("Document not found");
-      return;
-    }
-  }
-
-  const driveUrl = `https://drive.google.com/uc?export=download&id=${file_id}`;
-
   try {
-    const response = await fetch(driveUrl);
+    let blobUrl = "";
+
+    // Handle Firebase shorthand (f_) or full Base64 encoded URLs (vblob_)
+    if (file_id.startsWith('f_')) {
+      let base64 = file_id.slice(2).replace(/-/g, '+').replace(/_/g, '/');
+      while (base64.length % 4) base64 += '=';
+      const path = Buffer.from(base64, 'base64').toString('utf8');
+      const encodedPath = encodeURIComponent(path);
+
+      const projectId = process.env.VITE_FIREBASE_PROJECT_ID || "market-update-56e1c";
+      const bucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || `${projectId}.firebasestorage.app`;
+      const fallbackBucket = `${projectId}.appspot.com`;
+
+      blobUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media`;
+      console.log(`[PROXY_F] Path: ${path} | Trying bucket: ${bucket}`);
+
+      let initialResponse = await fetch(blobUrl);
+      if (!initialResponse.ok && bucket !== fallbackBucket) {
+        console.log(`[PROXY_F] Failed with ${bucket}, trying fallback: ${fallbackBucket}`);
+        const fallbackUrl = `https://firebasestorage.googleapis.com/v0/b/${fallbackBucket}/o/${encodedPath}?alt=media`;
+        const fallbackResponse = await fetch(fallbackUrl);
+        if (fallbackResponse.ok) {
+          blobUrl = fallbackUrl;
+        }
+      }
+    } else if (file_id.startsWith('vblob_')) {
+      let base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
+      while (base64.length % 4) base64 += '=';
+      blobUrl = Buffer.from(base64, 'base64').toString('utf8');
+      console.log(`[PROXY_V] URL: ${blobUrl}`);
+    } else {
+      // Legacy or Google Drive fallback (simplified)
+      blobUrl = `https://drive.google.com/uc?export=download&id=${file_id}`;
+    }
+
+    const response = await fetch(blobUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Referer': 'https://firebasestorage.googleapis.com/'
+      }
+    });
 
     if (!response.ok) {
-      console.error(`[PDF PROXY] Failed to fetch from Drive. Status: ${response.status} ${response.statusText}`);
-      throw new Error(`Failed to fetch PDF: ${response.statusText}`);
+      console.error(`[PROXY] Fetch failed: ${response.status} ${response.statusText} for ${blobUrl}`);
+      return res.status(404).send("Document not found");
     }
 
-    const contentType = response.headers.get("content-type");
-    console.log(`[PDF PROXY] Fetch success. Content-Type: ${contentType}`);
-
-    if (contentType && contentType.includes("text/html")) {
-      console.error("[PDF PROXY] Received HTML instead of PDF. Likely a permission issue or virus scan warning.");
-      throw new Error("Google Drive returned HTML instead of PDF. Check file permissions.");
-    }
-
-    if (req.query.large === 'true' || (file_id && file_id.length > 20 && !req.query.large)) {
-      // Direct redirect for large files to avoid timeout
-      return res.redirect(driveUrl);
-    }
-
-    // Forward headers
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="document.pdf"`);
+    res.setHeader("Content-Disposition", 'inline; filename="report.pdf"');
 
-    // Stream the body to prevent 10s timeout on Vercel
+    // Use streaming to bypass Vercel 10s timeout
     if (response.body) {
       // @ts-ignore
       const reader = response.body.getReader();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        res.write(value); // Stream chunks to bypass 10s timeout
+        res.write(value);
       }
       res.end();
     } else {

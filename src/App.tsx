@@ -49,7 +49,8 @@ export default function App() {
 
         try {
           const snapshot = await uploadBytes(storageRef, file);
-          cleanFileURL = snapshot.ref.fullPath;
+          const downloadUrl = await getDownloadURL(snapshot.ref);
+          cleanFileURL = downloadUrl;
           // Persist to sessionStorage for dedup
           sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({
             ...sessionCache,
