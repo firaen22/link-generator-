@@ -320,8 +320,8 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       blobUrl = Buffer.from(base64, 'base64').toString('utf8');
       console.log(`[PROXY_V] URL: ${blobUrl}`);
     } else {
-      // Legacy or Google Drive fallback (simplified)
-      blobUrl = `https://drive.google.com/uc?export=download&id=${file_id}`;
+      console.warn(`[PROXY] Unsupported file_id format: ${file_id}`);
+      return res.status(400).send("Unsupported file ID format. Google Drive source is no longer supported.");
     }
 
     const response = await fetch(blobUrl, {
