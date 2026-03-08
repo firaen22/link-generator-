@@ -284,15 +284,16 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
   }
 });
 
-// Proxy Endpoint for PDF
+// Proxy Endpoint for PDF - Ensures cross-domain compatibility and bypassing Vercel limits
 app.get("/api/pdf/:file_id", async (req, res) => {
   const { file_id } = req.params;
 
   try {
     let blobUrl = "";
 
-    // Handle Firebase shorthand (f_) or full Base64 encoded URLs (vblob_)
+    // 1. Resolve logical PDF source URL
     if (file_id.startsWith('f_')) {
+      // Shorthand Firebase Path: f_<base64(path)>
       const base64 = file_id.slice(2).replace(/-/g, '+').replace(/_/g, '/');
       const filePath = Buffer.from(base64, 'base64').toString('utf8');
       const encodedPath = encodeURIComponent(filePath);
@@ -301,62 +302,57 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       const bucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.firebasestorage.app`;
       const fallbackBucket = `${projectId}.appspot.com`;
 
-      console.log(`[PROXY_F] Path: ${filePath} | Bucket: ${bucket}`);
-
       blobUrl = `https://firebasestorage.googleapis.com/v1/b/${bucket}/o/${encodedPath}?alt=media`;
 
-      let initialResponse = await fetch(blobUrl);
-      if (!initialResponse.ok && bucket !== fallbackBucket) {
-        console.warn(`[PROXY_F] v1 API failed (${initialResponse.status}). Trying fallback bucket with v0 API.`);
-        const fallbackUrl = `https://firebasestorage.googleapis.com/v0/b/${fallbackBucket}/o/${encodedPath}?alt=media`;
-        const fallbackResponse = await fetch(fallbackUrl);
-        if (fallbackResponse.ok) {
-          blobUrl = fallbackUrl;
-        }
+      // Verification fetch for primary bucket
+      const check = await fetch(blobUrl, { method: 'HEAD' });
+      if (!check.ok && bucket !== fallbackBucket) {
+        console.warn(`[PDF_PROXY] Primary bucket ${bucket} failed (${check.status}). Switching to fallback ${fallbackBucket}`);
+        blobUrl = `https://firebasestorage.googleapis.com/v1/b/${fallbackBucket}/o/${encodedPath}?alt=media`;
       }
-    }
-    else if (file_id.startsWith('vblob_')) {
-      let base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
-      while (base64.length % 4) base64 += '=';
+    } else if (file_id.startsWith('vblob_')) {
+      // Direct encoded URL (usually includes access token): vblob_<base64(url)>
+      const base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
       blobUrl = Buffer.from(base64, 'base64').toString('utf8');
-      console.log(`[PROXY_V] URL: ${blobUrl}`);
     } else {
-      console.warn(`[PROXY] Unsupported file_id format: ${file_id}`);
-      return res.status(400).send("Unsupported file ID format. Google Drive source is no longer supported.");
+      return res.status(400).send("Invalid file ID format.");
     }
 
+    console.log(`[PDF_PROXY] Processing: ${file_id.slice(0, 10)}... -> ${blobUrl.slice(0, 60)}...`);
+
+    // 2. Fetch with browser-like headers to avoid bot filters
     const response = await fetch(blobUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
         'Referer': 'https://firebasestorage.googleapis.com/'
       }
     });
 
     if (!response.ok) {
-      console.error(`[PROXY] Fetch failed: ${response.status} ${response.statusText} for ${blobUrl}`);
-      return res.status(404).send("Document not found");
+      console.error(`[PDF_PROXY] Upstream failure: ${response.status} ${response.statusText}`);
+      return res.status(response.status).send(`Upstream Fetch Error: ${response.statusText}`);
     }
 
+    // 3. Forward critical PDF headers
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", 'inline; filename="report.pdf"');
+    res.setHeader("Content-Disposition", 'inline; filename="report_secure.pdf"');
+    res.setHeader("Cache-Control", "private, max-age=3600"); // Cache for 1 hour for performance
 
-    // Use streaming to bypass Vercel 10s timeout
+    // 4. Stream response body to client (avoids loading whole file into Vercel memory)
     if (response.body) {
+      // Modern Node.js/Web Stream iteration
       // @ts-ignore
-      const reader = response.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        res.write(value);
+      for await (const chunk of response.body) {
+        res.write(chunk);
       }
       res.end();
     } else {
-      const arrayBuffer = await response.arrayBuffer();
-      res.send(Buffer.from(arrayBuffer));
+      const buffer = await response.arrayBuffer();
+      res.send(Buffer.from(buffer));
     }
-  } catch (error) {
-    console.error("PDF Proxy Error:", error);
-    res.status(500).send("Error loading document");
+  } catch (error: any) {
+    console.error("[PDF_PROXY_CRITICAL] Exception:", error.message);
+    res.status(500).send("A critical error occurred while retrieving the document.");
   }
 });
 

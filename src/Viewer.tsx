@@ -14,6 +14,7 @@ import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
 import LZString from 'lz-string';
+import { resolveFileId, getProxiedPdfUrl, decodeCompressedPayload } from './utils/pdfBridge';
 
 declare global {
   interface Window {
@@ -29,42 +30,21 @@ export default function Viewer() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // Initial values from query/params
-  const q = searchParams.get('q');
   let clientName = searchParams.get('c') || searchParams.get('client_name') || searchParams.get('name') || '貴客';
   let reportName = searchParams.get('r') || searchParams.get('report_name') || 'Document';
   let initialFileId = fileIdParam;
   let fileFromProp = '';
 
-  // Handle compressed payload
-  if (q) {
-    try {
-      const decoded = JSON.parse(LZString.decompressFromEncodedURIComponent(q));
-      if (decoded) {
-        if (decoded.c) clientName = decoded.c;
-        if (decoded.r) reportName = decoded.r;
-        if (decoded.f) fileFromProp = decoded.f;
-      }
-    } catch (e) {
-      console.error("Failed to decode compressed payload:", e);
-    }
+  const q = searchParams.get('q');
+  const decoded = decodeCompressedPayload(q);
+  if (decoded) {
+    if (decoded.c) clientName = decoded.c;
+    if (decoded.r) reportName = decoded.r;
+    if (decoded.f) fileFromProp = decoded.f;
   }
 
-  const toUrlSafeBase64 = (str: string) => {
-    // Standard trick to btoa Unicode strings: utf-8 -> latin1 -> btoa
-    try {
-      const latin1 = unescape(encodeURIComponent(str));
-      return btoa(latin1).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    } catch (e) {
-      console.error("Base64 encoding error:", e);
-      return "";
-    }
-  };
-
-  const fileId = initialFileId || (fileFromProp ? (
-    (fileFromProp.includes('://') || fileFromProp.includes('firebasestorage'))
-      ? `vblob_${toUrlSafeBase64(fileFromProp)}`
-      : `f_${toUrlSafeBase64(fileFromProp)}`
-  ) : '');
+  const fileId = initialFileId || resolveFileId(fileFromProp);
+  const pdfUrl = getProxiedPdfUrl(fileId);
 
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
@@ -505,9 +485,6 @@ export default function Viewer() {
 
     return () => clearInterval(timer);
   }, []);
-
-  // Forced Proxy Mode: Always route through backend to bypass CORS
-  const pdfUrl = `/api/pdf/${fileId}`;
 
   const downloadUrl = pdfUrl;
 
