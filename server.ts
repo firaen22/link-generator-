@@ -293,32 +293,25 @@ app.get("/api/pdf/:file_id", async (req, res) => {
 
     // Handle Firebase shorthand (f_) or full Base64 encoded URLs (vblob_)
     if (file_id.startsWith('f_')) {
-      let base64 = file_id.slice(2).replace(/-/g, '+').replace(/_/g, '/');
-      while (base64.length % 4) base64 += '=';
-      const path = Buffer.from(base64, 'base64').toString('utf8');
-      const encodedPath = encodeURIComponent(path);
+      const base64 = file_id.slice(2).replace(/-/g, '+').replace(/_/g, '/');
+      const filePath = Buffer.from(base64, 'base64').toString('utf8');
+      const encodedPath = encodeURIComponent(filePath);
 
-      // Attempt to find project ID from multiple sources
       const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || "market-update-56e1c";
       const bucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.firebasestorage.app`;
       const fallbackBucket = `${projectId}.appspot.com`;
 
-      console.log(`[PROXY_F] Processing shorthand ID: ${file_id}`);
-      console.log(`[PROXY_F] Project: ${projectId} | Decoded Path: ${path}`);
+      console.log(`[PROXY_F] Path: ${filePath} | Bucket: ${bucket}`);
 
-      blobUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media`;
-      console.log(`[PROXY_F] Attempting primary bucket: ${bucket}`);
+      blobUrl = `https://firebasestorage.googleapis.com/v1/b/${bucket}/o/${encodedPath}?alt=media`;
 
       let initialResponse = await fetch(blobUrl);
       if (!initialResponse.ok && bucket !== fallbackBucket) {
-        console.warn(`[PROXY_F] Primary bucket failed (${initialResponse.status}). Trying fallback bucket: ${fallbackBucket}`);
+        console.warn(`[PROXY_F] v1 API failed (${initialResponse.status}). Trying fallback bucket with v0 API.`);
         const fallbackUrl = `https://firebasestorage.googleapis.com/v0/b/${fallbackBucket}/o/${encodedPath}?alt=media`;
         const fallbackResponse = await fetch(fallbackUrl);
         if (fallbackResponse.ok) {
-          console.log(`[PROXY_F] Success with fallback bucket.`);
           blobUrl = fallbackUrl;
-        } else {
-          console.error(`[PROXY_F] Fallback bucket also failed (${fallbackResponse.status}). File might be private or missing.`);
         }
       }
     }
