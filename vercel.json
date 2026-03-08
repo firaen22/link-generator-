@@ -15,7 +15,7 @@
         },
         {
             "source": "/l/(.*)",
-            "destination": "/api/share"
+            "destination": "/api/l/$1"
         },
         {
             "source": "/(.*)",
