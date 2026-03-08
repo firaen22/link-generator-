@@ -38,13 +38,16 @@ export default function Viewer() {
   const q = searchParams.get('q');
   const decoded = decodeCompressedPayload(q);
   if (decoded) {
+    console.log('[VIEWER] Decoded payload:', decoded);
     if (decoded.c) clientName = decoded.c;
     if (decoded.r) reportName = decoded.r;
     if (decoded.f) fileFromProp = decoded.f;
   }
 
   const fileId = initialFileId || resolveFileId(fileFromProp);
+  console.log('[VIEWER] Final File ID:', fileId);
   const pdfUrl = getProxiedPdfUrl(fileId);
+  console.log('[VIEWER] PDF Proxy URL:', pdfUrl);
 
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);

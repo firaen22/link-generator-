@@ -12,13 +12,12 @@ import LZString from 'lz-string';
 export const toUrlSafeBase64 = (str: string): string => {
     if (!str) return '';
     try {
-        // Use a more robust browser-side URL-safe base64 encoding
+        // Standard UTF-8 to Base64 trick
         const bytes = new TextEncoder().encode(str);
         const binString = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
-        return btoa(binString)
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
-            .replace(/=+$/, '');
+        const base64 = btoa(binString);
+        // Convert to URL-safe (replaces + with - and / with _)
+        return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     } catch (e) {
         console.error('[PDF_BRIDGE] Base64 encoding error:', e);
         return '';

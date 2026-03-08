@@ -48,7 +48,9 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
   // Handle compressed payload if present
   if (q && typeof q === 'string') {
     try {
-      const decoded = JSON.parse(LZString.decompressFromEncodedURIComponent(q));
+      const decompressed = LZString.decompressFromEncodedURIComponent(q);
+      console.log(`[SHARE] Decompressed payload: ${decompressed?.slice(0, 50)}...`);
+      const decoded = JSON.parse(decompressed);
       if (decoded) {
         if (decoded.c) cName = decoded.c;
         if (decoded.r) rName = decoded.r;
@@ -57,13 +59,17 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
         if (decoded.t) titleParam = decoded.t;
         if (decoded.f) {
           const isFirebasePath = decoded.f.startsWith('reports/');
-          // Base64 encode the string (path or full URL)
-          const base64 = Buffer.from(decoded.f).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+          // Standard URL-safe Base64 normalization
+          const base64 = Buffer.from(decoded.f, 'utf8').toString('base64')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
           finalFileId = isFirebasePath ? `f_${base64}` : `vblob_${base64}`;
+          console.log(`[SHARE] Resolved file_id: ${finalFileId} from path: ${decoded.f}`);
         }
       }
     } catch (e) {
-      console.error("Failed to decode compressed payload:", e);
+      console.error("[SHARE] Failed to decode compressed payload:", e);
     }
   }
 
@@ -120,6 +126,8 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
     console.log('[TELEGRAM] Skip share notification: Token or Chat ID missing');
   }
 
+  // No changes needed here, cleaned up redundant block.
+
   const html = `
   <!DOCTYPE html>
   <html lang="zh-HK">
@@ -144,10 +152,12 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
       </style>
       
       <script>
-          // 延遲 0.8 秒跳轉，確保 OG Tag 被抓取，也給客戶一點「載入中」的專業感
+          // Use window.location.origin to ensure absolute path redirect
+          const targetUrl = window.location.origin + "${viewerUrl}";
+          console.log('[SHARE] Client-side redirecting to:', targetUrl);
           setTimeout(function() {
-              window.location.href = "${viewerUrl}";
-          }, 800);
+              window.location.replace(targetUrl);
+          }, 500);
       </script>
   </head>
   <body>
@@ -229,7 +239,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     // Use relative path for reliability and origin consistency
     const viewerUrl = `/view?q=${encodeURIComponent(q)}`;
 
-    console.log(`[SHORT_LINK] Resolved: ${shortId} -> ${viewerUrl.slice(0, 50)}...`);
+    console.log(`[SHORT_LINK] Resolved: ${shortId} -> Redirecting to: ${viewerUrl}`);
 
     // 只有真實用戶點擊才通知，過濾爬蟲
     if (!isCrawler && process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
@@ -267,13 +277,12 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
             @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
             .container { text-align: center; padding: 20px; }
         </style>
-
-        <meta http-equiv="refresh" content="3;url=${viewerUrl}">
         
         <script>
-            // Single reliable redirect
+            const targetUrl = window.location.origin + "${viewerUrl}";
+            console.log('[SHORT_LINK] Redirection Target:', targetUrl);
             setTimeout(function() { 
-                window.location.replace("${viewerUrl}"); 
+                window.location.replace(targetUrl); 
             }, 500);
         </script>
     </head>
@@ -303,8 +312,10 @@ app.get("/api/pdf/:file_id", async (req, res) => {
     // 1. Resolve logical PDF source URL
     if (file_id.startsWith('f_')) {
       // Shorthand Firebase Path: f_<base64(path)>
-      let base64 = file_id.slice(2).replace(/-/g, '+').replace(/_/g, '/');
+      const rawBase64 = file_id.slice(2);
+      let base64 = rawBase64.replace(/-/g, '+').replace(/_/g, '/');
       while (base64.length % 4) base64 += '=';
+
       const filePath = Buffer.from(base64, 'base64').toString('utf8');
 
       // Firebase Storage REST API encoding: slashes must be %2F
@@ -312,9 +323,10 @@ app.get("/api/pdf/:file_id", async (req, res) => {
 
       const bucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || "market-update-56e1c.firebasestorage.app";
 
-      console.log(`[PDF_PROXY] f_ ID: ${file_id} | Path: ${filePath} | Bucket: ${bucket}`);
+      console.log(`[PDF_PROXY] Decoding f_ ID. Path: ${filePath} | Bucket: ${bucket}`);
 
       blobUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media`;
+      console.log(`[PDF_PROXY] Final Blob URL: ${blobUrl}`);
     } else if (file_id.startsWith('vblob_')) {
       // Direct encoded URL (usually includes access token): vblob_<base64(url)>
       let base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
