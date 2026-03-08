@@ -17,7 +17,9 @@ import LZString from 'lz-string';
 
 declare global {
   interface Window {
-    gtag?: (...args: any[]) => void;
+    gtag: (command: string, ...args: any[]) => void;
+    dataLayer: any[];
+    hj: (command: string, eventName: string) => void;
   }
 }
 
@@ -422,6 +424,11 @@ export default function Viewer() {
         client_name: clientName,
         report_name: reportName
       });
+    }
+
+    // 3. Hotjar 事件 (可用於在錄影中搜尋特定行為)
+    if (typeof window.hj === 'function') {
+      window.hj('event', event);
     }
   };
 
