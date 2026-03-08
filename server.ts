@@ -86,10 +86,12 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
   const description = descParam || "為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
 
   // Target URL: Points to our internal Viewer
-  // If we have 'q', we pass 'q' to viewer, otherwise we pass file_id and params
+  // Use relative paths to avoid dependency on APP_URL environment variable
   const viewerUrl = q
-    ? `${process.env.APP_URL || ''}/view?q=${encodeURIComponent(q as string)}`
-    : `${process.env.APP_URL || ''}/view/${finalFileId}?c=${encodeURIComponent(cName)}&r=${encodeURIComponent(rName)}`;
+    ? `/view?q=${encodeURIComponent(q as string)}`
+    : `/view/${finalFileId}?c=${encodeURIComponent(cName)}&r=${encodeURIComponent(rName)}`;
+
+  console.log(`[SHARE] Redirecting to: ${viewerUrl}`);
 
   // Send Telegram Notification (Fire and Forget)
   if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {

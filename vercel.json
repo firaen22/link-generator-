@@ -6,12 +6,16 @@
             "destination": "/api/[...path]"
         },
         {
-            "source": "/s(.*)",
-            "destination": "/api/[...path]"
+            "source": "/s",
+            "destination": "/api/share"
+        },
+        {
+            "source": "/s/(.*)",
+            "destination": "/api/share"
         },
         {
             "source": "/l/(.*)",
-            "destination": "/api/[...path]"
+            "destination": "/api/share"
         },
         {
             "source": "/(.*)",
