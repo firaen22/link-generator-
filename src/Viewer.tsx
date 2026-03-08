@@ -15,6 +15,12 @@ import 'react-pdf/dist/Page/TextLayer.css';
 
 import LZString from 'lz-string';
 
+declare global {
+  interface Window {
+    gtag?: (...args: any[]) => void;
+  }
+}
+
 export default function Viewer() {
   const { fileId: fileIdParam } = useParams();
   const [searchParams] = useSearchParams();
@@ -401,12 +407,22 @@ export default function Viewer() {
       ...data
     };
 
-    // Send to backend (fire and forget)
+    // 1. 保留原本的後端追蹤
     fetch('/api/track', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     }).catch(err => console.error('Tracking failed', err));
+
+    // 2. 新增 GA4 事件追蹤
+    if (typeof window.gtag === 'function') {
+      window.gtag('event', event, {
+        ...data,
+        file_id: fileId,
+        client_name: clientName,
+        report_name: reportName
+      });
+    }
   };
 
   function onDocumentLoadSuccess({ numPages }: { numPages: number }) {
