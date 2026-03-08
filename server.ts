@@ -28,6 +28,8 @@ app.use(express.json());
 console.log('--- Server Status ---');
 console.log(`Telegram Bot: ${process.env.TELEGRAM_BOT_TOKEN ? '✅ LOADED' : '❌ MISSING'}`);
 console.log(`Telegram Chat ID: ${process.env.TELEGRAM_CHAT_ID ? '✅ LOADED' : '❌ MISSING'}`);
+console.log(`Firebase Project ID: ${process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || '❌ MISSING'}`);
+console.log(`Firebase Bucket: ${process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || '❌ MISSING'}`);
 console.log('------------------------------');
 
 // API Route for the Link Preview (Supports both old and new shorter path)
@@ -294,13 +296,17 @@ app.get("/api/pdf/:file_id", async (req, res) => {
     // 1. Resolve logical PDF source URL
     if (file_id.startsWith('f_')) {
       // Shorthand Firebase Path: f_<base64(path)>
-      const base64 = file_id.slice(2).replace(/-/g, '+').replace(/_/g, '/');
+      let base64 = file_id.slice(2).replace(/-/g, '+').replace(/_/g, '/');
+      // Fix missing padding
+      while (base64.length % 4) base64 += '=';
       const filePath = Buffer.from(base64, 'base64').toString('utf8');
       const encodedPath = encodeURIComponent(filePath);
 
       const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || "market-update-56e1c";
       const bucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.firebasestorage.app`;
       const fallbackBucket = `${projectId}.appspot.com`;
+
+      console.log(`[PDF_PROXY] f_ ID: ${file_id} | Path: ${filePath} | Project: ${projectId} | Bucket: ${bucket}`);
 
       blobUrl = `https://firebasestorage.googleapis.com/v1/b/${bucket}/o/${encodedPath}?alt=media`;
 
@@ -312,7 +318,9 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       }
     } else if (file_id.startsWith('vblob_')) {
       // Direct encoded URL (usually includes access token): vblob_<base64(url)>
-      const base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
+      let base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
+      // Fix missing padding
+      while (base64.length % 4) base64 += '=';
       blobUrl = Buffer.from(base64, 'base64').toString('utf8');
     } else {
       return res.status(400).send("Invalid file ID format.");
