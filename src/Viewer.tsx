@@ -61,9 +61,9 @@ export default function Viewer() {
   };
 
   const fileId = initialFileId || (fileFromProp ? (
-    fileFromProp.startsWith('reports/')
-      ? `f_${toUrlSafeBase64(fileFromProp)}`
-      : `vblob_${toUrlSafeBase64(fileFromProp)}`
+    (fileFromProp.includes('://') || fileFromProp.includes('firebasestorage'))
+      ? `vblob_${toUrlSafeBase64(fileFromProp)}`
+      : `f_${toUrlSafeBase64(fileFromProp)}`
   ) : '');
 
   const [numPages, setNumPages] = useState<number | null>(null);
