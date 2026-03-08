@@ -225,8 +225,11 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
       ? (titleParam.includes('：') || titleParam.includes(':') ? titleParam : `${titleParam}：${cName}`)
       : `專案報告：${cName}`;
     const description = descParam || "為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
-    const appBaseUrl = process.env.APP_URL || `https://${req.headers.host}`;
-    const viewerUrl = `${appBaseUrl}/view?q=${encodeURIComponent(q)}`;
+
+    // Use relative path for reliability and origin consistency
+    const viewerUrl = `/view?q=${encodeURIComponent(q)}`;
+
+    console.log(`[SHORT_LINK] Resolved: ${shortId} -> ${viewerUrl.slice(0, 50)}...`);
 
     // 只有真實用戶點擊才通知，過濾爬蟲
     if (!isCrawler && process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
@@ -264,15 +267,17 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
             @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
             .container { text-align: center; padding: 20px; }
         </style>
+
+        <meta http-equiv="refresh" content="3;url=${viewerUrl}">
         
         <script>
-            // 如果 3 秒後還沒跳轉，手動強制跳轉
-            setTimeout(function() { window.location.replace("${viewerUrl}"); }, 3000);
-            // 正常跳轉
-            setTimeout(function() { window.location.href = "${viewerUrl}"; }, 800);
+            // Single reliable redirect
+            setTimeout(function() { 
+                window.location.replace("${viewerUrl}"); 
+            }, 500);
         </script>
     </head>
-    <body onload="setTimeout(function(){ window.location.href='${viewerUrl}'; }, 1000)">
+    <body>
         <div class="container">
             <div class="loader"></div>
             <p>正在為您開啟專屬市場報告...</p>
