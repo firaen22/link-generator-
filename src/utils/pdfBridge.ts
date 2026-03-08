@@ -10,10 +10,15 @@ import LZString from 'lz-string';
  * Converts a string to a URL-safe Base64 format compatible with the backend.
  */
 export const toUrlSafeBase64 = (str: string): string => {
+    if (!str) return '';
     try {
-        // Standard trick for Unicode btoa: UTF-8 -> Latin1 -> btoa
-        const latin1 = unescape(encodeURIComponent(str));
-        return btoa(latin1).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        // Use a more robust browser-side URL-safe base64 encoding
+        const bytes = new TextEncoder().encode(str);
+        const binString = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
+        return btoa(binString)
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
     } catch (e) {
         console.error('[PDF_BRIDGE] Base64 encoding error:', e);
         return '';
@@ -26,12 +31,12 @@ export const toUrlSafeBase64 = (str: string): string => {
 export const resolveFileId = (fileFromProp: string | null): string => {
     if (!fileFromProp) return '';
 
-    // If it's a full URL (likely a tokenized download URL), use vblob_ prefix
-    if (fileFromProp.includes('://') || fileFromProp.includes('firebasestorage')) {
+    // If it's a full URL (Vercel Blob or tokenized Firebase URL)
+    if (fileFromProp.includes('://') || fileFromProp.includes('firebasestorage.googleapis.com')) {
         return `vblob_${toUrlSafeBase64(fileFromProp)}`;
     }
 
-    // Otherwise, assume it's a shorthand path relative to Firebase Storage
+    // Assume shorthand path relative to Firebase Storage (e.g. "reports/...")
     return `f_${toUrlSafeBase64(fileFromProp)}`;
 };
 

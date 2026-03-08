@@ -555,49 +555,34 @@ export default function Viewer() {
         </div>
       )}
 
-      {/* Professional Header - 專注模式下自動往上滑動隱藏 */}
-      <header className={`backdrop-blur-md border-b shadow-[0_4px_20px_rgba(0,0,0,0.03)] h-14 sm:h-16 flex items-center justify-between px-3 sm:px-6 fixed top-0 w-full z-50 transition-all duration-300 ease-in-out ${isFullscreen ? '-translate-y-full' : 'translate-y-0'} ${isDarkMode ? 'bg-[#121212]/95 border-slate-800' : 'bg-white/95 border-slate-100'}`}>
+      {/* Professional Header - Glassmorphic with Golden Accent */}
+      <header className={`backdrop-blur-xl border-b shadow-sm h-14 sm:h-16 flex items-center justify-between px-3 sm:px-6 fixed top-0 w-full z-50 transition-all duration-500 ease-in-out ${isFullscreen ? '-translate-y-full opacity-0' : 'translate-y-0 opacity-100'} ${isDarkMode ? 'bg-[#0f172a]/80 border-white/5 ring-1 ring-white/5' : 'bg-white/70 border-slate-200/50'}`}>
         {/* Top subtle gold line for premium feel */}
-        <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-amber-300 via-amber-400 to-amber-300"></div>
+        <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-amber-400/50 to-transparent"></div>
 
         {/* Left: Close & Report Details */}
-        <div className="flex items-center gap-3 sm:gap-4">
+        <div className="flex items-center gap-3 sm:gap-5">
           <button
-            onClick={() => {
-              try {
-                // 1. Try to close if running inside Telegram Mini App
-                if ((window as any).Telegram && (window as any).Telegram.WebApp) {
-                  (window as any).Telegram.WebApp.close();
-                  return;
-                }
-
-                // 2. Clear Document immediately for security and show fallback UI
-                setIsClosed(true);
-
-                // 3. Desktop / Permissive browser close
-                window.close();
-                window.location.href = "about:blank";
-
-              } catch (e) {
-                console.warn('Tab close blocked by browser');
-              }
-            }}
-            className={`p-1.5 sm:p-2 rounded-full transition-all ${isDarkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-500'}`}
+            onClick={handleManualClose}
+            className={`p-2 rounded-xl transition-all active:scale-90 ${isDarkMode ? 'bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-500'}`}
             title="關閉報告"
           >
-            <X className="w-5 h-5 sm:w-6 sm:h-6" />
+            <X className="w-5 h-5" />
           </button>
 
           <div className="flex flex-col">
-            <h1 className={`text-xs sm:text-sm font-bold leading-tight truncate max-w-[140px] sm:max-w-xs ${isDarkMode ? 'text-slate-100' : 'text-blue-950'}`}>{reportName}</h1>
-            <span className="text-[9px] sm:text-xs text-amber-500/90 font-medium truncate max-w-[140px] sm:max-w-xs uppercase tracking-wider">
-              Prepared for {clientName}
-            </span>
+            <h1 className={`text-xs sm:text-sm font-bold leading-tight tracking-tight truncate max-w-[140px] sm:max-w-xs ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{reportName}</h1>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+              <span className="text-[9px] sm:text-[10px] text-slate-400 font-semibold uppercase tracking-[0.1em]">
+                {clientName} <span className="mx-1 opacity-30">•</span> Priority Access
+              </span>
+            </div>
           </div>
         </div>
 
         {/* Right: Stats & Actions */}
-        <div className="flex items-center gap-3 sm:gap-4">
+        <div className="flex items-center gap-2 sm:gap-4">
           {/* Action: Liquid Mode Applet */}
           <button
             onClick={() => {
@@ -662,22 +647,35 @@ export default function Viewer() {
             file={pdfUrl}
             onLoadSuccess={onDocumentLoadSuccess}
             loading={
-              <div className="flex flex-col items-center justify-center h-[60vh] w-full space-y-6">
-                <div className="relative w-20 h-20 flex items-center justify-center">
-                  {/* Outer spinning ring (Navy) */}
-                  <div className="absolute inset-0 rounded-full border-t-2 border-l-2 border-blue-900 animate-[spin_1.5s_linear_infinite] opacity-80"></div>
-                  {/* Inner spinning ring (Amber) */}
-                  <div className="absolute inset-2 rounded-full border-b-2 border-r-2 border-amber-400 animate-[spin_2s_linear_infinite_reverse] opacity-90"></div>
-                  {/* Center branding removed, keeping rings */}
-                  <div className="h-12 w-12 bg-gradient-to-tr from-white to-slate-50 rounded-full flex items-center justify-center shadow-inner animate-pulse">
-                    <FileText className="w-6 h-6 text-blue-900 opacity-50" />
+              <div className="flex flex-col items-center justify-center h-[70vh] w-full">
+                <div className="relative w-24 h-24 mb-10">
+                  {/* Rotating Outer Ring */}
+                  <div className="absolute inset-0 rounded-full border-[1px] border-slate-200/20 border-t-amber-500 animate-[spin_3s_linear_infinite]"></div>
+                  {/* Pulsing Core */}
+                  <div className="absolute inset-4 rounded-full bg-gradient-to-br from-indigo-500/10 to-blue-600/10 backdrop-blur-md flex items-center justify-center border border-white/10 animate-pulse">
+                    <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+                      <FileText className="w-4 h-4 text-white" />
+                    </div>
+                  </div>
+                  {/* Orbital Dot */}
+                  <div className="absolute inset-0 animate-[spin_2s_ease-in-out_infinite]">
+                    <div className="absolute -top-1 left-1/2 -ml-1 w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)]"></div>
                   </div>
                 </div>
-                <div className="text-center space-y-2">
-                  <h3 className="text-blue-950 font-bold text-lg">Secure Document Loading</h3>
-                  <p className="text-sm text-amber-600/80 font-medium animate-pulse max-w-xs mx-auto">
-                    Retrieving large report from encrypted storage...
-                  </p>
+                <div className="text-center space-y-3">
+                  <h3 className={`font-bold text-lg tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                    Decrypting Secure Report
+                  </h3>
+                  <div className="flex items-center justify-center gap-2">
+                    <div className="flex gap-1">
+                      {[0, 1, 2].map((i) => (
+                        <div key={i} className="w-1 h-1 rounded-full bg-amber-500/40 animate-bounce" style={{ animationDelay: `${i * 0.15}s` }}></div>
+                      ))}
+                    </div>
+                    <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">
+                      Establishing Tunnel
+                    </p>
+                  </div>
                 </div>
               </div>
             }
@@ -776,77 +774,69 @@ export default function Viewer() {
       </main>
 
       {/* Bottom Floating Navigation Bar */}
-      {
-        numPages && (
-          <div className="fixed bottom-6 sm:bottom-8 left-1/2 transform -translate-x-1/2 z-50 w-full max-w-xs sm:max-w-md px-4 pointer-events-none flex justify-center">
-            <motion.div
-              initial={{ y: 50, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              className="bg-blue-950/85 backdrop-blur-2xl text-white pl-1.5 pr-3 py-1 sm:py-1.5 rounded-full shadow-[0_8px_30px_-5px_rgba(30,58,138,0.5)] border border-white/10 ring-1 ring-amber-400/20 flex items-center justify-between pointer-events-auto"
-            >
-              <div className="flex items-center gap-0.5 sm:gap-1">
-                <button
-                  onClick={previousPage}
-                  disabled={pageNumber <= 1}
-                  className="p-1.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
-                  title="Previous Page"
-                >
-                  <ChevronLeft className="w-5 h-5" />
-                </button>
+      {numPages && (
+        <div className="fixed bottom-6 sm:bottom-10 left-1/2 transform -translate-x-1/2 z-50 w-full max-w-xs sm:max-w-xl px-4 pointer-events-auto flex justify-center">
+          <motion.div
+            initial={{ y: 50, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            className="bg-[#0f172a]/90 backdrop-blur-2xl text-white pl-2 pr-4 py-2 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.3)] border border-white/10 ring-1 ring-white/5 flex items-center justify-between gap-3"
+          >
+            <div className="flex items-center gap-1">
+              <button
+                onClick={previousPage}
+                disabled={pageNumber <= 1}
+                className="p-2 hover:bg-white/10 text-slate-400 hover:text-amber-400 rounded-xl disabled:opacity-20 transition-all active:scale-90"
+                title="Previous Page"
+              >
+                <ChevronLeft className="w-5 h-5" />
+              </button>
 
-                <span className="font-mono text-sm font-medium min-w-[65px] sm:min-w-[70px] whitespace-nowrap text-center select-none text-slate-200">
-                  {pageNumber} <span className="text-amber-400/60">/</span> {numPages}
-                </span>
-
-                <button
-                  onClick={nextPage}
-                  disabled={pageNumber >= numPages}
-                  className="p-1.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full disabled:opacity-30 disabled:hover:bg-transparent transition-colors active:scale-95"
-                  title="Next Page"
-                >
-                  <ChevronRight className="w-5 h-5 sm:w-5 sm:h-5" />
-                </button>
+              <div className="flex items-center px-4 font-mono text-xs font-bold tracking-widest select-none bg-white/5 rounded-lg h-9 border border-white/5">
+                <span className="text-white">{String(pageNumber).padStart(2, '0')}</span>
+                <span className="mx-2 text-white/20">/</span>
+                <span className="text-amber-400/80">{String(numPages).padStart(2, '0')}</span>
               </div>
 
-              {/* Divider */}
-              <div className="w-px h-5 sm:h-6 bg-white/10 mx-1 sm:mx-2"></div>
-
-              {/* WhatsApp Appointment */}
               <button
-                onClick={() => {
-                  sendTrackingEvent('click_appointment');
-                  // 使用你的 WhatsApp 連結
-                  window.open('https://wa.me/85265387638', '_blank');
-                }}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all animate-pulse mr-2 bg-amber-500 text-blue-950 shadow-lg shadow-amber-500/40 scale-105 hover:bg-amber-400"
+                onClick={nextPage}
+                disabled={pageNumber >= (numPages || 1)}
+                className="p-2 hover:bg-white/10 text-slate-400 hover:text-amber-400 rounded-xl disabled:opacity-20 transition-all active:scale-90"
+                title="Next Page"
               >
-                <Calendar className="w-3.5 h-3.5" />
-                {/* 更新文字：與顧問預約 15 分鐘 */}
-                <span className="hidden sm:inline">與顧問預約 15 分鐘</span>
-                <span className="sm:hidden">預約顧問</span>
+                <ChevronRight className="w-5 h-5" />
               </button>
+            </div>
 
-              {/* Mobile Zoom (Simple Toggle) */}
-              <button
-                onClick={() => setScale(s => s === 1 ? 1.5 : 1)}
-                className="p-1.5 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full transition-colors md:hidden mr-1"
-                title="Toggle Zoom"
-              >
-                {scale > 1 ? <ZoomOut className="w-4 h-4" /> : <ZoomIn className="w-4 h-4" />}
-              </button>
+            <div className="h-6 w-[1px] bg-white/10 mx-1"></div>
 
-              {/* Fullscreen Toggle */}
+            {/* High-Impact CTA: WhatsApp Appointment */}
+            <button
+              onClick={() => {
+                sendTrackingEvent('click_appointment');
+                window.open('https://wa.me/85265387638', '_blank');
+              }}
+              className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-[11px] font-bold transition-all relative overflow-hidden group bg-gradient-to-br from-amber-400 to-amber-600 text-[#0f172a] shadow-[0_0_20px_rgba(251,191,36,0.2)] active:scale-95"
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000"></div>
+              <Calendar className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">預約顧問 (15分鐘)</span>
+              <span className="sm:hidden">預約顧問</span>
+            </button>
+
+            <div className="h-6 w-[1px] bg-white/10 mx-1 hidden sm:block"></div>
+
+            <div className="hidden sm:flex items-center gap-1">
               <button
                 onClick={toggleFullscreen}
-                className="p-1.5 sm:p-2 hover:bg-white/10 text-slate-300 hover:text-amber-400 rounded-full transition-colors block"
-                title={isFullscreen ? "Exit Fullscreen" : "Maximize View"}
+                className={`p-2 rounded-xl transition-all active:scale-90 ${isFullscreen ? 'text-amber-400 bg-amber-400/10' : 'text-slate-400 hover:bg-white/10 hover:text-white'}`}
+                title={isFullscreen ? "退出全螢幕" : "進入全螢幕"}
               >
                 {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
               </button>
-            </motion.div>
-          </div>
-        )
-      }
-    </div >
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </div>
   );
 }
