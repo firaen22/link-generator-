@@ -459,6 +459,8 @@ app.post("/api/track", async (req, res) => {
         `👤 <b>客戶：</b> ${client_name}\n` +
         `📄 <b>報告：</b> ${report_name}\n` +
         `⚠️ <b>行為：</b> 嘗試 ${actionDesc} !!`;
+    } else if (event === 'click_appointment') {
+      text = `🔥 <b>高價值意向！</b>\n\n👤 客戶 <b>${client_name}</b> 點擊咗<b>預約顧問</b>按鈕！\n請準備透過 WhatsApp 跟進。`;
     }
     // Commenting out heartbeat completely, keeping only milestones for clean alerts
     // else if (event === 'heartbeat' && duration_seconds % 60 === 0 && duration_seconds > 0) { ... }

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { Document, Page, pdfjs } from 'react-pdf';
 import {
-  ChevronLeft, ChevronRight, Clock, Eye, AlertCircle,
+  ChevronLeft, ChevronRight, Clock, Eye, AlertCircle, Calendar,
   ZoomIn, ZoomOut, Maximize, Minimize, Download, FileText, Moon, Sun, LayoutPanelTop, X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -843,6 +843,21 @@ export default function Viewer() {
 
               {/* Divider */}
               <div className="w-px h-5 sm:h-6 bg-white/10 mx-1 sm:mx-2"></div>
+
+              {/* WhatsApp Appointment */}
+              <button
+                onClick={() => {
+                  sendTrackingEvent('click_appointment');
+                  // 使用你的 WhatsApp 連結
+                  window.open('https://wa.me/85265387638', '_blank');
+                }}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all animate-pulse mr-2 bg-amber-500 text-blue-950 shadow-lg shadow-amber-500/40 scale-105 hover:bg-amber-400"
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                {/* 更新文字：與顧問預約 15 分鐘 */}
+                <span className="hidden sm:inline">與顧問預約 15 分鐘</span>
+                <span className="sm:hidden">預約顧問</span>
+              </button>
 
               {/* Mobile Zoom (Simple Toggle) */}
               <button
