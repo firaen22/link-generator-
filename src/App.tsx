@@ -214,7 +214,7 @@ export default function App() {
               />
             </div>
             <p className="text-xs text-slate-400 mt-1.5 ml-1">
-              Bypasses 4.5MB limit by uploading directly to Vercel Blob.
+              Supports up to 50MB directly via Firebase Storage.
             </p>
           </div>
 
