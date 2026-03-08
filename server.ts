@@ -304,25 +304,17 @@ app.get("/api/pdf/:file_id", async (req, res) => {
     if (file_id.startsWith('f_')) {
       // Shorthand Firebase Path: f_<base64(path)>
       let base64 = file_id.slice(2).replace(/-/g, '+').replace(/_/g, '/');
-      // Fix missing padding
       while (base64.length % 4) base64 += '=';
       const filePath = Buffer.from(base64, 'base64').toString('utf8');
-      const encodedPath = encodeURIComponent(filePath);
 
-      const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || "market-update-56e1c";
-      const bucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.firebasestorage.app`;
-      const fallbackBucket = `${projectId}.appspot.com`;
+      // Firebase Storage REST API encoding: slashes must be %2F
+      const encodedPath = encodeURIComponent(filePath).replace(/\//g, "%2F");
 
-      console.log(`[PDF_PROXY] f_ ID: ${file_id} | Path: ${filePath} | Project: ${projectId} | Bucket: ${bucket}`);
+      const bucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || "market-update-56e1c.firebasestorage.app";
 
-      blobUrl = `https://firebasestorage.googleapis.com/v1/b/${bucket}/o/${encodedPath}?alt=media`;
+      console.log(`[PDF_PROXY] f_ ID: ${file_id} | Path: ${filePath} | Bucket: ${bucket}`);
 
-      // Verification fetch for primary bucket
-      const check = await fetch(blobUrl, { method: 'HEAD' });
-      if (!check.ok && bucket !== fallbackBucket) {
-        console.warn(`[PDF_PROXY] Primary bucket ${bucket} failed (${check.status}). Switching to fallback ${fallbackBucket}`);
-        blobUrl = `https://firebasestorage.googleapis.com/v1/b/${fallbackBucket}/o/${encodedPath}?alt=media`;
-      }
+      blobUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media`;
     } else if (file_id.startsWith('vblob_')) {
       // Direct encoded URL (usually includes access token): vblob_<base64(url)>
       let base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');

@@ -6,7 +6,7 @@
 import React, { useState, useRef } from 'react';
 import { Copy, Check, Share2, UploadCloud } from 'lucide-react';
 import { motion } from 'motion/react';
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { ref, uploadBytes } from "firebase/storage";
 import { doc, setDoc } from "firebase/firestore";
 import { storage, db } from "./firebase";
 import LZString from 'lz-string';
@@ -48,9 +48,8 @@ export default function App() {
         const storageRef = ref(storage, `reports/${fileName}`);
 
         try {
-          const snapshot = await uploadBytes(storageRef, file);
-          const downloadUrl = await getDownloadURL(snapshot.ref);
-          cleanFileURL = downloadUrl;
+          await uploadBytes(storageRef, file);
+          cleanFileURL = `reports/${fileName}`;
           // Persist to sessionStorage for dedup
           sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({
             ...sessionCache,
