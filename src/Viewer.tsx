@@ -19,7 +19,7 @@ declare global {
   interface Window {
     gtag: (command: string, ...args: any[]) => void;
     dataLayer: any[];
-    hj: (command: string, eventName: string) => void;
+    _uxa?: any[];
   }
 }
 
@@ -426,9 +426,13 @@ export default function Viewer() {
       });
     }
 
-    // 3. Hotjar 事件 (可用於在錄影中搜尋特定行為)
-    if (typeof window.hj === 'function') {
-      window.hj('event', event);
+    // 3. ContentSquare 自訂事件
+    // 使用 _uxa.push 傳送 Dynamic Variables，方便你喺 CS 後台 filter 數據
+    if (typeof window._uxa !== 'undefined') {
+      window._uxa.push(['trackDynamicVariable', { key: 'action_event', value: event }]);
+      if (data.page) {
+        window._uxa.push(['trackDynamicVariable', { key: 'pdf_page', value: String(data.page) }]);
+      }
     }
   };
 
@@ -669,7 +673,7 @@ export default function Viewer() {
 
       {/* Main Content - 專注模式下動態調整 Padding 與背景色 */}
       <main
-        className={`flex-1 flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-500 ease-in-out relative ${isFullscreen
+        className={`cs-mask flex-1 flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-500 ease-in-out relative ${isFullscreen
           ? 'pt-4 sm:pt-6 bg-slate-900' // 全螢幕：極小頂部留白 + 沉浸式深色背景
           : `pt-16 sm:pt-20 ${isDarkMode ? 'bg-[#121212]' : 'bg-[#F9FAFB]'}` // 正常：預留 Header 空間 + 使用者選的深淺色背景
           } ${(isWindowFocused && !isScreenshotting)
