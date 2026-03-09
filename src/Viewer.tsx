@@ -529,13 +529,13 @@ export default function Viewer() {
                 <span className="text-xl">✨</span>
               </div>
 
-              <h2 className={`text-lg font-bold mb-4 tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>專屬閱讀與免責提示</h2>
+              <h2 className={`text-lg font-bold mb-4 tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>香港境內確認及免責提示</h2>
 
               <div className={`space-y-4 text-[15px] sm:text-sm leading-relaxed mb-8 ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>
-                <p>為持續提升您的服務體驗，本系統會根據您的閱讀偏好，為您智能篩選專屬的市場資訊。</p>
+                <p>為符合相關規管及提升您的服務體驗，本系統僅供香港境內人士閱讀。本系統會根據您的閱讀偏好，為您智能篩選專屬的市場資訊。</p>
                 <div className={`p-3.5 rounded-xl text-xs sm:text-sm border ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-400' : 'bg-slate-50 border-slate-100 text-slate-500'}`}>
-                  <strong className="text-red-500 font-semibold mb-1 flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> 請注意</strong>
-                  本系統推送之所有內容僅供資訊參考，不構成任何投資邀約或建議。
+                  <strong className="text-red-500 font-semibold mb-1 flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> 聲明並請注意：</strong>
+                  本人在此聲明並確認，本人目前位於香港境內。本系統推送之所有內容僅供資訊參考，不構成任何投資邀約或建議。
                 </div>
               </div>
 
@@ -544,10 +544,10 @@ export default function Viewer() {
                   onClick={() => setShowDisclaimer(false)}
                   className="w-full sm:w-auto flex-1 bg-gradient-to-r from-blue-900 to-blue-950 text-white font-medium py-3 px-5 rounded-xl hover:from-blue-800 hover:to-blue-900 transition-all shadow-md shadow-blue-900/20 active:scale-[0.98]"
                 >
-                  明白並繼續
+                  確認位於香港並繼續
                 </button>
                 <button
-                  onClick={() => alert('私隱與免責條款：\n\n本系統會以匿名方式追蹤系統互動以提升服務質素。所有市場分析與數據僅供資訊參考，不構成任何形式的投資建議、邀約或指導。閣下在作出任何投資決定前，應獨立評估相關風險，並考慮尋求專業意見。投資涉及風險，證券價格可升可跌。')}
+                  onClick={() => alert('私隱與免責條款：\n\n本系統僅供香港境內人士閱讀。本人在此聲明並確認，本人目前位於香港境內。本系統會以匿名方式追蹤系統互動以提升服務質素。所有市場分析與數據僅供資訊參考，不構成任何形式的投資建議、邀約或指導。閣下在作出任何投資決定前，應獨立評估相關風險，並考慮尋求專業意見。投資涉及風險，證券價格可升可跌。')}
                   className={`w-full sm:w-auto text-xs font-medium py-3 px-4 rounded-xl transition-colors ${isDarkMode ? 'text-slate-400 hover:text-white hover:bg-slate-800' : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'}`}
                 >
                   了解私隱與免責詳情
