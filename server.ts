@@ -526,18 +526,18 @@ app.post("/api/track", async (req, res) => {
   res.json({ status: "ok" });
 });
 
-// ── Phase 4: Gemini AI — Capability tiers ────────────────────────────────────
 // THINKING_MODELS support thinkingLevel + native JSON schema (response_schema).
 // STANDARD_MODELS are fallbacks that cannot honour those config options.
 const THINKING_MODELS = [
-  "gemini-3.1-flash-lite-preview",
-  "gemini-2.5-flash-lite",
+  "gemini-3.1-flash-lite-preview",      // RPD: 500, RPM: 15 (Highest Quota)
+  "gemini-3-flash-preview",           // RPD: 20, RPM: 5
+  "gemini-2.5-flash",                 // RPD: 20, RPM: 5
 ];
 const STANDARD_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.0-flash-lite",
-  "gemini-2.0-flash",
-  "gemini-1.5-flash",
+  "gemini-2.5-flash-lite",            // RPD: 20, RPM: 10
+  "gemini-2.0-flash",                 // Formal release
+  "gemma-3-27b-it",                   // High-quota fallback (RPD: 14.4K)
+  "gemini-1.5-flash-latest"           // Ultimate safety fallback
 ];
 
 // Native JSON response schema — enum constraints keep output deterministic.
