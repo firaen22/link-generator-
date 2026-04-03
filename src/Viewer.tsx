@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { Document, Page, pdfjs } from 'react-pdf';
 import {
@@ -173,6 +173,103 @@ export default function Viewer() {
   useEffect(() => { scaleRef.current = scale; }, [scale]);
   useEffect(() => { numPagesRef.current = numPages; }, [numPages]);
 
+  // ── Phase 3: Deep Telemetry Refs ──────────────────────────────────────────
+  // All useRef — zero re-renders, zero PDF canvas stutter.
+
+  /** Timestamped navigation history: [{page, t}] using performance.now() for sub-ms accuracy */
+  const navHistoryRef = useRef<Array<{ page: number; t: number }>>([]);
+
+  /** Zoom cluster events: [{x, y, page, scale, t}] — coordinates in DOM space at time of event */
+  const zoomClustersRef = useRef<Array<{ x: number; y: number; page: number; scale: number; t: number }>>([]);
+
+  /** Scroll velocity samples (ΔY/Δt) collected every ~500ms via rAF — avoids 60fps noise */
+  const scrollSamplesRef = useRef<Array<{ v: number; t: number }>>([]);
+
+  /** Tracks previous scroll position for velocity calculation */
+  const lastScrollYRef = useRef(0);
+  const lastScrollTRef = useRef(performance.now());
+  const rAFScrollRef = useRef<number | null>(null);
+  const lastSampleTRef = useRef(performance.now());
+
+  /** Container ref for zoom coordinate normalisation */
+  const pdfContainerRef = useRef<HTMLDivElement>(null);
+
+  // Register page transitions into navHistoryRef (alongside existing navigationPathRef)
+  useEffect(() => {
+    navHistoryRef.current.push({ page: pageNumber, t: performance.now() });
+  }, [pageNumber]);
+
+  // Scroll velocity collector — rAF throttled, sampled every 500ms
+  useEffect(() => {
+    const measure = () => {
+      const now = performance.now();
+      const currentY = window.scrollY;
+      const dt = now - lastScrollTRef.current;
+
+      if (dt > 0) {
+        const v = Math.abs(currentY - lastScrollYRef.current) / dt; // px/ms
+        // Sample at ~500ms intervals to avoid thousands of data points
+        if (now - lastSampleTRef.current >= 500) {
+          scrollSamplesRef.current.push({ v: parseFloat(v.toFixed(4)), t: now });
+          lastSampleTRef.current = now;
+        }
+      }
+
+      lastScrollYRef.current = currentY;
+      lastScrollTRef.current = now;
+      rAFScrollRef.current = requestAnimationFrame(measure);
+    };
+
+    rAFScrollRef.current = requestAnimationFrame(measure);
+    return () => {
+      if (rAFScrollRef.current !== null) cancelAnimationFrame(rAFScrollRef.current);
+    };
+  }, []);
+
+  // Zoom cluster collector — wheel & pinch events on the PDF container
+  const handleZoomEvent = useCallback((e: WheelEvent | TouchEvent) => {
+    const container = pdfContainerRef.current;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    let clientX = 0;
+    let clientY = 0;
+
+    if (e instanceof WheelEvent) {
+      clientX = e.clientX;
+      clientY = e.clientY;
+    } else if (e instanceof TouchEvent && e.touches.length >= 2) {
+      // Midpoint of two-finger pinch
+      clientX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      clientY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    } else {
+      return;
+    }
+
+    // Normalise to PDF container coords (0–1 range for portability)
+    const normX = parseFloat(((clientX - rect.left) / rect.width).toFixed(3));
+    const normY = parseFloat(((clientY - rect.top) / rect.height).toFixed(3));
+
+    zoomClustersRef.current.push({
+      x: normX,
+      y: normY,
+      page: currentPageRef.current,
+      scale: parseFloat(scaleRef.current.toFixed(2)),
+      t: performance.now(),
+    });
+  }, []);
+
+  useEffect(() => {
+    const container = pdfContainerRef.current;
+    if (!container) return;
+    container.addEventListener('wheel', handleZoomEvent, { passive: true });
+    container.addEventListener('touchstart', handleZoomEvent as EventListener, { passive: true });
+    return () => {
+      container.removeEventListener('wheel', handleZoomEvent);
+      container.removeEventListener('touchstart', handleZoomEvent as EventListener);
+    };
+  }, [handleZoomEvent]);
+
   // LocalStorage Key for this specific report session
   const storageKey = `ag_report_log_${fileId}_${clientName}`;
 
@@ -223,6 +320,13 @@ export default function Viewer() {
 
       hasSentSessionEndRef.current = true;
 
+      // Pre-calculate Z-score numerator components server-side is ideal,
+      // but we send raw duration so server.ts can normalise against historical μ/σ.
+      const scrollVelocities = scrollSamplesRef.current.map(s => s.v);
+      const peakScrollVelocity = scrollVelocities.length > 0
+        ? parseFloat(Math.max(...scrollVelocities).toFixed(4))
+        : 0;
+
       const payload = {
         event: 'session_end',
         session_id: sessionIdRef.current,
@@ -233,7 +337,12 @@ export default function Viewer() {
         total_pages: numPagesRef.current,
         pages_data: sessionDataRef.current,
         navigation_path: navigationPathRef.current,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        // ── Phase 3 deep telemetry ──────────────────────────────
+        nav_history: navHistoryRef.current,            // [{page, t}] — for micro-loop detection
+        zoom_clusters: zoomClustersRef.current,         // [{x,y,page,scale,t}] — spatial intent
+        scroll_samples: scrollSamplesRef.current,       // [{v,t}] — skim rate curve
+        peak_scroll_velocity: peakScrollVelocity,       // max px/ms this session
       };
 
       // Clear LocalStorage on successful (attempted) send
@@ -635,7 +744,10 @@ export default function Viewer() {
             ? ''
             : 'opacity-0 blur-3xl select-none pointer-events-none' // 資安防護 - 僅在離開頁面時模糊
           }`}
-        ref={containerRef}
+        ref={(el) => {
+          (containerRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+          (pdfContainerRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+        }}
         onContextMenu={(e) => e.preventDefault()}
       >
         {isDarkMode && (

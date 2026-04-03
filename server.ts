@@ -469,9 +469,91 @@ app.post("/api/track", async (req, res) => {
   res.json({ status: "ok" });
 });
 
+// ── Phase 4: Gemini AI — Capability tiers ────────────────────────────────────
+// THINKING_MODELS support thinkingLevel + native JSON schema (response_schema).
+// STANDARD_MODELS are fallbacks that cannot honour those config options.
+const THINKING_MODELS = [
+  "gemini-3.1-flash-lite-preview",
+  "gemini-2.5-flash-lite",
+];
+const STANDARD_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.0-flash-lite",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+];
+
+// Native JSON response schema — enum constraints keep output deterministic.
+const RESPONSE_SCHEMA = {
+  type: "object",
+  properties: {
+    intent_archetype: {
+      type: "string",
+      enum: ["Deep Diver", "Yield Seeker", "Verification Mode", "Momentum Buyer", "Disengaged"],
+      description: "Categorisation of the client's primary objective based on multi-step telemetry analysis.",
+    },
+    z_score: {
+      type: "number",
+      description: "Pre-normalised engagement score passed in; return it as-is after validating it matches the observed pattern.",
+    },
+    friction_points: {
+      type: "array",
+      items: { type: "string" },
+      description: "Document sections or page ranges where scroll velocity dropped to zero or zoom clustering occurred.",
+    },
+    psych_bias: {
+      type: "string",
+      enum: ["Loss Aversion", "Overconfidence", "Confirmation Bias", "Status Quo Bias", "FOMO"],
+      description: "Primary cognitive bias detected via multi-step analysis of digital body language.",
+    },
+    nba_whatsapp: {
+      type: "string",
+      description: "A customised, highly targeted opening message for the advisor to send directly to the client via WhatsApp (Hong Kong financial Cantonese).",
+    },
+  },
+  required: ["intent_archetype", "z_score", "friction_points", "psych_bias", "nba_whatsapp"],
+  additionalProperties: false,
+};
+
+// Helper: detect micro-loops from timestamped navigation history
+function detectMicroLoops(navHistory: Array<{ page: number; t: number }>): string[] {
+  const loops: string[] = [];
+  const WINDOW_MS = 120_000; // 2-minute analysis window
+  const MIN_CYCLES = 3;
+
+  if (navHistory.length < MIN_CYCLES * 2) return loops;
+
+  const pagePairs = new Map<string, number[]>();
+  for (let i = 1; i < navHistory.length; i++) {
+    const prev = navHistory[i - 1].page;
+    const curr = navHistory[i].page;
+    if (prev !== curr) {
+      const key = `${Math.min(prev, curr)}<->${Math.max(prev, curr)}`;
+      if (!pagePairs.has(key)) pagePairs.set(key, []);
+      pagePairs.get(key)!.push(navHistory[i].t);
+    }
+  }
+
+  pagePairs.forEach((timestamps, key) => {
+    if (timestamps.length >= MIN_CYCLES) {
+      const span = timestamps[timestamps.length - 1] - timestamps[0];
+      if (span <= WINDOW_MS) {
+        loops.push(`Pages ${key} (${timestamps.length}x in ${Math.round(span / 1000)}s)`);
+      }
+    }
+  });
+
+  return loops;
+}
+
 // AI-Powered Session Analysis Endpoint
 app.post("/api/session-end", async (req, res) => {
-  const { event, session_id, client_name, report_name, file_id, total_duration_sec, total_pages, pages_data, navigation_path } = req.body;
+  const {
+    event, session_id, client_name, report_name, file_id,
+    total_duration_sec, total_pages, pages_data, navigation_path,
+    // Phase 3 deep telemetry
+    nav_history, zoom_clusters, scroll_samples, peak_scroll_velocity
+  } = req.body;
   console.log(`🚀 [BACKEND] 分析請求: ${client_name} | Session: ${session_id?.slice(0, 8)}`);
 
   if (event !== 'session_end') return res.json({ status: "ignored" });
@@ -488,125 +570,176 @@ app.post("/api/session-end", async (req, res) => {
 
   if (aiEnabled && isDeepRead) {
     try {
+      // ── Pre-calculate Z-score server-side (AI receives it, not calculates it) ──
+      // Baseline: empirical mean/σ for a typical advisory session.
+      // Replace with real Firestore aggregate when you have enough historical data.
+      const MU = 120;   // seconds — historical average session duration
+      const SIGMA = 60; // seconds — historical standard deviation
+      const zScore = parseFloat(((total_duration_sec - MU) / SIGMA).toFixed(2));
+
+      const microLoops = detectMicroLoops(nav_history || []);
+      const topZoomPages = (zoom_clusters || [])
+        .reduce((acc: Record<number, number>, z: any) => {
+          acc[z.page] = (acc[z.page] || 0) + 1;
+          return acc;
+        }, {});
+      const zoomSummary = Object.entries(topZoomPages)
+        .sort(([, a]: any, [, b]: any) => b - a)
+        .slice(0, 3)
+        .map(([page, count]) => `Page ${page} (${count} zoom events)`)
+        .join(', ') || 'none';
+
       const behaviorSummary = Object.entries(pages_data || {}).map(([page, data]: [string, any]) => {
         const activeSec = Math.round((data.activeDwellMs || 0) / 1000);
         const totalSec = Math.round(data.dwellMs / 1000);
-        return `第 ${page} 頁: 總預估 ${totalSec}s (主動交互 ${activeSec}s), 縮放 ${data.maxScale.toFixed(1)}x`;
+        return `Page ${page}: ${totalSec}s total (${activeSec}s active), zoom ${data.maxScale.toFixed(1)}x`;
       }).join('\n');
 
-      const pathSummary = navigation_path?.join(' -> ') || '未知';
+      const pathSummary = navigation_path?.join(' → ') || 'unknown';
+      const skimRate = peak_scroll_velocity != null
+        ? `${peak_scroll_velocity} px/ms peak`
+        : 'not captured';
 
-      const prompt = `你是金融科技系統「Antigravity」的高階行為財務學分析引擎。
-你的任務是解析來自 Viewer.tsx 的邊緣設備數據（Edge Metrics），並結合 Deep Search 市場邏輯，為理財顧問提供一份「客戶心理特徵與銷售導航報告」。
+      // ── System prompt: behavioural finance framework, no HTML instructions ──
+      const systemPrompt = `You are the Antigravity behavioural intelligence engine for a Hong Kong wealth management firm.
+Your role is to perform multi-step analytical inference on raw document telemetry, map it to Kahneman's System 1/System 2 framework, and produce a deterministic JSON Sales Navigation report.
+Rules:
+- Apply Prospect Theory: loss aversion signals (micro-loops between yield and risk pages) are weighted 2x.
+- A zoom cluster on fee/compliance content = System 2 activation (skepticism/verification mode).
+- High skim rate on educational pages = experienced investor profile (bypass introductory dialogue).
+- Your output MUST strictly follow the provided JSON schema. No additional keys. No markdown.`;
 
-📥 本次會話輸入數據：
-1. 會話 ID：${session_id}
-2. 客戶姓名：${client_name}
-3. 報告名稱：${report_name}
-4. 閱讀總歷時：${total_duration_sec} 秒
-5. 閱讀路徑：${pathSummary}
-6. 逐頁行為矩陣（已過濾閒置時長）：
+      const userPrompt = `Analyse this client session and return the Sales Navigation JSON.
+
+SESSION DATA:
+- Client: ${client_name}
+- Report: ${report_name}
+- Duration: ${total_duration_sec}s
+- Pre-calculated Z-Score: ${zScore} (pass this value into the z_score field)
+- Navigation path: ${pathSummary}
+- Micro-loops detected: ${microLoops.length > 0 ? microLoops.join('; ') : 'none'}
+- Top zoom clusters: ${zoomSummary}
+- Peak scroll velocity (skim rate): ${skimRate}
+- Per-page behaviour matrix:
 ${behaviorSummary}
 
-🧠 數據清洗與診斷指令：
-1. 【偵測閒置 (Idle Bloat)】：
-   - 關注「主動交互時間」而非「總停留時間」。若主動交互時間極低，判定為「掛機」。
-2. 【區分興趣與分心】：
-   - 真正的「深鑽 (Deep Dive)」標誌：主動交互時間長 + >1.2x 的縮放行為 + 出現「回看」路徑。
+Apply high-level multi-step reasoning. Cross-reference the micro-loops and zoom coordinates with Prospect Theory to determine the dominant psych_bias. Then produce a personalised nba_whatsapp opening message in Hong Kong financial Cantonese (traditional characters).`;
 
-🧠 分析指令：請從以下維度深度解碼，嚴格遵循 HTML 格式輸出（使用 <b> 標籤，不含 Markdown）：
-
-1. 🔍 閱讀模式與行為診斷：
-   - 診斷模式：線性閱讀 (1->2->3)、跳躍搜索 (1->5->8)、反覆糾結 (1->2->3->2->3)。
-   - 標記心理偏誤：如「多選障礙」或「損失規避」。
-
-2. 📊 閱讀配速與確定性分析：
-   - 透過「主動交互」計算其真實心流情況。
-
-3. 📊 量化指標 (Quant Impact)：
-   - Z-Score：行為異常值。 情緒分：心理喚醒度。 衝擊度：組合影響。
-
-4. 💡 銷售導航 (NBA)：
-   - 針對「回看」或「深鑽」頁面，提供一段 WhatsApp 破冰話術（香港金融術語）。
-
-輸出格式：
-🧠 <b>行為心理診斷：</b>
-- <b>標籤：</b> [ Emoji + 心理標籤 ]
-- <b>意圖解碼：</b> (描述客戶糾結或感興趣的熱點)
-
-🔬 <b>交互體徵：</b>
-- <b>物理訊號：</b> (縮放、主動交互佔比、路徑特徵)
-- <b>異常檢測：</b> (閒置、快速掠過或重點糾結)
-
-📊 <b>市場研判：</b>
-- <b>Z-Score：</b> [值] | <b>情緒分：</b> [值] | <b>衝擊度：</b> [值]/100
-- <b>焦點：</b> (結合報告主題)
-
-💡 <b>NBA 破冰話術：</b>
-(提供一段專業文字)`;
-
-      let aiInsights = '';
+      let aiResult: any = null;
+      let usedModel = '';
       let success = false;
       let lastError: any = null;
+      let isThinkingModel = false;
 
-      const modelsToTry = [
-        "gemini-3.1-flash-lite-preview",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash-lite",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash"
-      ];
-
-      // Rotate through all available keys until one succeeds
       const startIndex = Math.floor(Math.random() * apiKeys.length);
-      for (let i = 0; i < apiKeys.length; i++) {
+
+      // ── Try thinking-capable models first ────────────────────────────────
+      outer: for (let i = 0; i < apiKeys.length; i++) {
         const keyIndex = (startIndex + i) % apiKeys.length;
         const currentKey = apiKeys[keyIndex];
 
-        // Inside each key, try different models
-        for (const modelName of modelsToTry) {
+        for (const modelName of THINKING_MODELS) {
           try {
             const genAI = new GoogleGenerativeAI(currentKey);
-            const model = genAI.getGenerativeModel({ model: modelName });
+            const model = genAI.getGenerativeModel({
+              model: modelName,
+              generationConfig: {
+                thinkingConfig: { thinkingBudget: -1 }, // -1 = dynamic (high thinking)
+                responseMimeType: "application/json",
+                responseSchema: RESPONSE_SCHEMA as any,
+              } as any,
+            });
 
-            // Set a short timeout for the AI call to fail fast and move to next model/key
             const result = await Promise.race([
-              model.generateContent(prompt),
-              new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 15000))
+              model.generateContent([
+                { role: 'user', parts: [{ text: systemPrompt + '\n\n' + userPrompt }] }
+              ]),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 25000))
             ]) as any;
 
-            aiInsights = result.response.text() || '無法分析。';
+            aiResult = JSON.parse(result.response.text());
+            usedModel = modelName;
+            isThinkingModel = true;
             success = true;
-            console.log(`[GEMINI] Key ${keyIndex + 1} | Model ${modelName} success.`);
-            break;
+            console.log(`[GEMINI] Thinking model success: Key ${keyIndex + 1} | ${modelName}`);
+            break outer;
           } catch (err) {
             const errMsg = (err as any).message || '';
-            console.warn(`[GEMINI WARN] Key ${keyIndex + 1} | Model ${modelName} failed: ${errMsg.slice(0, 50)}...`);
+            console.warn(`[GEMINI WARN] Thinking | Key ${keyIndex + 1} | ${modelName}: ${errMsg.slice(0, 60)}`);
             lastError = err;
-            // If it's a model mismatch or quota, the inner loop continues to next model
           }
         }
-        if (success) break;
       }
 
+      // ── Fallback: standard models, simplified prompt, regex JSON extraction ─
       if (!success) {
-        throw lastError || new Error("All API keys exhausted or failed.");
+        console.log('[GEMINI] Thinking models exhausted. Falling back to standard models...');
+        outer2: for (let i = 0; i < apiKeys.length; i++) {
+          const keyIndex = (startIndex + i) % apiKeys.length;
+          const currentKey = apiKeys[keyIndex];
+
+          for (const modelName of STANDARD_MODELS) {
+            try {
+              const genAI = new GoogleGenerativeAI(currentKey);
+              const model = genAI.getGenerativeModel({ model: modelName });
+
+              const fallbackPrompt = `${systemPrompt}\n\n${userPrompt}\n\nRespond with ONLY a valid JSON object matching this schema: ${JSON.stringify(RESPONSE_SCHEMA)}`;
+
+              const result = await Promise.race([
+                model.generateContent(fallbackPrompt),
+                new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 15000))
+              ]) as any;
+
+              const raw = result.response.text().replace(/^```json|```$/gm, '').trim();
+              aiResult = JSON.parse(raw);
+              usedModel = modelName;
+              isThinkingModel = false;
+              success = true;
+              console.log(`[GEMINI] Standard fallback success: Key ${keyIndex + 1} | ${modelName}`);
+              break outer2;
+            } catch (err) {
+              const errMsg = (err as any).message || '';
+              console.warn(`[GEMINI WARN] Standard | Key ${keyIndex + 1} | ${modelName}: ${errMsg.slice(0, 60)}`);
+              lastError = err;
+            }
+          }
+        }
       }
 
-      let rawAiInsights = aiInsights.replace(/^```(html)?|```$/gm, '').trim();
-      let safeAiInsights = escapeHTML(rawAiInsights);
-      safeAiInsights = safeAiInsights.replace(/&lt;b&gt;(.*?)&lt;\/b&gt;/g, '<b>$1</b>');
-      safeAiInsights = safeAiInsights.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+      if (!success || !aiResult) {
+        throw lastError || new Error("All models and API keys exhausted.");
+      }
 
-      text = `🎯 <b>【Antigravity 銷售導航】</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n🆔 <b>會話：</b> <code>${session_id?.slice(0, 8)}</code>\n\n${safeAiInsights}`;
+      // ── Inject structured JSON into Telegram message ──────────────────────
+      const archetype = escapeHTML(aiResult.intent_archetype || '—');
+      const bias = escapeHTML(aiResult.psych_bias || '—');
+      const nba = escapeHTML(aiResult.nba_whatsapp || '—');
+      const frictionList = (aiResult.friction_points || [])
+        .map((f: string) => `• ${escapeHTML(f)}`)
+        .join('\n') || '• none detected';
+      const modelTag = isThinkingModel ? '🧠 Thinking' : '⚡ Standard';
+
+      text = `🎯 <b>【Antigravity 銷售導航】</b>
+👤 <b>客戶：</b> ${escapeHTML(client_name)}  📄 <b>報告：</b> ${escapeHTML(report_name)}
+🆔 <b>會話：</b> <code>${session_id?.slice(0, 8)}</code>  ${modelTag} (<code>${usedModel}</code>)
+
+🧠 <b>Intent Archetype：</b> ${archetype}
+📊 <b>Z-Score：</b> ${aiResult.z_score ?? zScore}
+🔬 <b>Psych Bias：</b> ${bias}
+
+🔴 <b>Friction Points：</b>
+${frictionList}
+
+💡 <b>NBA WhatsApp 話術：</b>
+${nba}`;
+
     } catch (err) {
-      text = `📊 <b>閱讀結算 (基礎)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n⚠️ 分析失敗: ${(err as any).message}`;
+      text = `📊 <b>閱讀結算 (基礎)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(report_name)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n⚠️ AI 分析失敗: ${escapeHTML((err as any).message)}`;
     }
   } else if (!isDeepRead) {
-    text = `📊 <b>閱讀結算 (快速翻閱)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages} (${progressPercent.toFixed(1)}%)\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n💡 提示：客戶僅快速掃描。`;
+    text = `📊 <b>閱讀結算 (快速翻閱)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(report_name)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages} (${progressPercent.toFixed(1)}%)\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n💡 提示：客戶僅快速掃描。`;
   } else {
-    text = `📊 <b>閱讀結算 (無 AI)</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📖 <b>頁數：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>長度：</b> ${total_duration_sec}s`;
+    text = `📊 <b>閱讀結算 (無 AI)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(report_name)}\n📖 <b>頁數：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>長度：</b> ${total_duration_sec}s`;
   }
 
   // Send to Telegram

@@ -4,25 +4,37 @@
  */
 
 import React, { useState, useRef } from 'react';
-import { Copy, Check, Share2, UploadCloud } from 'lucide-react';
-import { motion } from 'motion/react';
+import { Copy, Check, Share2, UploadCloud, MessageCircle, Loader2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 import { ref, uploadBytes } from "firebase/storage";
-import { doc, setDoc } from "firebase/firestore";
+import { doc, setDoc, Timestamp } from "firebase/firestore";
 import { storage, db } from "./firebase";
 import LZString from 'lz-string';
 
+// ── Types ────────────────────────────────────────────────────────────────────
+interface GeneratedClient {
+  name: string;
+  shortId: string;
+  shortLink: string;
+  copied: boolean;
+}
+
 export default function App() {
-  const [clientName, setClientName] = useState('');
+  // Bulk client list (one name per line) replaces single clientName input
+  const [clientList, setClientList] = useState('');
   const [reportName, setReportName] = useState('');
   const [previewImage, setPreviewImage] = useState('');
   const [linkTitle, setLinkTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
+  const [isBulkGenerating, setIsBulkGenerating] = useState(false);
+
+  // Bulk results — one entry per client name
+  const [generatedClients, setGeneratedClients] = useState<GeneratedClient[]>([]);
+
+  // Legacy single-link state (kept for WhatsApp preview panel)
   const [generatedLink, setGeneratedLink] = useState('');
   const [copied, setCopied] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [shortLink, setShortLink] = useState('');
-  const [isShortening, setIsShortening] = useState(false);
-  const [lastCompressed, setLastCompressed] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const SESSION_CACHE_KEY = 'pw_uploaded_files';
@@ -32,25 +44,31 @@ export default function App() {
     const file = fileInputRef.current?.files?.[0];
     if (!file) return alert("請選擇檔案上傳");
 
+    const names = clientList
+      .split('\n')
+      .map(n => n.trim())
+      .filter(Boolean);
+
+    if (names.length === 0) return alert("請輸入至少一個客戶名稱");
+
     setIsUploading(true);
+    setGeneratedClients([]);
+
     try {
-      // 0. Check sessionStorage for same file in this session
+      // ── Step 1: Upload PDF once, reuse path for all clients ─────────────────
       const fileIdentifier = `${file.name}_${file.size}`;
       const sessionCache = JSON.parse(sessionStorage.getItem(SESSION_CACHE_KEY) || '{}');
       let cleanFileURL: string = sessionCache[fileIdentifier] || '';
 
       if (cleanFileURL) {
-        console.log('File already uploaded this session, reusing path:', cleanFileURL);
+        console.log('[UPLOAD] Reusing cached path:', cleanFileURL);
       } else {
-        // 1. Upload to Firebase
-        console.log('Starting upload...');
+        console.log('[UPLOAD] Starting upload...');
         const fileName = `${Date.now().toString(36)}_${file.name}`;
         const storageRef = ref(storage, `reports/${fileName}`);
-
         try {
           await uploadBytes(storageRef, file);
           cleanFileURL = `reports/${fileName}`;
-          // Persist to sessionStorage for dedup
           sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({
             ...sessionCache,
             [fileIdentifier]: cleanFileURL,
@@ -61,63 +79,73 @@ export default function App() {
         }
       }
 
-      // 2. 打包並壓縮數據
-      let compressed = "";
-      try {
+      setIsUploading(false);
+      setIsBulkGenerating(true);
+
+      // ── Step 2: Build Firestore docs for all clients in parallel ────────────
+      const customDomain = import.meta.env.VITE_APP_URL;
+      const origin = customDomain
+        ? (customDomain.endsWith('/') ? customDomain.slice(0, -1) : customDomain)
+        : window.location.origin;
+
+      // expireAt must be a Firestore Timestamp — plain ISO strings are ignored by TTL policies
+      const expireAt = Timestamp.fromDate(
+        new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days
+      );
+
+      const writes = names.map(async (name) => {
         const payload = {
-          c: clientName || "貴客",
-          r: reportName || "Document",
+          c: name,
+          r: reportName || 'Document',
           t: linkTitle,
           d: description,
           i: previewImage,
-          f: cleanFileURL // Now a shorter path if it's Firebase
+          f: cleanFileURL,
         };
-        compressed = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
-      } catch (compError) {
-        throw new Error("數據壓縮失敗");
-      }
+        const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
+        const shortId = Math.random().toString(36).substring(2, 8);
 
-      setLastCompressed(compressed);
+        await setDoc(doc(db, 'links', shortId), {
+          q: compressed,
+          clientName: name,
+          createdAt: new Date().toISOString(),
+          expireAt,
+        });
 
-      // 3. 準備長連結
-      const origin = window.location.origin;
-      const longLink = `${origin}/s?q=${compressed}`;
+        return {
+          name,
+          shortId,
+          shortLink: `${origin}/l/${shortId}`,
+          copied: false,
+        } as GeneratedClient;
+      });
 
-      setGeneratedLink(longLink);
-      setShortLink('');
-      setCopied(false);
+      // Fire all Firestore writes concurrently
+      const results = await Promise.all(writes);
+      setGeneratedClients(results);
+
+      // Set first link as the WhatsApp preview link
+      if (results.length > 0) setGeneratedLink(results[0].shortLink);
+
     } catch (error) {
-      console.error("生成過程中出錯:", error);
+      console.error("批量生成過程中出錯:", error);
       alert(error instanceof Error ? error.message : "發生未知錯誤");
     } finally {
       setIsUploading(false);
+      setIsBulkGenerating(false);
     }
   };
 
-
-  const handleShorten = async () => {
-    if (!lastCompressed) return;
-    setIsShortening(true);
-    try {
-      // 1. 產生 6 碼隨機短 ID 並寫入 Firestore
-      const shortId = Math.random().toString(36).substring(2, 8);
-
-      await setDoc(doc(db, "links", shortId), {
-        q: lastCompressed,
-        createdAt: new Date().toISOString()
-      });
-
-      // 2. 生成專屬短連結
-      const customDomain = import.meta.env.VITE_APP_URL;
-      const origin = customDomain ? (customDomain.endsWith('/') ? customDomain.slice(0, -1) : customDomain) : window.location.origin;
-      const internalShortLink = `${origin}/l/${shortId}`;
-      setShortLink(internalShortLink);
-    } catch (error) {
-      console.error("生成短連結失敗:", error);
-      alert("無法產生短連結，請檢查 Firebase 設定");
-    } finally {
-      setIsShortening(false);
-    }
+  const copyClientLink = (index: number) => {
+    navigator.clipboard.writeText(generatedClients[index].shortLink);
+    setGeneratedClients(prev =>
+      prev.map((c, i) => ({ ...c, copied: i === index }))
+    );
+    setTimeout(() => {
+      setGeneratedClients(prev =>
+        prev.map((c, i) => ({ ...c, copied: i === index ? false : c.copied }))
+      );
+    }, 2000);
   };
 
   const copyToClipboard = () => {
@@ -127,7 +155,8 @@ export default function App() {
   };
 
   // Preview Data logic aligned with server.ts
-  const previewCName = clientName || "貴客";
+  const firstClient = clientList.split('\n').map(n => n.trim()).filter(Boolean)[0];
+  const previewCName = firstClient || "貴客";
   const previewTitleActual = linkTitle
     ? (linkTitle.includes('：') || linkTitle.includes(':') ? linkTitle : `${linkTitle}：${previewCName}`)
     : `專案報告：${previewCName}`;
@@ -218,17 +247,22 @@ export default function App() {
           </div>
 
           <div>
-            <label htmlFor="clientName" className="block text-sm font-semibold text-slate-700 mb-1.5">
-              Client Name
+            <label htmlFor="clientList" className="block text-sm font-semibold text-slate-700 mb-1.5">
+              Client Names <span className="text-slate-400 font-normal">(one per line — generates a unique link per client)</span>
             </label>
-            <input
-              type="text"
-              id="clientName"
-              value={clientName}
-              onChange={(e) => setClientName(e.target.value)}
-              placeholder="e.g., Acme Corp"
-              className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white"
+            <textarea
+              id="clientList"
+              value={clientList}
+              onChange={(e) => setClientList(e.target.value)}
+              placeholder={"陳大文\n李小明\n王美美"}
+              rows={4}
+              className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white resize-none font-mono"
             />
+            {clientList.trim() && (
+              <p className="text-xs text-indigo-500 mt-1.5 ml-1 font-medium">
+                {clientList.split('\n').filter(n => n.trim()).length} client{clientList.split('\n').filter(n => n.trim()).length !== 1 ? 's' : ''} detected
+              </p>
+            )}
           </div>
 
           <div>
@@ -251,55 +285,84 @@ export default function App() {
           <div className="flex gap-3">
             <button
               type="submit"
-              disabled={isUploading}
-              className="flex-1 flex justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-lg shadow-indigo-200 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all transform hover:-translate-y-0.5 cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
+              disabled={isUploading || isBulkGenerating}
+              className="flex-1 flex justify-center items-center gap-2 py-3.5 px-4 border border-transparent rounded-xl shadow-lg shadow-indigo-200 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all transform hover:-translate-y-0.5 cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
             >
-              {isUploading ? 'Uploading...' : 'Generate Link'}
+              {isUploading ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> Uploading PDF...</>
+              ) : isBulkGenerating ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> Generating Links...</>
+              ) : (
+                'Generate Links'
+              )}
             </button>
           </div>
         </form>
 
-        {generatedLink && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mt-8 bg-slate-50 rounded-2xl p-5 border border-slate-200"
-          >
-            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
-              Ready to Share
-            </label>
-            <div className="flex flex-col gap-3">
-              <div className="flex items-center gap-2">
-                <code className="flex-1 block w-full p-3 bg-white border border-slate-200 rounded-xl text-xs font-mono text-slate-600 break-all shadow-sm">
-                  {shortLink || generatedLink}
-                </code>
-                <button
-                  onClick={copyToClipboard}
-                  className="flex-shrink-0 p-3 bg-white border border-slate-200 rounded-xl hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-600 transition-all cursor-pointer shadow-sm group"
-                  title="Copy to clipboard"
-                >
-                  {copied ? (
-                    <Check className="w-5 h-5 text-green-500" />
-                  ) : (
-                    <Copy className="w-5 h-5 text-slate-400 group-hover:text-indigo-500" />
-                  )}
-                </button>
+        {/* ── Bulk Results Panel ─────────────────────────────────── */}
+        <AnimatePresence>
+          {generatedClients.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="mt-8 bg-slate-50 rounded-2xl p-5 border border-slate-200"
+            >
+              <div className="flex items-center justify-between mb-3">
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  {generatedClients.length} Link{generatedClients.length !== 1 ? 's' : ''} Generated
+                </label>
+                <span className="text-xs text-green-600 font-semibold bg-green-50 px-2 py-0.5 rounded-full">
+                  30-day TTL set
+                </span>
               </div>
 
-              {/* 當還沒產生短連結時，顯示轉換按鈕 */}
-              {!shortLink && (
-                <button
-                  type="button"
-                  onClick={handleShorten}
-                  disabled={isShortening}
-                  className="w-full flex justify-center py-2 px-4 border border-indigo-200 text-indigo-700 bg-indigo-50 rounded-xl hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed text-sm font-semibold mt-1"
-                >
-                  {isShortening ? '🔄 正在轉換短連結...' : '✨ 將長連結轉為 Firestore 短連結'}
-                </button>
-              )}
-            </div>
-          </motion.div>
-        )}
+              <div className="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1">
+                {generatedClients.map((client, i) => (
+                  <motion.div
+                    key={client.shortId}
+                    initial={{ opacity: 0, x: -6 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: i * 0.04 }}
+                    className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-sm"
+                  >
+                    {/* Client name */}
+                    <span className="text-sm font-semibold text-slate-700 w-24 shrink-0 truncate">
+                      {client.name}
+                    </span>
+
+                    {/* Short link */}
+                    <code className="flex-1 text-xs font-mono text-indigo-600 truncate">
+                      {client.shortLink}
+                    </code>
+
+                    {/* Copy button */}
+                    <button
+                      onClick={() => copyClientLink(i)}
+                      className="shrink-0 p-1.5 rounded-lg hover:bg-indigo-50 transition-colors cursor-pointer"
+                      title="Copy link"
+                    >
+                      {client.copied
+                        ? <Check className="w-4 h-4 text-green-500" />
+                        : <Copy className="w-4 h-4 text-slate-400 hover:text-indigo-500" />}
+                    </button>
+
+                    {/* WhatsApp button */}
+                    <a
+                      href={`https://wa.me/?text=${encodeURIComponent(client.shortLink)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="shrink-0 p-1.5 rounded-lg hover:bg-green-50 transition-colors"
+                      title="Send via WhatsApp"
+                    >
+                      <MessageCircle className="w-4 h-4 text-green-500" />
+                    </a>
+                  </motion.div>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Right Panel: WhatsApp Preview */}
