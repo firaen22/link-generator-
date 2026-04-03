@@ -6,9 +6,9 @@
 import React, { useState, useRef } from 'react';
 import { Copy, Check, Share2, UploadCloud, MessageCircle, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ref, uploadBytes } from "firebase/storage";
+// import { ref, uploadBytes } from "firebase/storage";
 import { doc, setDoc, Timestamp } from "firebase/firestore";
-import { storage, db } from "./firebase";
+import { db } from "./firebase";
 import LZString from 'lz-string';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -63,19 +63,42 @@ export default function App() {
       if (cleanFileURL) {
         console.log('[UPLOAD] Reusing cached path:', cleanFileURL);
       } else {
-        console.log('[UPLOAD] Starting upload...');
-        const fileName = `${Date.now().toString(36)}_${file.name}`;
-        const storageRef = ref(storage, `reports/${fileName}`);
+        console.log('[UPLOAD] Requesting R2 pre-signed URL...');
         try {
-          await uploadBytes(storageRef, file);
-          cleanFileURL = `reports/${fileName}`;
+          const presignRes = await fetch('/api/r2-presign', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileName: file.name,
+              contentType: file.type || 'application/pdf',
+            }),
+          });
+
+          if (!presignRes.ok) throw new Error('無法取得上傳授權');
+          const { uploadUrl, r2Key } = await presignRes.json();
+
+          console.log('[UPLOAD] Uploading directly to R2...');
+          const uploadRes = await fetch(uploadUrl, {
+            method: 'PUT',
+            body: file,
+            headers: {
+              'Content-Type': file.type || 'application/pdf',
+            },
+          });
+
+          if (!uploadRes.ok) throw new Error('檔案上傳至 R2 失敗');
+
+          // Use 'r2:' prefix so pdfBridge knows how to resolve it
+          cleanFileURL = `r2:${r2Key}`;
+          
           sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({
             ...sessionCache,
             [fileIdentifier]: cleanFileURL,
           }));
+          console.log('[UPLOAD] Success:', cleanFileURL);
         } catch (uploadError) {
-          console.error('Firebase Upload Error:', uploadError);
-          throw new Error(`Firebase 上傳失敗：${uploadError instanceof Error ? uploadError.message : '權限不足'}`);
+          console.error('R2 Upload Error:', uploadError);
+          throw new Error(`R2 上傳失敗：${uploadError instanceof Error ? uploadError.message : '未知錯誤'}`);
         }
       }
 
@@ -149,7 +172,7 @@ export default function App() {
   };
 
   const copyToClipboard = () => {
-    navigator.clipboard.writeText(shortLink || generatedLink);
+    navigator.clipboard.writeText(generatedLink);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

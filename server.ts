@@ -4,6 +4,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 import LZString from 'lz-string';
+import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,7 +32,18 @@ console.log(`Telegram Bot: ${process.env.TELEGRAM_BOT_TOKEN ? '✅ LOADED' : '�
 console.log(`Telegram Chat ID: ${process.env.TELEGRAM_CHAT_ID ? '✅ LOADED' : '❌ MISSING'}`);
 console.log(`Firebase Project ID: ${process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || '❌ MISSING'}`);
 console.log(`Firebase Bucket: ${process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || '❌ MISSING'}`);
+console.log(`Cloudflare R2: ${process.env.R2_ACCOUNT_ID ? '✅ LOADED' : '❌ MISSING'}`);
 console.log('------------------------------');
+
+// Cloudflare R2 Client
+const s3Client = new S3Client({
+  region: "auto",
+  endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+  credentials: {
+    accessKeyId: process.env.R2_ACCESS_KEY_ID || "",
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || "",
+  },
+});
 
 // API Route for the Link Preview (Supports both old and new shorter path)
 app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
@@ -302,6 +315,34 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
   }
 });
 
+// Cloudflare R2: Generate Pre-signed URL for client-side PUT upload
+app.post("/api/r2-presign", async (req, res) => {
+  const { fileName, contentType } = req.body;
+
+  if (!fileName || !contentType) {
+    return res.status(400).json({ error: "Missing fileName or contentType" });
+  }
+
+  try {
+    const bucketName = process.env.R2_BUCKET_NAME || "reports";
+    // Avoid filename collisions by prefixing with timestamp
+    const r2Key = `reports/${Date.now().toString(36)}_${fileName}`;
+    
+    const command = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: r2Key,
+      ContentType: contentType,
+    });
+
+    const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+    
+    res.json({ uploadUrl, r2Key });
+  } catch (error: any) {
+    console.error("[R2_PRESIGN] Error:", error.message);
+    res.status(500).json({ error: "Failed to generate upload URL" });
+  }
+});
+
 // Proxy Endpoint for PDF - Ensures cross-domain compatibility and bypassing Vercel limits
 app.get("/api/pdf/:file_id", async (req, res) => {
   const { file_id } = req.params;
@@ -334,6 +375,22 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       while (base64.length % 4) base64 += '=';
       blobUrl = Buffer.from(base64, 'base64').toString('utf8');
       console.log(`[PDF_PROXY] vblob_ ID: ${file_id.slice(0, 15)}... | Resolved URL: ${blobUrl.split('?')[0]}...`);
+    } else if (file_id.startsWith('r2_')) {
+      // Cloudflare R2 Path: r2_<base64(key)>
+      const rawBase64 = file_id.slice(3);
+      let base64 = rawBase64.replace(/-/g, '+').replace(/_/g, '/');
+      while (base64.length % 4) base64 += '=';
+      const r2Key = Buffer.from(base64, 'base64').toString('utf8');
+      
+      const bucket = process.env.R2_BUCKET_NAME || "reports";
+      console.log(`[PDF_PROXY] R2 ID. Key: ${r2Key} | Bucket: ${bucket}`);
+      
+      // We can generate a GET presigned URL for the proxy to fetch from R2
+      const command = new GetObjectCommand({
+        Bucket: bucket,
+        Key: r2Key,
+      });
+      blobUrl = await getSignedUrl(s3Client, command, { expiresIn: 60 });
     } else {
       return res.status(400).send("Invalid file ID format.");
     }
@@ -651,9 +708,7 @@ Apply high-level multi-step reasoning. Cross-reference the micro-loops and zoom 
             });
 
             const result = await Promise.race([
-              model.generateContent([
-                { role: 'user', parts: [{ text: systemPrompt + '\n\n' + userPrompt }] }
-              ]),
+              model.generateContent(systemPrompt + '\n\n' + userPrompt),
               new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 25000))
             ]) as any;
 

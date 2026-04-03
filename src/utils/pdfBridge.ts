@@ -30,9 +30,21 @@ export const toUrlSafeBase64 = (str: string): string => {
 export const resolveFileId = (fileFromProp: string | null): string => {
     if (!fileFromProp) return '';
 
-    // If it's a full URL (Vercel Blob or tokenized Firebase URL)
+    // If it's a full URL (R2, Vercel Blob or tokenized Firebase URL)
     if (fileFromProp.includes('://') || fileFromProp.includes('firebasestorage.googleapis.com')) {
+        // If it's a Cloudflare R2 URL (usually custom domain or r2.cloudflarestorage.com or contains R2 key pattern)
+        // For simplicity, if we know it's being stored as an R2 key in Firestore, we handle it.
+        // If the path starts with 'reports/' and isn't a firebase URL, it might be R2.
+        // But the most robust way is to check the URL or a prefix.
+        if (fileFromProp.includes('r2.cloudflarestorage.com') || fileFromProp.includes('r2.dev')) {
+             return `r2_${toUrlSafeBase64(fileFromProp)}`;
+        }
         return `vblob_${toUrlSafeBase64(fileFromProp)}`;
+    }
+
+    // Direct R2 key support (if f is just the key and we want to distinguish from firebase)
+    if (fileFromProp.startsWith('r2:')) {
+        return `r2_${toUrlSafeBase64(fileFromProp.slice(3))}`;
     }
 
     // Assume shorthand path relative to Firebase Storage (e.g. "reports/...")
