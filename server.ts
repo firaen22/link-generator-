@@ -563,12 +563,21 @@ const RESPONSE_SCHEMA = {
       enum: ["Loss Aversion", "Overconfidence", "Confirmation Bias", "Status Quo Bias", "FOMO"],
       description: "Primary cognitive bias detected via multi-step analysis of digital body language.",
     },
+    rep_system: {
+      type: "string",
+      enum: ["Visual", "Auditory Digital", "Kinesthetic"],
+      description: "NLP representational system inferred from telemetry. Visual: high scroll velocity, rapid page jumps, short per-page dwell. Auditory Digital: long dwell on data/compliance/text pages, zoom on numbers, low velocity on analytical content. Kinesthetic: micro-loops, long pauses, slow deliberate movement between pages.",
+    },
+    advisor_nlp_approach: {
+      type: "string",
+      description: "Concrete NLP-grounded follow-up tactic for the advisor. Must specify: (1) pace and sensory predicates to match the client's rep_system, (2) one Milton Model pattern to bypass resistance, (3) one reframe for their dominant psych_bias. Write as a direct instruction to the advisor in English.",
+    },
     nba_whatsapp: {
       type: "string",
-      description: "A customised, highly targeted opening message for the advisor to send directly to the client via WhatsApp (Hong Kong financial Cantonese).",
+      description: "A customised WhatsApp opening message in Hong Kong financial Cantonese (traditional characters). Must use language predicates matching the client's rep_system and embed one presupposition that assumes the next meeting.",
     },
   },
-  required: ["intent_archetype", "z_score", "friction_points", "psych_bias", "nba_whatsapp"],
+  required: ["intent_archetype", "z_score", "friction_points", "psych_bias", "rep_system", "advisor_nlp_approach", "nba_whatsapp"],
   additionalProperties: false,
 };
 
@@ -659,12 +668,29 @@ app.post("/api/session-end", async (req, res) => {
 
       // ── System prompt: behavioural finance framework, no HTML instructions ──
       const systemPrompt = `You are the Antigravity behavioural intelligence engine for a Hong Kong wealth management firm.
-Your role is to perform multi-step analytical inference on raw document telemetry, map it to Kahneman's System 1/System 2 framework, and produce a deterministic JSON Sales Navigation report.
-Rules:
+Your role is to perform multi-step analytical inference on raw document telemetry, map it to Kahneman's System 1/System 2 framework and NLP representational systems, and produce a deterministic JSON Sales Navigation report.
+
+BEHAVIOURAL FINANCE RULES:
 - Apply Prospect Theory: loss aversion signals (micro-loops between yield and risk pages) are weighted 2x.
 - A zoom cluster on fee/compliance content = System 2 activation (skepticism/verification mode).
 - High skim rate on educational pages = experienced investor profile (bypass introductory dialogue).
-- Your output MUST strictly follow the provided JSON schema. No additional keys. No markdown.`;
+
+NLP REPRESENTATIONAL SYSTEM INFERENCE (from telemetry):
+- Visual (V): peak scroll velocity > 3 px/ms OR average page dwell < 15s AND many pages covered rapidly. Client is result-oriented and impatient — get to the point, use visual language (清晰, 前景, 一目了然).
+- Auditory Digital (Ad): long dwell (>45s) on data-heavy or compliance pages, zoom clusters on numbers/text, low scroll velocity on analytical content. Client is analytical and self-talks — provide logic, step-by-step reasoning, use language like 明白, 分析, 理解.
+- Kinesthetic (K): micro-loops present, slow deliberate navigation, long pauses between page changes, short active dwell vs total dwell ratio. Client is feeling-based — slow down, create feelings, use language like 感受, 掌握, 如釋重負.
+
+ADVISOR_NLP_APPROACH CONSTRUCTION RULES:
+1. Pace: match the client's rep_system pace (V=fast/direct, Ad=logical/sequential, K=slow/empathic).
+2. Milton Model pattern: choose one that fits — use Cause & Effect for Ad ("Because you've reviewed the details, you can see..."), Presupposition for V ("When we meet next week..."), Embedded Command for K ("...and begin to feel how this protects what matters most").
+3. Reframe for psych_bias: Loss Aversion → content reframe ("every premium = a guardian for your family"); FOMO → cause-effect ("the earlier you act, the more compounding works for you"); Status Quo Bias → context reframe ("what worked before may cost more to fix later"); Overconfidence → chunk-up ("even the best plans have a gap — let's find yours"); Confirmation Bias → utilisation ("you already know protection matters — this confirms it").
+
+NBA_WHATSAPP RULES:
+- Use Cantonese sensory predicates matching the rep_system.
+- Embed one presupposition that assumes the next touchpoint (e.g., "下次見面前" or "當你細閱之後").
+- Keep under 60 characters. No emojis. Natural conversational tone, not salesy.
+
+Your output MUST strictly follow the provided JSON schema. No additional keys. No markdown.`;
 
       const userPrompt = `Analyse this client session and return the Sales Navigation JSON.
 
@@ -680,7 +706,11 @@ SESSION DATA:
 - Per-page behaviour matrix:
 ${behaviorSummary}
 
-Apply high-level multi-step reasoning. Cross-reference the micro-loops and zoom coordinates with Prospect Theory to determine the dominant psych_bias. Then produce a personalised nba_whatsapp opening message in Hong Kong financial Cantonese (traditional characters).`;
+STEP 1 — Infer rep_system: cross-reference scroll velocity, per-page dwell, micro-loops, and zoom patterns against the NLP inference rules.
+STEP 2 — Determine psych_bias: apply Prospect Theory weighting to micro-loops and zoom clusters.
+STEP 3 — Classify intent_archetype from the overall navigation pattern and engagement depth.
+STEP 4 — Write advisor_nlp_approach using the rep_system pace + one Milton Model pattern + one psych_bias reframe.
+STEP 5 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sensory predicates and one embedded presupposition.`;
 
       let aiResult: any = null;
       let usedModel = '';
@@ -768,6 +798,8 @@ Apply high-level multi-step reasoning. Cross-reference the micro-loops and zoom 
       // ── Inject structured JSON into Telegram message ──────────────────────
       const archetype = escapeHTML(aiResult.intent_archetype || '—');
       const bias = escapeHTML(aiResult.psych_bias || '—');
+      const repSystem = escapeHTML(aiResult.rep_system || '—');
+      const nlpApproach = escapeHTML(aiResult.advisor_nlp_approach || '—');
       const nba = escapeHTML(aiResult.nba_whatsapp || '—');
       const frictionList = (aiResult.friction_points || [])
         .map((f: string) => `• ${escapeHTML(f)}`)
@@ -781,9 +813,13 @@ Apply high-level multi-step reasoning. Cross-reference the micro-loops and zoom 
 🧠 <b>Intent Archetype：</b> ${archetype}
 📊 <b>Z-Score：</b> ${aiResult.z_score ?? zScore}
 🔬 <b>Psych Bias：</b> ${bias}
+👁 <b>Rep System：</b> ${repSystem}
 
 🔴 <b>Friction Points：</b>
 ${frictionList}
+
+🎯 <b>NLP Advisor Approach：</b>
+${nlpApproach}
 
 💡 <b>NBA WhatsApp 話術：</b>
 ${nba}`;
