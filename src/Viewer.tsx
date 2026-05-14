@@ -162,7 +162,7 @@ export default function Viewer() {
   }, []);
 
   // Advanced behavior tracking
-  const sessionDataRef = useRef<Record<number, { dwellMs: number, activeDwellMs: number, maxScale: number }>>({});
+  const sessionDataRef = useRef<Record<number, { dwellMs: number, activeDwellMs: number, maxScale: number, maxScrollDepthPct: number }>>({});
   const navigationPathRef = useRef<number[]>([]);
   const currentPageRef = useRef(1);
   const pageEnterTimeRef = useRef(Date.now());
@@ -194,12 +194,28 @@ export default function Viewer() {
   /** Container ref for zoom coordinate normalisation */
   const pdfContainerRef = useRef<HTMLDivElement>(null);
 
+  /** Page the client was on when they clicked the WhatsApp appointment CTA — strongest interest signal */
+  const ctaClickPageRef = useRef<number | null>(null);
+
+  /** Device type detected once at mount — mobile reading requires more intent than desktop */
+  const deviceTypeRef = useRef<'mobile' | 'desktop'>(
+    /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.innerWidth < 768
+      ? 'mobile'
+      : 'desktop'
+  );
+
+  /** Tab switch count — persistent across sessions per fileId+clientName. Reflects total returns. */
+  const tabSwitchKey = `ag_tabswitch_${fileId}_${clientName}`;
+  const tabSwitchCountRef = useRef<number>(
+    parseInt(localStorage.getItem(tabSwitchKey) || '0', 10) || 0
+  );
+
   // Register page transitions into navHistoryRef (alongside existing navigationPathRef)
   useEffect(() => {
     navHistoryRef.current.push({ page: pageNumber, t: performance.now() });
   }, [pageNumber]);
 
-  // Scroll velocity collector — rAF throttled, sampled every 500ms
+  // Scroll velocity + depth collector — rAF throttled, sampled every 500ms
   useEffect(() => {
     const measure = () => {
       const now = performance.now();
@@ -212,6 +228,19 @@ export default function Viewer() {
         if (now - lastSampleTRef.current >= 500) {
           scrollSamplesRef.current.push({ v: parseFloat(v.toFixed(4)), t: now });
           lastSampleTRef.current = now;
+        }
+      }
+
+      // Track max scroll depth per page (0–100 %)
+      const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+      if (docHeight > 0) {
+        const depthPct = Math.min(100, (currentY / docHeight) * 100);
+        const page = currentPageRef.current;
+        if (!sessionDataRef.current[page]) {
+          sessionDataRef.current[page] = { dwellMs: 0, activeDwellMs: 0, maxScale: 1.0, maxScrollDepthPct: 0 };
+        }
+        if (depthPct > sessionDataRef.current[page].maxScrollDepthPct) {
+          sessionDataRef.current[page].maxScrollDepthPct = parseFloat(depthPct.toFixed(1));
         }
       }
 
@@ -276,7 +305,7 @@ export default function Viewer() {
   // Helper to accumulate telemetry
   const updateSessionData = (pageNum: number, durationMs: number, currentScale: number, wasActive: boolean) => {
     if (!sessionDataRef.current[pageNum]) {
-      sessionDataRef.current[pageNum] = { dwellMs: 0, activeDwellMs: 0, maxScale: 1.0 };
+      sessionDataRef.current[pageNum] = { dwellMs: 0, activeDwellMs: 0, maxScale: 1.0, maxScrollDepthPct: 0 };
     }
     sessionDataRef.current[pageNum].dwellMs += durationMs;
     if (wasActive) {
@@ -343,6 +372,9 @@ export default function Viewer() {
         zoom_clusters: zoomClustersRef.current,         // [{x,y,page,scale,t}] — spatial intent
         scroll_samples: scrollSamplesRef.current,       // [{v,t}] — skim rate curve
         peak_scroll_velocity: peakScrollVelocity,       // max px/ms this session
+        cta_click_page: ctaClickPageRef.current,        // page client was on when clicking WhatsApp CTA, or null
+        device_type: deviceTypeRef.current,             // 'mobile' | 'desktop'
+        tab_switch_count: tabSwitchCountRef.current,    // cumulative hide-events for this file+client combo
       };
 
       // Clear LocalStorage on successful (attempted) send
@@ -364,6 +396,9 @@ export default function Viewer() {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
+        // Increment + persist tab switch count BEFORE session-end fires so payload reflects it
+        tabSwitchCountRef.current += 1;
+        try { localStorage.setItem(tabSwitchKey, String(tabSwitchCountRef.current)); } catch (e) { /* quota */ }
         console.log("偵測到用戶離開分頁，立即結算分析報告...");
         handleExit();
       } else if (document.visibilityState === 'visible') {
@@ -927,7 +962,8 @@ export default function Viewer() {
             {/* High-Impact CTA: WhatsApp Appointment */}
             <button
               onClick={() => {
-                sendTrackingEvent('click_appointment');
+                ctaClickPageRef.current = pageNumber;
+                sendTrackingEvent('click_appointment', { page: pageNumber });
                 window.open('https://wa.me/85265387638', '_blank');
               }}
               className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-[11px] font-bold transition-all relative overflow-hidden group bg-gradient-to-br from-amber-400 to-amber-600 text-[#0f172a] shadow-[0_0_20px_rgba(251,191,36,0.2)] active:scale-95"

@@ -498,10 +498,14 @@ app.post("/api/track", async (req, res) => {
         `📄 <b>報告：</b> ${report_name}\n` +
         `⚠️ <b>行為：</b> 嘗試 ${actionDesc} !!`;
     } else if (event === 'click_appointment') {
-      text = `🔥 <b>高價值意向！</b>\n\n👤 客戶 <b>${client_name}</b> 點擊咗<b>預約顧問</b>按鈕！\n請準備透過 WhatsApp 跟進。`;
+      const pageNote = page != null ? `（停留喺第 ${page} 頁）` : '';
+      text = `🔥 <b>高價值意向！</b>\n\n👤 客戶 <b>${client_name}</b> 點擊咗<b>預約顧問</b>按鈕${pageNote}！\n請準備透過 WhatsApp 跟進。`;
+    } else if (event === 'heartbeat' && duration_seconds != null && duration_seconds >= 60 && duration_seconds < 90) {
+      // Fires exactly once per session — at the first heartbeat past the 60s mark.
+      // Tells the advisor: client is reading RIGHT NOW, get ready for inbound contact.
+      const pageNote = page != null ? `（目前喺第 ${page} 頁）` : '';
+      text = `🟢 <b>正在閱讀中</b>\n\n👤 客戶 <b>${client_name}</b> 已閱讀 <b>${report_name}</b> 超過 1 分鐘${pageNote}。\n建議：準備 WhatsApp，等客戶讀完馬上跟進。`;
     }
-    // Commenting out heartbeat completely, keeping only milestones for clean alerts
-    // else if (event === 'heartbeat' && duration_seconds % 60 === 0 && duration_seconds > 0) { ... }
 
     if (text) {
       try {
@@ -630,7 +634,9 @@ app.post("/api/session-end", async (req, res) => {
     event, session_id, client_name, report_name, file_id,
     total_duration_sec, total_pages, pages_data, navigation_path,
     // Phase 3 deep telemetry
-    nav_history, zoom_clusters, scroll_samples, peak_scroll_velocity
+    nav_history, zoom_clusters, scroll_samples, peak_scroll_velocity,
+    // Phase 4 enrichment
+    cta_click_page, device_type, tab_switch_count
   } = req.body;
   console.log(`🚀 [BACKEND] 分析請求: ${client_name} | Session: ${session_id?.slice(0, 8)}`);
 
@@ -642,11 +648,14 @@ app.post("/api/session-end", async (req, res) => {
 
   const progressPercent = total_pages ? (maxReachedPage / total_pages) * 100 : 0;
   const isDeepRead = progressPercent >= 30;
+  // Return visit = at least the second session for this file+client combo. Strong buying signal —
+  // always trigger AI analysis even if this individual session was short.
+  const isReturnVisit = (tab_switch_count ?? 0) >= 2;
 
   const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
   let text = "";
 
-  if (aiEnabled && isDeepRead) {
+  if (aiEnabled && (isDeepRead || isReturnVisit)) {
     try {
       // ── Pre-calculate Z-score server-side (AI receives it, not calculates it) ──
       // Baseline: empirical mean/σ for a typical advisory session.
@@ -670,7 +679,8 @@ app.post("/api/session-end", async (req, res) => {
       const behaviorSummary = Object.entries(pages_data || {}).map(([page, data]: [string, any]) => {
         const activeSec = Math.round((data.activeDwellMs || 0) / 1000);
         const totalSec = Math.round(data.dwellMs / 1000);
-        return `Page ${page}: ${totalSec}s total (${activeSec}s active), zoom ${data.maxScale.toFixed(1)}x`;
+        const depth = data.maxScrollDepthPct != null ? `${data.maxScrollDepthPct}%` : 'n/a';
+        return `Page ${page}: ${totalSec}s total (${activeSec}s active), zoom ${data.maxScale.toFixed(1)}x, scroll depth ${depth}`;
       }).join('\n');
 
       const pathSummary = navigation_path?.join(' → ') || 'unknown';
@@ -686,6 +696,17 @@ BEHAVIOURAL FINANCE RULES:
 - Apply Prospect Theory: loss aversion signals (micro-loops between yield and risk pages) are weighted 2x.
 - A zoom cluster on fee/compliance content = System 2 activation (skepticism/verification mode).
 - High skim rate on educational pages = experienced investor profile (bypass introductory dialogue).
+- Scroll depth < 40% on a page with dwell > 20s = reader stopped mid-page = STRONG friction point (something on the upper half of that page raised a concern or question). Reference this in friction_points.
+- Scroll depth > 80% on a page with low dwell = client confirmed the page quickly = comfortable with content.
+- Scroll depth > 80% on a page with high dwell = thorough reading = key interest area.
+- CTA CLICK SIGNAL (cta_click_page): if the client clicked the WhatsApp appointment button, the page they were on at that moment is their PEAK INTEREST page. This overrides other signals — that page's content is what motivated them to act. Reference cta_click_page explicitly in spin_question, advisor_nlp_approach, and nba_whatsapp. intent_archetype should lean toward "Momentum Buyer" when cta_click_page is set.
+
+CONTEXT SIGNALS:
+- Device mobile: weight engagement signals 1.3× — mobile reading requires more intent than desktop. Keep advisor_nlp_approach and nba_whatsapp concise (mobile users have short attention windows).
+- Device desktop: assume seated reading context — more deliberate evaluation. Advisor can use longer, more detailed follow-up.
+- tab_switch_count >= 2: RETURN VISIT — client came back to re-read = strongest organic buying signal. Elevate intent_archetype toward Deep Diver or Momentum Buyer. cialdini_lever MUST be Consistency ("You've come back to this several times — this clearly matters to you") or Scarcity (cost of further delay).
+- tab_switch_count = 0 or 1: single-sitting read = casual evaluation, not yet a return-buyer pattern.
+- Time of day: morning/afternoon = work-context reading (often interrupted); evening = personal/family-context reading (higher emotional weight, better follow-up window); late night = high personal motivation but defer outreach until next morning.
 
 NLP REPRESENTATIONAL SYSTEM INFERENCE (from telemetry):
 - Visual (V): peak scroll velocity > 3 px/ms OR average page dwell < 15s AND many pages covered rapidly. Client is result-oriented and impatient — get to the point, use visual language (清晰, 前景, 一目了然).
@@ -738,6 +759,17 @@ SESSION DATA:
 - Micro-loops detected: ${microLoops.length > 0 ? microLoops.join('; ') : 'none'}
 - Top zoom clusters: ${zoomSummary}
 - Peak scroll velocity (skim rate): ${skimRate}
+- CTA click page (WhatsApp appointment button): ${cta_click_page != null ? `Page ${cta_click_page} — STRONGEST INTEREST SIGNAL` : 'not clicked'}
+- Device: ${device_type || 'unknown'}
+- Tab switch count (cumulative returns to this report): ${tab_switch_count ?? 0}
+- Time of day (HK): ${(() => {
+  const hour = new Date().toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong', hour: '2-digit', hour12: false }).slice(0, 2);
+  const h = parseInt(hour, 10);
+  if (h >= 5 && h < 12) return 'morning';
+  if (h >= 12 && h < 18) return 'afternoon';
+  if (h >= 18 && h < 23) return 'evening';
+  return 'late night';
+})()}
 - Per-page behaviour matrix:
 ${behaviorSummary}
 
@@ -847,9 +879,19 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
         .join('\n') || '• none detected';
       const modelTag = isThinkingModel ? '🧠 Thinking' : '⚡ Standard';
 
+      const deviceIcon = device_type === 'mobile' ? '📱' : device_type === 'desktop' ? '💻' : '❓';
+      const hkHour = parseInt(new Date().toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong', hour: '2-digit', hour12: false }).slice(0, 2), 10);
+      const timeLabel = hkHour >= 5 && hkHour < 12 ? '☀️ Morning'
+        : hkHour >= 12 && hkHour < 18 ? '🌤 Afternoon'
+        : hkHour >= 18 && hkHour < 23 ? '🌆 Evening'
+        : '🌙 Late Night';
+      const ctaLine = cta_click_page != null ? `\n🔥 <b>CTA Clicked on Page：</b> ${cta_click_page}` : '';
+      const returnVisitLine = isReturnVisit ? `\n🔄 <b>RETURN VISIT</b> — Client came back to re-read` : '';
+
       text = `🎯 <b>【Antigravity 銷售導航】</b>
 👤 <b>客戶：</b> ${escapeHTML(client_name)}  📄 <b>報告：</b> ${escapeHTML(report_name)}
 🆔 <b>會話：</b> <code>${session_id?.slice(0, 8)}</code>  ${modelTag} (<code>${usedModel}</code>)
+${deviceIcon} ${escapeHTML(device_type || 'unknown')}  ${timeLabel}  🔁 Returns: ${tab_switch_count ?? 0}${returnVisitLine}${ctaLine}
 
 🧠 <b>Intent Archetype：</b> ${archetype}
 📊 <b>Z-Score：</b> ${aiResult.z_score ?? zScore}
