@@ -12,12 +12,73 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const apiKeys = (process.env.GEMINI_API_KEY || "").split(',').map(k => k.trim()).filter(Boolean);
 const aiEnabled = apiKeys.length > 0;
 
-// Helper to escape HTML for Telegram
-const escapeHTML = (text: string) => {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+const escapeHTML = (text: string) =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const fromUrlSafeBase64 = (encoded: string): string => {
+  let base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+  while (base64.length % 4) base64 += '=';
+  return Buffer.from(base64, 'base64').toString('utf8');
+};
+
+const decodeLzPayload = (q: string): Record<string, any> | null => {
+  try {
+    const raw = LZString.decompressFromEncodedURIComponent(q);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
+const resolveOgImage = (imageParam: string): string => {
+  const fallback = 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop';
+  if (!imageParam?.startsWith('http')) return fallback;
+  if (imageParam.includes('meee.com.tw') && !imageParam.includes('i.meee.com.tw')) {
+    return imageParam.replace('meee.com.tw', 'i.meee.com.tw') + '.png';
+  }
+  return imageParam;
+};
+
+const sendTelegram = async (text: string): Promise<void> => {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) return;
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+    });
+    if (!r.ok) {
+      const detail = await r.json().catch(() => ({}));
+      console.error(`[TELEGRAM ERROR] ${r.status}`, detail);
+      if ((detail as any).description?.includes("can't parse entities")) {
+        const plain = text
+          .replace(/<[^>]*>/g, '')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&amp;/g, '&');
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text: plain }),
+        });
+      }
+    }
+  } catch (err) {
+    console.error('Telegram notification failed:', err);
+  }
+};
+
+const getHkTimeOfDay = (): { name: 'morning' | 'afternoon' | 'evening' | 'late night'; label: string } => {
+  const h = parseInt(
+    new Date().toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong', hour: '2-digit', hour12: false }).slice(0, 2),
+    10
+  );
+  if (h >= 5 && h < 12) return { name: 'morning', label: '☀️ Morning' };
+  if (h >= 12 && h < 18) return { name: 'afternoon', label: '🌤 Afternoon' };
+  if (h >= 18 && h < 23) return { name: 'evening', label: '🌆 Evening' };
+  return { name: 'late night', label: '🌙 Late Night' };
 };
 
 const app = express();
@@ -58,45 +119,28 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
   let titleParam = (t || tParam) as string;
   let finalFileId = file_id || "";
 
-  // Handle compressed payload if present
   if (q && typeof q === 'string') {
-    try {
-      const decompressed = LZString.decompressFromEncodedURIComponent(q);
-      console.log(`[SHARE] Decompressed payload: ${decompressed?.slice(0, 50)}...`);
-      const decoded = JSON.parse(decompressed);
-      if (decoded) {
-        if (decoded.c) cName = decoded.c;
-        if (decoded.r) rName = decoded.r;
-        if (decoded.i) imageParam = decoded.i;
-        if (decoded.d) descParam = decoded.d;
-        if (decoded.t) titleParam = decoded.t;
-        if (decoded.f) {
-          const isFirebasePath = decoded.f.startsWith('reports/');
-          // Standard URL-safe Base64 normalization
-          const base64 = Buffer.from(decoded.f, 'utf8').toString('base64')
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
-            .replace(/=+$/, '');
-          finalFileId = isFirebasePath ? `f_${base64}` : `vblob_${base64}`;
-          console.log(`[SHARE] Resolved file_id: ${finalFileId} from path: ${decoded.f}`);
-        }
+    const decoded = decodeLzPayload(q);
+    if (decoded) {
+      console.log(`[SHARE] Decompressed payload: ${JSON.stringify(decoded).slice(0, 50)}...`);
+      if (decoded.c) cName = decoded.c;
+      if (decoded.r) rName = decoded.r;
+      if (decoded.i) imageParam = decoded.i;
+      if (decoded.d) descParam = decoded.d;
+      if (decoded.t) titleParam = decoded.t;
+      if (decoded.f) {
+        const isFirebasePath = decoded.f.startsWith('reports/');
+        const base64 = Buffer.from(decoded.f, 'utf8').toString('base64')
+          .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        finalFileId = isFirebasePath ? `f_${base64}` : `vblob_${base64}`;
+        console.log(`[SHARE] Resolved file_id: ${finalFileId} from path: ${decoded.f}`);
       }
-    } catch (e) {
-      console.error("[SHARE] Failed to decode compressed payload:", e);
+    } else {
+      console.error('[SHARE] Failed to decode compressed payload');
     }
   }
 
-  // Professional OG Image (Keep file size small for WhatsApp ~ < 300KB)
-  let ogImage = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop";
-  if (imageParam && imageParam.startsWith('http')) {
-    ogImage = imageParam;
-
-    // Auto-fix for meee.com.tw (image host) viewer links to direct links
-    if (ogImage.includes('meee.com.tw') && !ogImage.includes('i.meee.com.tw')) {
-      ogImage = ogImage.replace('meee.com.tw', 'i.meee.com.tw') + '.png';
-      console.log(`[OG_IMAGE] Auto-fixed meee link: ${ogImage}`);
-    }
-  }
+  const ogImage = resolveOgImage(imageParam);
 
   // Branding
   const title = titleParam
@@ -112,34 +156,12 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
 
   console.log(`[SHARE] Redirecting to: ${viewerUrl}`);
 
-  // Send Telegram Notification (Fire and Forget)
-  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
-    const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-
-    // Telegram HTML Format
-    const text = `🔔 <b>閱讀通知</b>\n\n` +
-      `👤 <b>客戶：</b> ${cName}\n` +
-      `📄 <b>報告：</b> ${rName} (${file_id})\n` +
-      `⏰ <b>時間：</b> 剛剛`;
-
-    fetch(telegramUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: process.env.TELEGRAM_CHAT_ID,
-        text: text,
-        parse_mode: 'HTML'
-      })
-    })
-      .then(r => {
-        if (!r.ok) console.error(`Telegram API Error (Share): ${r.status} ${r.statusText}`);
-      })
-      .catch(err => console.error('Telegram notification failed (Share):', err));
-  } else {
-    console.log('[TELEGRAM] Skip share notification: Token or Chat ID missing');
-  }
-
-  // No changes needed here, cleaned up redundant block.
+  sendTelegram(
+    `🔔 <b>閱讀通知</b>\n\n` +
+    `👤 <b>客戶：</b> ${cName}\n` +
+    `📄 <b>報告：</b> ${rName} (${file_id})\n` +
+    `⏰ <b>時間：</b> 剛剛`
+  );
 
   const html = `
   <!DOCTYPE html>
@@ -223,26 +245,18 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     let descParam = "";
     let titleParam = "";
 
-    try {
-      const decoded = JSON.parse(LZString.decompressFromEncodedURIComponent(q));
-      if (decoded) {
-        if (decoded.c) cName = decoded.c;
-        if (decoded.r) rName = decoded.r;
-        if (decoded.i) imageParam = decoded.i;
-        if (decoded.d) descParam = decoded.d;
-        if (decoded.t) titleParam = decoded.t;
-      }
-    } catch (e) {
-      console.error("解碼失敗:", e);
+    const decoded = decodeLzPayload(q);
+    if (decoded) {
+      if (decoded.c) cName = decoded.c;
+      if (decoded.r) rName = decoded.r;
+      if (decoded.i) imageParam = decoded.i;
+      if (decoded.d) descParam = decoded.d;
+      if (decoded.t) titleParam = decoded.t;
+    } else {
+      console.error("解碼失敗:", shortId);
     }
 
-    let ogImage = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop";
-    if (imageParam && imageParam.startsWith('http')) {
-      ogImage = imageParam;
-      if (ogImage.includes('meee.com.tw') && !ogImage.includes('i.meee.com.tw')) {
-        ogImage = ogImage.replace('meee.com.tw', 'i.meee.com.tw') + '.png';
-      }
-    }
+    const ogImage = resolveOgImage(imageParam);
 
     const title = titleParam
       ? (titleParam.includes('：') || titleParam.includes(':') ? titleParam : `${titleParam}：${cName}`)
@@ -254,15 +268,10 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
 
     console.log(`[SHORT_LINK] Resolved: ${shortId} -> Redirecting to: ${viewerUrl}`);
 
-    // 只有真實用戶點擊才通知，過濾爬蟲
-    if (!isCrawler && process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
-      const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-      const text = `🔔 <b>閱讀通知 (短連結)</b>\n\n👤 <b>客戶：</b> ${cName}\n📄 <b>報告：</b> ${rName}\n🔗 <b>ID：</b> ${shortId}\n⏰ <b>時間：</b> 剛剛`;
-      fetch(telegramUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' })
-      }).catch(err => console.error('TG通知失敗:', err));
+    if (!isCrawler) {
+      sendTelegram(
+        `🔔 <b>閱讀通知 (短連結)</b>\n\n👤 <b>客戶：</b> ${cName}\n📄 <b>報告：</b> ${rName}\n🔗 <b>ID：</b> ${shortId}\n⏰ <b>時間：</b> 剛剛`
+      );
     }
 
     const html = `<!DOCTYPE html>
@@ -352,35 +361,16 @@ app.get("/api/pdf/:file_id", async (req, res) => {
 
     // 1. Resolve logical PDF source URL
     if (file_id.startsWith('f_')) {
-      // Shorthand Firebase Path: f_<base64(path)>
-      const rawBase64 = file_id.slice(2);
-      let base64 = rawBase64.replace(/-/g, '+').replace(/_/g, '/');
-      while (base64.length % 4) base64 += '=';
-
-      const filePath = Buffer.from(base64, 'base64').toString('utf8');
-
-      // Firebase Storage REST API encoding: slashes must be %2F
+      const filePath = fromUrlSafeBase64(file_id.slice(2));
       const encodedPath = encodeURIComponent(filePath).replace(/\//g, "%2F");
-
       const bucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || "market-update-56e1c.firebasestorage.app";
-
       console.log(`[PDF_PROXY] Decoding f_ ID. Path: ${filePath} | Bucket: ${bucket}`);
-
       blobUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media`;
-      console.log(`[PDF_PROXY] Final Blob URL: ${blobUrl}`);
     } else if (file_id.startsWith('vblob_')) {
-      // Direct encoded URL (usually includes access token): vblob_<base64(url)>
-      let base64 = file_id.slice(6).replace(/-/g, '+').replace(/_/g, '/');
-      // Fix missing padding
-      while (base64.length % 4) base64 += '=';
-      blobUrl = Buffer.from(base64, 'base64').toString('utf8');
+      blobUrl = fromUrlSafeBase64(file_id.slice(6));
       console.log(`[PDF_PROXY] vblob_ ID: ${file_id.slice(0, 15)}... | Resolved URL: ${blobUrl.split('?')[0]}...`);
     } else if (file_id.startsWith('r2_')) {
-      // Cloudflare R2 Path: r2_<base64(key)>
-      const rawBase64 = file_id.slice(3);
-      let base64 = rawBase64.replace(/-/g, '+').replace(/_/g, '/');
-      while (base64.length % 4) base64 += '=';
-      const r2Key = Buffer.from(base64, 'base64').toString('utf8');
+      const r2Key = fromUrlSafeBase64(file_id.slice(3));
       
       const bucket = process.env.R2_BUCKET_NAME || "reports";
       console.log(`[PDF_PROXY] R2 ID. Key: ${r2Key} | Bucket: ${bucket}`);
@@ -477,55 +467,31 @@ app.post("/api/track", async (req, res) => {
 
   console.log(`[TRACK] ${event} | ${client_name} | ${report_name}`);
 
-  // Send Telegram Notification
-  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
-    const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-    let text = "";
+  let text = "";
 
-    if (event === 'open') {
-      const totalPages = req.body.total_pages || "未知";
-      text = `🔔 <b>報告已開啟</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📑 <b>總頁數：</b> ${totalPages}\n🔗 <b>ID：</b> ${file_id}`;
-    } else if (event === 'security_alert') {
-      const { type } = req.body;
-      let actionDesc = '截圖報告';
-      if (type === 'print_attempt') actionDesc = '列印報告';
-      if (type === 'screenshot_detected_win') actionDesc = 'Windows 截圖';
-      if (type === 'screenshot_detected_mac') actionDesc = 'Mac 截圖 (Cmd+Shift)';
-      if (type === 'potential_screenshot_mac') actionDesc = '潛在 Mac 截圖 (Cmd+Shift)';
-
-      text = `🚨 <b>安全警報：偵測到未經授權的操作</b> 🚨\n\n` +
-        `👤 <b>客戶：</b> ${client_name}\n` +
-        `📄 <b>報告：</b> ${report_name}\n` +
-        `⚠️ <b>行為：</b> 嘗試 ${actionDesc} !!`;
-    } else if (event === 'click_appointment') {
-      const pageNote = page != null ? `（停留喺第 ${page} 頁）` : '';
-      text = `🔥 <b>高價值意向！</b>\n\n👤 客戶 <b>${client_name}</b> 點擊咗<b>預約顧問</b>按鈕${pageNote}！\n請準備透過 WhatsApp 跟進。`;
-    } else if (event === 'heartbeat' && duration_seconds != null && duration_seconds >= 60 && duration_seconds < 90) {
-      // Fires exactly once per session — at the first heartbeat past the 60s mark.
-      // Tells the advisor: client is reading RIGHT NOW, get ready for inbound contact.
-      const pageNote = page != null ? `（目前喺第 ${page} 頁）` : '';
-      text = `🟢 <b>正在閱讀中</b>\n\n👤 客戶 <b>${client_name}</b> 已閱讀 <b>${report_name}</b> 超過 1 分鐘${pageNote}。\n建議：準備 WhatsApp，等客戶讀完馬上跟進。`;
-    }
-
-    if (text) {
-      try {
-        const r = await fetch(telegramUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: process.env.TELEGRAM_CHAT_ID,
-            text: text,
-            parse_mode: 'HTML'
-          })
-        });
-        if (!r.ok) console.error(`Telegram API Error: ${r.status} ${r.statusText}`);
-      } catch (err) {
-        console.error('Telegram notification failed:', err);
-      }
-    }
-  } else {
-    console.log('[TELEGRAM] Skip notification: Token or Chat ID missing');
+  if (event === 'open') {
+    const totalPages = req.body.total_pages || "未知";
+    text = `🔔 <b>報告已開啟</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📑 <b>總頁數：</b> ${totalPages}\n🔗 <b>ID：</b> ${file_id}`;
+  } else if (event === 'security_alert') {
+    const { type } = req.body;
+    let actionDesc = '截圖報告';
+    if (type === 'print_attempt') actionDesc = '列印報告';
+    if (type === 'screenshot_detected_win') actionDesc = 'Windows 截圖';
+    if (type === 'screenshot_detected_mac') actionDesc = 'Mac 截圖 (Cmd+Shift)';
+    if (type === 'potential_screenshot_mac') actionDesc = '潛在 Mac 截圖 (Cmd+Shift)';
+    text = `🚨 <b>安全警報：偵測到未經授權的操作</b> 🚨\n\n` +
+      `👤 <b>客戶：</b> ${client_name}\n` +
+      `📄 <b>報告：</b> ${report_name}\n` +
+      `⚠️ <b>行為：</b> 嘗試 ${actionDesc} !!`;
+  } else if (event === 'click_appointment') {
+    const pageNote = page != null ? `（停留喺第 ${page} 頁）` : '';
+    text = `🔥 <b>高價值意向！</b>\n\n👤 客戶 <b>${client_name}</b> 點擊咗<b>預約顧問</b>按鈕${pageNote}！\n請準備透過 WhatsApp 跟進。`;
+  } else if (event === 'heartbeat' && duration_seconds != null && duration_seconds >= 60 && duration_seconds < 90) {
+    const pageNote = page != null ? `（目前喺第 ${page} 頁）` : '';
+    text = `🟢 <b>正在閱讀中</b>\n\n👤 客戶 <b>${client_name}</b> 已閱讀 <b>${report_name}</b> 超過 1 分鐘${pageNote}。\n建議：準備 WhatsApp，等客戶讀完馬上跟進。`;
   }
+
+  if (text) void sendTelegram(text);
 
   res.json({ status: "ok" });
 });
@@ -652,7 +618,6 @@ app.post("/api/session-end", async (req, res) => {
   // always trigger AI analysis even if this individual session was short.
   const isReturnVisit = (tab_switch_count ?? 0) >= 2;
 
-  const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
   let text = "";
 
   if (aiEnabled && (isDeepRead || isReturnVisit)) {
@@ -762,14 +727,7 @@ SESSION DATA:
 - CTA click page (WhatsApp appointment button): ${cta_click_page != null ? `Page ${cta_click_page} — STRONGEST INTEREST SIGNAL` : 'not clicked'}
 - Device: ${device_type || 'unknown'}
 - Tab switch count (cumulative returns to this report): ${tab_switch_count ?? 0}
-- Time of day (HK): ${(() => {
-  const hour = new Date().toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong', hour: '2-digit', hour12: false }).slice(0, 2);
-  const h = parseInt(hour, 10);
-  if (h >= 5 && h < 12) return 'morning';
-  if (h >= 12 && h < 18) return 'afternoon';
-  if (h >= 18 && h < 23) return 'evening';
-  return 'late night';
-})()}
+- Time of day (HK): ${getHkTimeOfDay().name}
 - Per-page behaviour matrix:
 ${behaviorSummary}
 
@@ -880,11 +838,7 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
       const modelTag = isThinkingModel ? '🧠 Thinking' : '⚡ Standard';
 
       const deviceIcon = device_type === 'mobile' ? '📱' : device_type === 'desktop' ? '💻' : '❓';
-      const hkHour = parseInt(new Date().toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong', hour: '2-digit', hour12: false }).slice(0, 2), 10);
-      const timeLabel = hkHour >= 5 && hkHour < 12 ? '☀️ Morning'
-        : hkHour >= 12 && hkHour < 18 ? '🌤 Afternoon'
-        : hkHour >= 18 && hkHour < 23 ? '🌆 Evening'
-        : '🌙 Late Night';
+      const timeLabel = getHkTimeOfDay().label;
       const ctaLine = cta_click_page != null ? `\n🔥 <b>CTA Clicked on Page：</b> ${cta_click_page}` : '';
       const returnVisitLine = isReturnVisit ? `\n🔄 <b>RETURN VISIT</b> — Client came back to re-read` : '';
 
@@ -925,33 +879,7 @@ ${nba}`;
     text = `📊 <b>閱讀結算 (無 AI)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(report_name)}\n📖 <b>頁數：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>長度：</b> ${total_duration_sec}s`;
   }
 
-  // Send to Telegram
-  try {
-    const r = await fetch(telegramUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text: text, parse_mode: 'HTML' })
-    });
-    if (!r.ok) {
-      const errorDetail = await r.json();
-      console.error(`[TELEGRAM ERROR] Status: ${r.status}, Detail: ${JSON.stringify(errorDetail)}`);
-
-      // Fallback to plain text if HTML parsing failed
-      if (errorDetail.description?.includes('can\'t parse entities')) {
-        console.log('[TELEGRAM] Retrying with plain text fallback...');
-        await fetch(telegramUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: process.env.TELEGRAM_CHAT_ID,
-            text: text.replace(/<[^>]*>/g, '') // Strip all tags
-          })
-        });
-      }
-    }
-  } catch (err) {
-    console.error('Telegram notification failed:', err);
-  }
+  await sendTelegram(text);
 
   res.json({ status: "ok" });
 });
