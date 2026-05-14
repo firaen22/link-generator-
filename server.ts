@@ -572,12 +572,24 @@ const RESPONSE_SCHEMA = {
       type: "string",
       description: "Concrete NLP-grounded follow-up tactic for the advisor. Must specify: (1) pace and sensory predicates to match the client's rep_system, (2) one Milton Model pattern to bypass resistance, (3) one reframe for their dominant psych_bias. Write as a direct instruction to the advisor in English.",
     },
+    spin_question: {
+      type: "string",
+      description: "The single most impactful SPIN question to open the follow-up conversation, derived from intent_archetype and friction_points. Format: '[SPIN Type]: [exact question in English]'. Mapping: Disengaged→Situation (re-establish context); Yield Seeker→Problem (explore the gap); Verification Mode or friction on compliance pages→Implication (amplify consequences of unresolved concern); Deep Diver or Momentum Buyer→Need-Payoff (let client articulate the value). The question must reference the specific content area where friction was detected.",
+    },
+    cialdini_lever: {
+      type: "string",
+      description: "The primary Cialdini influence principle for this client, mapped from psych_bias and intent_archetype, plus one concrete tactic. Format: '[Principle]: [one-sentence tactic in English]'. Mapping: Loss Aversion→Scarcity (make cost of delay tangible); FOMO→Social Proof (peer story of similar client who acted); Status Quo Bias→Consistency (anchor to their own stated values) + Authority (expert review framing); Overconfidence→Social Proof (peer comparison to calibrate); Confirmation Bias→Unity (you already know this matters — this confirms it).",
+    },
+    voss_label: {
+      type: "string",
+      description: "A Chris Voss tactical empathy label targeting the highest-friction page or behaviour detected. Must use 'It sounds like…', 'It seems like…', or 'It looks like…' format. Must name the specific emotion behind the friction (skepticism, overwhelm, hesitation, comparison anxiety) — not the content. Follow with one calibrated 'What' or 'How' question to draw out the real concern. Write in English. Under 50 words total.",
+    },
     nba_whatsapp: {
       type: "string",
       description: "A customised WhatsApp opening message in Hong Kong financial Cantonese (traditional characters). Must use language predicates matching the client's rep_system and embed one presupposition that assumes the next meeting.",
     },
   },
-  required: ["intent_archetype", "z_score", "friction_points", "psych_bias", "rep_system", "advisor_nlp_approach", "nba_whatsapp"],
+  required: ["intent_archetype", "z_score", "friction_points", "psych_bias", "rep_system", "advisor_nlp_approach", "spin_question", "cialdini_lever", "voss_label", "nba_whatsapp"],
   additionalProperties: false,
 };
 
@@ -685,6 +697,29 @@ ADVISOR_NLP_APPROACH CONSTRUCTION RULES:
 2. Milton Model pattern: choose one that fits — use Cause & Effect for Ad ("Because you've reviewed the details, you can see..."), Presupposition for V ("When we meet next week..."), Embedded Command for K ("...and begin to feel how this protects what matters most").
 3. Reframe for psych_bias: Loss Aversion → content reframe ("every premium = a guardian for your family"); FOMO → cause-effect ("the earlier you act, the more compounding works for you"); Status Quo Bias → context reframe ("what worked before may cost more to fix later"); Overconfidence → chunk-up ("even the best plans have a gap — let's find yours"); Confirmation Bias → utilisation ("you already know protection matters — this confirms it").
 
+SPIN SELLING — SPIN_QUESTION RULES:
+- Disengaged → Situation: re-establish what matters to them before anything else.
+- Yield Seeker → Problem: surface the gap between what they have and what they need.
+- Verification Mode OR friction detected on compliance/fee pages → Implication: amplify the consequence of the unresolved concern ("If this gap isn't closed, what changes for your family?"). Reference the specific friction page.
+- Deep Diver → Need-Payoff: let them articulate the value ("If this were sorted, what would that mean for your planning?").
+- Momentum Buyer → Need-Payoff: confirm and accelerate ("You've clearly thought about this — what's the one thing that would make this feel right?").
+- The question must sound natural in a follow-up conversation, not clinical.
+
+CIALDINI INFLUENCE — CIALDINI_LEVER RULES:
+- Loss Aversion → Scarcity: make the cost of delay concrete and time-bound.
+- FOMO → Social Proof: reference a peer story of a similar client who acted (same life stage, same concern).
+- Status Quo Bias → Consistency: anchor to a value they stated + Authority (position yourself as the expert reviewer, not the salesperson).
+- Overconfidence → Social Proof: use peer comparison to introduce calibrated uncertainty ("Most clients at your stage discover one gap they didn't expect").
+- Confirmation Bias → Unity: "You already know this matters — this just confirms what you've been thinking."
+- Output: one principle name + one tactical sentence the advisor can actually say or do.
+
+VOSS NEGOTIATION — VOSS_LABEL RULES:
+- Target the page or behaviour with the highest friction (longest dwell + zoom cluster, or micro-loop page pair).
+- Name the emotion behind the friction — not the content. Possible emotions: skepticism, overwhelm, hesitation, comparison anxiety, hidden concern.
+- Use "It sounds like…" / "It seems like…" / "It looks like…" — never "I feel".
+- Follow immediately with one calibrated question: "What…" or "How…" — never "Why".
+- The label + question together should make the client feel understood before they've said anything.
+
 NBA_WHATSAPP RULES:
 - Use Cantonese sensory predicates matching the rep_system.
 - Embed one presupposition that assumes the next touchpoint (e.g., "下次見面前" or "當你細閱之後").
@@ -710,7 +745,10 @@ STEP 1 — Infer rep_system: cross-reference scroll velocity, per-page dwell, mi
 STEP 2 — Determine psych_bias: apply Prospect Theory weighting to micro-loops and zoom clusters.
 STEP 3 — Classify intent_archetype from the overall navigation pattern and engagement depth.
 STEP 4 — Write advisor_nlp_approach using the rep_system pace + one Milton Model pattern + one psych_bias reframe.
-STEP 5 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sensory predicates and one embedded presupposition.`;
+STEP 5 — Write spin_question: select the SPIN type from intent_archetype, then craft the exact question referencing the highest-friction content area.
+STEP 6 — Write cialdini_lever: map psych_bias to the correct Cialdini principle and write one concrete tactic sentence.
+STEP 7 — Write voss_label: identify the highest-friction page/behaviour, name its emotion with "It sounds like…", follow with one "What" or "How" calibrated question.
+STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sensory predicates and one embedded presupposition.`;
 
       let aiResult: any = null;
       let usedModel = '';
@@ -800,6 +838,9 @@ STEP 5 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
       const bias = escapeHTML(aiResult.psych_bias || '—');
       const repSystem = escapeHTML(aiResult.rep_system || '—');
       const nlpApproach = escapeHTML(aiResult.advisor_nlp_approach || '—');
+      const spinQuestion = escapeHTML(aiResult.spin_question || '—');
+      const cialdiniLever = escapeHTML(aiResult.cialdini_lever || '—');
+      const vossLabel = escapeHTML(aiResult.voss_label || '—');
       const nba = escapeHTML(aiResult.nba_whatsapp || '—');
       const frictionList = (aiResult.friction_points || [])
         .map((f: string) => `• ${escapeHTML(f)}`)
@@ -820,6 +861,15 @@ ${frictionList}
 
 🎯 <b>NLP Advisor Approach：</b>
 ${nlpApproach}
+
+❓ <b>SPIN Question：</b>
+${spinQuestion}
+
+⚡ <b>Cialdini Lever：</b>
+${cialdiniLever}
+
+🎙 <b>Voss Label：</b>
+${vossLabel}
 
 💡 <b>NBA WhatsApp 話術：</b>
 ${nba}`;
