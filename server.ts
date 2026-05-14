@@ -529,7 +529,7 @@ app.post("/api/track", async (req, res) => {
 // THINKING_MODELS support thinkingLevel + native JSON schema (response_schema).
 // STANDARD_MODELS are fallbacks that cannot honour those config options.
 const THINKING_MODELS = [
-  "gemini-3.1-flash-lite-preview",      // RPD: 500, RPM: 15 (Highest Quota)
+  "gemini-3.1-flash-lite",              // RPD: 500, RPM: 15 (Highest Quota) — GA May 2026
   "gemini-3-flash-preview",           // RPD: 20, RPM: 5
   "gemini-2.5-flash",                 // RPD: 20, RPM: 5
 ];
