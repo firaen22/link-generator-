@@ -189,7 +189,8 @@ export default function App() {
   // Image logic including server-side meee.com.tw auto-fix
   let previewImageActual = previewImage || "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop";
   if (previewImageActual.includes('meee.com.tw') && !previewImageActual.includes('i.meee.com.tw')) {
-    previewImageActual = previewImageActual.replace('meee.com.tw', 'i.meee.com.tw') + '.png';
+    const replaced = previewImageActual.replace('meee.com.tw', 'i.meee.com.tw');
+    previewImageActual = /\.(png|jpe?g|gif|webp)$/i.test(replaced) ? replaced : replaced + '.png';
   }
 
   return (

@@ -34,7 +34,8 @@ const resolveOgImage = (imageParam: string): string => {
   const fallback = 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop';
   if (!imageParam?.startsWith('http')) return fallback;
   if (imageParam.includes('meee.com.tw') && !imageParam.includes('i.meee.com.tw')) {
-    return imageParam.replace('meee.com.tw', 'i.meee.com.tw') + '.png';
+    const replaced = imageParam.replace('meee.com.tw', 'i.meee.com.tw');
+    return /\.(png|jpe?g|gif|webp)$/i.test(replaced) ? replaced : replaced + '.png';
   }
   return imageParam;
 };
@@ -212,7 +213,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
   const { shortId } = req.params;
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
   const userAgent = req.headers['user-agent'] || '';
-  const isCrawler = /WhatsApp|Telegram|facebookexternalhit|Twitterbot/i.test(userAgent);
+  const isCrawler = /WhatsApp|Telegram|facebookexternalhit|Twitterbot|Slackbot|Discordbot|Line|WeChat/i.test(userAgent);
 
   if (!projectId) {
     console.error("Missing Project ID in env");
