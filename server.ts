@@ -21,6 +21,19 @@ const fromUrlSafeBase64 = (encoded: string): string => {
   return Buffer.from(base64, 'base64').toString('utf8');
 };
 
+const extractFileName = (filePath: string | null | undefined): string => {
+  if (!filePath) return "Document";
+  // Strip prefixes like "r2:" or "r2_"
+  let pathStr = filePath.replace(/^(r2|f|vblob)[:_]/, "");
+  // Get the last path segment (filename)
+  let baseName = pathStr.substring(pathStr.lastIndexOf('/') + 1);
+  // Strip timestamp prefix if any (e.g. kp38d7c2_Janice_Report.pdf or 1716584284000_Janice_Report.pdf)
+  baseName = baseName.replace(/^[a-z0-9]{8,13}_/, "");
+  // Strip extension
+  baseName = baseName.replace(/\.[^/.]+$/, "");
+  return baseName || "Document";
+};
+
 const decodeLzPayload = (q: string): Record<string, any> | null => {
   try {
     const raw = LZString.decompressFromEncodedURIComponent(q);
@@ -143,9 +156,38 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
           .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         finalFileId = isFirebasePath ? `f_${base64}` : `vblob_${base64}`;
         console.log(`[SHARE] Resolved file_id: ${finalFileId} from path: ${decoded.f}`);
+        
+        if (rName === "Document" && decoded.f) {
+          const extracted = extractFileName(decoded.f);
+          if (extracted && extracted !== "Document") {
+            rName = extracted;
+          }
+        }
       }
     } else {
       console.error('[SHARE] Failed to decode compressed payload');
+    }
+  }
+
+  // Fallback from file_id if rName is still Document
+  if (rName === "Document" && finalFileId) {
+    try {
+      let decodedPath = "";
+      if (finalFileId.startsWith('f_')) {
+        decodedPath = fromUrlSafeBase64(finalFileId.slice(2));
+      } else if (finalFileId.startsWith('vblob_')) {
+        decodedPath = fromUrlSafeBase64(finalFileId.slice(6));
+      } else if (finalFileId.startsWith('r2_')) {
+        decodedPath = fromUrlSafeBase64(finalFileId.slice(3));
+      }
+      if (decodedPath) {
+        const extracted = extractFileName(decodedPath);
+        if (extracted && extracted !== "Document") {
+          rName = extracted;
+        }
+      }
+    } catch (e) {
+      // ignore
     }
   }
 
@@ -266,6 +308,13 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
       if (decoded.i) imageParam = decoded.i;
       if (decoded.d) descParam = decoded.d;
       if (decoded.t) titleParam = decoded.t;
+      
+      if (rName === "Document" && decoded.f) {
+        const extracted = extractFileName(decoded.f);
+        if (extracted && extracted !== "Document") {
+          rName = extracted;
+        }
+      }
     } else {
       console.error("解碼失敗:", shortId);
     }
@@ -515,13 +564,35 @@ app.get("/api/check-image-size", async (req, res) => {
 app.post("/api/track", async (req, res) => {
   const { event, client_name, report_name, file_id, duration_seconds, page } = req.body;
 
-  console.log(`[TRACK] ${event} | ${client_name} | ${report_name}`);
+  let rName = report_name || "Document";
+  if (rName === "Document" && file_id) {
+    try {
+      let decodedPath = "";
+      if (file_id.startsWith('f_')) {
+        decodedPath = fromUrlSafeBase64(file_id.slice(2));
+      } else if (file_id.startsWith('vblob_')) {
+        decodedPath = fromUrlSafeBase64(file_id.slice(6));
+      } else if (file_id.startsWith('r2_')) {
+        decodedPath = fromUrlSafeBase64(file_id.slice(3));
+      }
+      if (decodedPath) {
+        const extracted = extractFileName(decodedPath);
+        if (extracted && extracted !== "Document") {
+          rName = extracted;
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  console.log(`[TRACK] ${event} | ${client_name} | ${rName}`);
 
   let text = "";
 
   if (event === 'open') {
     const totalPages = req.body.total_pages || "未知";
-    text = `🔔 <b>報告已開啟</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${report_name}\n📑 <b>總頁數：</b> ${totalPages}\n🔗 <b>ID：</b> ${file_id}`;
+    text = `🔔 <b>報告已開啟</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${rName}\n📑 <b>總頁數：</b> ${totalPages}\n🔗 <b>ID：</b> ${file_id}`;
   } else if (event === 'security_alert') {
     const { type } = req.body;
     let actionDesc = '截圖報告';
@@ -531,14 +602,14 @@ app.post("/api/track", async (req, res) => {
     if (type === 'potential_screenshot_mac') actionDesc = '潛在 Mac 截圖 (Cmd+Shift)';
     text = `🚨 <b>安全警報：偵測到未經授權的操作</b> 🚨\n\n` +
       `👤 <b>客戶：</b> ${client_name}\n` +
-      `📄 <b>報告：</b> ${report_name}\n` +
+      `📄 <b>報告：</b> ${rName}\n` +
       `⚠️ <b>行為：</b> 嘗試 ${actionDesc} !!`;
   } else if (event === 'click_appointment') {
     const pageNote = page != null ? `（停留喺第 ${page} 頁）` : '';
     text = `🔥 <b>高價值意向！</b>\n\n👤 客戶 <b>${client_name}</b> 點擊咗<b>預約顧問</b>按鈕${pageNote}！\n請準備透過 WhatsApp 跟進。`;
   } else if (event === 'heartbeat' && duration_seconds != null && duration_seconds >= 60 && duration_seconds < 90) {
     const pageNote = page != null ? `（目前喺第 ${page} 頁）` : '';
-    text = `🟢 <b>正在閱讀中</b>\n\n👤 客戶 <b>${client_name}</b> 已閱讀 <b>${report_name}</b> 超過 1 分鐘${pageNote}。\n建議：準備 WhatsApp，等客戶讀完馬上跟進。`;
+    text = `🟢 <b>正在閱讀中</b>\n\n👤 客戶 <b>${client_name}</b> 已閱讀 <b>${rName}</b> 超過 1 分鐘${pageNote}。\n建議：準備 WhatsApp，等客戶讀完馬上跟進。`;
   }
 
   if (text) void sendTelegram(text);
@@ -654,7 +725,30 @@ app.post("/api/session-end", async (req, res) => {
     // Phase 4 enrichment
     cta_click_page, device_type, tab_switch_count
   } = req.body;
-  console.log(`🚀 [BACKEND] 分析請求: ${client_name} | Session: ${session_id?.slice(0, 8)}`);
+
+  let rName = report_name || "Document";
+  if (rName === "Document" && file_id) {
+    try {
+      let decodedPath = "";
+      if (file_id.startsWith('f_')) {
+        decodedPath = fromUrlSafeBase64(file_id.slice(2));
+      } else if (file_id.startsWith('vblob_')) {
+        decodedPath = fromUrlSafeBase64(file_id.slice(6));
+      } else if (file_id.startsWith('r2_')) {
+        decodedPath = fromUrlSafeBase64(file_id.slice(3));
+      }
+      if (decodedPath) {
+        const extracted = extractFileName(decodedPath);
+        if (extracted && extracted !== "Document") {
+          rName = extracted;
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  console.log(`🚀 [BACKEND] 分析請求: ${client_name} | 報告: ${rName} | Session: ${session_id?.slice(0, 8)}`);
 
   if (event !== 'session_end') return res.json({ status: "ignored" });
 
@@ -767,7 +861,7 @@ Your output MUST strictly follow the provided JSON schema. No additional keys. N
 
 SESSION DATA:
 - Client: ${client_name}
-- Report: ${report_name}
+- Report: ${rName}
 - Duration: ${total_duration_sec}s
 - Pre-calculated Z-Score: ${zScore} (pass this value into the z_score field)
 - Navigation path: ${pathSummary}
@@ -893,7 +987,7 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
       const returnVisitLine = isReturnVisit ? `\n🔄 <b>RETURN VISIT</b> — Client came back to re-read` : '';
 
       text = `🎯 <b>【Antigravity 銷售導航】</b>
-👤 <b>客戶：</b> ${escapeHTML(client_name)}  📄 <b>報告：</b> ${escapeHTML(report_name)}
+👤 <b>客戶：</b> ${escapeHTML(client_name)}  📄 <b>報告：</b> ${escapeHTML(rName)}
 🆔 <b>會話：</b> <code>${session_id?.slice(0, 8)}</code>  ${modelTag} (<code>${usedModel}</code>)
 ${deviceIcon} ${escapeHTML(device_type || 'unknown')}  ${timeLabel}  🔁 Returns: ${tab_switch_count ?? 0}${returnVisitLine}${ctaLine}
 
@@ -921,12 +1015,12 @@ ${vossLabel}
 ${nba}`;
 
     } catch (err) {
-      text = `📊 <b>閱讀結算 (基礎)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(report_name)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n⚠️ AI 分析失敗: ${escapeHTML((err as any).message)}`;
+      text = `📊 <b>閱讀結算 (基礎)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n⚠️ AI 分析失敗: ${escapeHTML((err as any).message)}`;
     }
   } else if (!isDeepRead) {
-    text = `📊 <b>閱讀結算 (快速翻閱)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(report_name)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages} (${progressPercent.toFixed(1)}%)\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n💡 提示：客戶僅快速掃描。`;
+    text = `📊 <b>閱讀結算 (快速翻閱)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages} (${progressPercent.toFixed(1)}%)\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n💡 提示：客戶僅快速掃描。`;
   } else {
-    text = `📊 <b>閱讀結算 (無 AI)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(report_name)}\n📖 <b>頁數：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>長度：</b> ${total_duration_sec}s`;
+    text = `📊 <b>閱讀結算 (無 AI)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>頁數：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>長度：</b> ${total_duration_sec}s`;
   }
 
   await sendTelegram(text);

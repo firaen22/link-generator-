@@ -73,3 +73,36 @@ export const decodeCompressedPayload = (q: string | null) => {
         return null;
     }
 };
+
+/**
+ * Decodes a URL-safe Base64 string back to standard UTF-8 string.
+ */
+export const fromUrlSafeBase64 = (encoded: string): string => {
+    try {
+        let base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+        while (base64.length % 4) base64 += '=';
+        const binString = atob(base64);
+        const bytes = Uint8Array.from(binString, (char) => char.charCodeAt(0));
+        return new TextDecoder().decode(bytes);
+    } catch (e) {
+        console.error('[PDF_BRIDGE] Base64 decoding error:', e);
+        return '';
+    }
+};
+
+/**
+ * Extracts a clean filename without extensions or timestamp prefixes from a file path or URL.
+ */
+export const extractFileName = (filePath: string | null | undefined): string => {
+    if (!filePath) return 'Document';
+    // Strip prefixes like "r2:" or "r2_"
+    let pathStr = filePath.replace(/^(r2|f|vblob)[:_]/, "");
+    // Get the last path segment (filename)
+    let baseName = pathStr.substring(pathStr.lastIndexOf('/') + 1);
+    // Strip timestamp prefix if any (e.g. kp38d7c2_Janice_Report.pdf or 1716584284000_Janice_Report.pdf)
+    baseName = baseName.replace(/^[a-z0-9]{8,13}_/, "");
+    // Strip extension
+    baseName = baseName.replace(/\.[^/.]+$/, "");
+    return baseName || 'Document';
+};
+

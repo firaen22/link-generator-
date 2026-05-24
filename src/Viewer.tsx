@@ -14,7 +14,7 @@ import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
 import LZString from 'lz-string';
-import { resolveFileId, getProxiedPdfUrl, decodeCompressedPayload } from './utils/pdfBridge';
+import { resolveFileId, getProxiedPdfUrl, decodeCompressedPayload, extractFileName, fromUrlSafeBase64 } from './utils/pdfBridge';
 
 declare global {
   interface Window {
@@ -44,7 +44,38 @@ export default function Viewer() {
     if (decoded.f) fileFromProp = decoded.f;
   }
 
+  // Fallback to extract clean filename from fileFromProp if reportName is generic
+  if (reportName === 'Document' && fileFromProp) {
+    const extracted = extractFileName(fileFromProp);
+    if (extracted && extracted !== 'Document') {
+      reportName = extracted;
+    }
+  }
+
   const fileId = initialFileId || resolveFileId(fileFromProp);
+
+  // Fallback if reportName is still 'Document' but we have initialFileId / fileId
+  if (reportName === 'Document' && fileId) {
+    try {
+      let decodedPath = "";
+      if (fileId.startsWith('f_')) {
+        decodedPath = fromUrlSafeBase64(fileId.slice(2));
+      } else if (fileId.startsWith('vblob_')) {
+        decodedPath = fromUrlSafeBase64(fileId.slice(6));
+      } else if (fileId.startsWith('r2_')) {
+        decodedPath = fromUrlSafeBase64(fileId.slice(3));
+      }
+      if (decodedPath) {
+        const extracted = extractFileName(decodedPath);
+        if (extracted && extracted !== 'Document') {
+          reportName = extracted;
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
   console.log('[VIEWER] Final File ID:', fileId);
   const pdfUrl = getProxiedPdfUrl(fileId);
   console.log('[VIEWER] PDF Proxy URL:', pdfUrl);

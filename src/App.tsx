@@ -154,11 +154,13 @@ export default function App() {
         new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days
       );
 
+      const fallbackReportName = file ? file.name.replace(/\.[^/.]+$/, "") : "Document";
+
       const writes = names.map(async (name) => {
         const payload = {
           c: name,
-          r: reportName || 'Document',
-          t: linkTitle,
+          r: reportName || fallbackReportName,
+          t: linkTitle || fallbackReportName,
           d: description,
           i: previewImage,
           f: cleanFileURL,
@@ -300,6 +302,18 @@ export default function App() {
                 type="file"
                 ref={fileInputRef}
                 accept="application/pdf"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    const cleanName = file.name.replace(/\.[^/.]+$/, "");
+                    if (!reportName) {
+                      setReportName(cleanName);
+                    }
+                    if (!linkTitle) {
+                      setLinkTitle(cleanName);
+                    }
+                  }
+                }}
                 className="block w-full pl-11 pr-4 py-2 border border-slate-200 rounded-xl file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition-all outline-none text-sm bg-slate-50 focus:bg-white cursor-pointer"
               />
             </div>
