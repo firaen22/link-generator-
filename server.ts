@@ -475,6 +475,8 @@ app.post("/api/shorten", async (req, res) => {
     console.error("縮網址失敗:", error);
     res.status(500).json({ error: "無法產生短連結，請稍後再試" });
   }
+});
+
 // 新增：圖片大小檢查 API 端點
 app.get("/api/check-image-size", async (req, res) => {
   const { url } = req.query;
