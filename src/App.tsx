@@ -35,6 +35,44 @@ export default function App() {
   // Legacy single-link state (kept for WhatsApp preview panel)
   const [generatedLink, setGeneratedLink] = useState('');
   const [copied, setCopied] = useState(false);
+  const [imageSizeWarning, setImageSizeWarning] = useState('');
+
+  React.useEffect(() => {
+    if (!previewImage) {
+      setImageSizeWarning('');
+      return;
+    }
+
+    if (!previewImage.startsWith('http')) {
+      setImageSizeWarning('請輸入以 http:// 或 https:// 開頭的完整圖片網址。');
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/check-image-size?url=${encodeURIComponent(previewImage)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        if (data.sizeBytes != null) {
+          const kb = Math.round(data.sizeBytes / 1024);
+          if (kb > 300) {
+            const mb = (data.sizeBytes / (1024 * 1024)).toFixed(2);
+            setImageSizeWarning(`警告：此圖片大小為 ${mb} MB (${kb} KB)，已大幅超出 WhatsApp / Telegram 預覽圖上限 300 KB。預覽圖很可能無法正常顯示！建議將圖片壓縮並轉為 JPG 後再重新上傳。`);
+          } else {
+            setImageSizeWarning('');
+          }
+        } else {
+          setImageSizeWarning('');
+        }
+      } catch (err) {
+        console.error('[CHECK_IMAGE_SIZE] Failed to query size:', err);
+        setImageSizeWarning('');
+      }
+    }, 600);
+
+    return () => clearTimeout(timer);
+  }, [previewImage]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const SESSION_CACHE_KEY = 'pw_uploaded_files';
@@ -304,6 +342,12 @@ export default function App() {
             <p className="text-xs text-slate-400 mt-1.5 ml-1">
               Custom image for WhatsApp/Telegram preview card.
             </p>
+            {imageSizeWarning && (
+              <p className="text-xs text-rose-600 mt-2.5 ml-1 font-semibold bg-rose-50 border border-rose-100 rounded-xl p-3 flex items-start gap-2 shadow-sm shadow-rose-50/50">
+                <span className="shrink-0 text-sm leading-none">⚠️</span>
+                <span>{imageSizeWarning}</span>
+              </p>
+            )}
           </div>
 
           <div className="flex gap-3">

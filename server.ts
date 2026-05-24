@@ -475,6 +475,37 @@ app.post("/api/shorten", async (req, res) => {
     console.error("縮網址失敗:", error);
     res.status(500).json({ error: "無法產生短連結，請稍後再試" });
   }
+// 新增：圖片大小檢查 API 端點
+app.get("/api/check-image-size", async (req, res) => {
+  const { url } = req.query;
+  if (!url || typeof url !== "string") {
+    return res.status(400).json({ error: "缺少 url 參數" });
+  }
+
+  // 使用 resolveOgImage 解析最終的圖片網址 (自動修正 meee.com.tw 等)
+  const resolvedUrl = resolveOgImage(url);
+
+  try {
+    // 優先使用輕量 HEAD 請求
+    let response = await fetch(resolvedUrl, { method: "HEAD" });
+    let contentLength = response.headers.get("content-length");
+
+    // 若 HEAD 回傳無大小，嘗試用 GET 讀取標頭
+    if (!contentLength) {
+      response = await fetch(resolvedUrl, { method: "GET" });
+      contentLength = response.headers.get("content-length");
+    }
+
+    if (contentLength) {
+      const sizeBytes = parseInt(contentLength, 10);
+      return res.json({ resolvedUrl, sizeBytes });
+    }
+
+    res.json({ resolvedUrl, sizeBytes: null });
+  } catch (error: any) {
+    console.error("[CHECK_IMAGE_SIZE] 錯誤:", error.message);
+    res.status(500).json({ error: "無法取得圖片大小資訊" });
+  }
 });
 
 
