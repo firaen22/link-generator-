@@ -31,13 +31,19 @@ const decodeLzPayload = (q: string): Record<string, any> | null => {
 };
 
 const resolveOgImage = (imageParam: string): string => {
-  const fallback = 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop';
+  const fallback = 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1200&auto=format&fit=crop&.jpg';
   if (!imageParam?.startsWith('http')) return fallback;
+  
+  let resolved = imageParam;
   if (imageParam.includes('meee.com.tw') && !imageParam.includes('i.meee.com.tw')) {
-    const replaced = imageParam.replace('meee.com.tw', 'i.meee.com.tw');
-    return /\.(png|jpe?g|gif|webp)$/i.test(replaced) ? replaced : replaced + '.png';
+    resolved = imageParam.replace('meee.com.tw', 'i.meee.com.tw');
   }
-  return imageParam;
+
+  // Ensure strict crawlers (like WhatsApp) see a standard image extension
+  if (!/\.(png|jpe?g|gif|webp|svg)/i.test(resolved)) {
+    resolved = resolved.includes('?') ? resolved + '&.jpg' : resolved + '.jpg';
+  }
+  return resolved;
 };
 
 const sendTelegram = async (text: string): Promise<void> => {
@@ -111,6 +117,8 @@ const s3Client = new S3Client({
 app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
   const { file_id } = req.params;
   const { q, client_name, name, report_name, preview_image, c, r, i, d, desc, t, title: tParam } = req.query;
+  const userAgent = req.headers['user-agent'] || '';
+  const isCrawler = /WhatsApp|Telegram|facebookexternalhit|Twitterbot|Slackbot|Discordbot|Line|WeChat/i.test(userAgent);
 
   // Handle shorthand or full names
   let cName = (c || name || client_name || "貴客") as string;
@@ -157,12 +165,14 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
 
   console.log(`[SHARE] Redirecting to: ${viewerUrl}`);
 
-  sendTelegram(
-    `🔔 <b>閱讀通知</b>\n\n` +
-    `👤 <b>客戶：</b> ${cName}\n` +
-    `📄 <b>報告：</b> ${rName} (${file_id})\n` +
-    `⏰ <b>時間：</b> 剛剛`
-  );
+  if (!isCrawler) {
+    sendTelegram(
+      `🔔 <b>閱讀通知</b>\n\n` +
+      `👤 <b>客戶：</b> ${cName}\n` +
+      `📄 <b>報告：</b> ${rName} (${file_id})\n` +
+      `⏰ <b>時間：</b> 剛剛`
+    );
+  }
 
   const html = `
   <!DOCTYPE html>
@@ -177,6 +187,7 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
       <meta property="og:image:alt" content="${title}" />
       <meta property="og:type" content="website" />
       <meta property="og:site_name" content="Antigravity 財富管理" />
+      <meta property="og:url" content="${req.protocol}://${req.get('host')}${req.originalUrl}" />
       <meta name="twitter:card" content="summary_large_image" />
       <meta name="twitter:image" content="${ogImage}" />
       
@@ -187,6 +198,7 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
           .container { text-align: center; }
       </style>
       
+      ${!isCrawler ? `
       <script>
           // Use window.location.origin to ensure absolute path redirect
           const targetUrl = window.location.origin + "${viewerUrl}";
@@ -195,6 +207,7 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
               window.location.replace(targetUrl);
           }, 500);
       </script>
+      ` : ''}
   </head>
   <body>
       <div class="container">
@@ -291,6 +304,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
         <meta property="og:image:alt" content="${title}" />
         <meta property="og:site_name" content="Antigravity 財富管理" />
         <meta property="og:type" content="website" />
+        <meta property="og:url" content="${req.protocol}://${req.get('host')}${req.originalUrl}" />
         <meta name="twitter:card" content="summary_large_image" />
         <meta name="twitter:image" content="${ogImage}" />
         
@@ -301,6 +315,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
             .container { text-align: center; padding: 20px; }
         </style>
         
+        ${!isCrawler ? `
         <script>
             const targetUrl = window.location.origin + "${viewerUrl}";
             console.log('[SHORT_LINK] Redirection Target:', targetUrl);
@@ -308,6 +323,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
                 window.location.replace(targetUrl); 
             }, 500);
         </script>
+        ` : ''}
     </head>
     <body>
         <div class="container">

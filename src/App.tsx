@@ -187,7 +187,7 @@ export default function App() {
   const previewDescActual = description || "為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
 
   // Image logic including server-side meee.com.tw auto-fix
-  let previewImageActual = previewImage || "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop";
+  let previewImageActual = previewImage || "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1200&auto=format&fit=crop&.jpg";
   if (previewImageActual.includes('meee.com.tw') && !previewImageActual.includes('i.meee.com.tw')) {
     const replaced = previewImageActual.replace('meee.com.tw', 'i.meee.com.tw');
     previewImageActual = /\.(png|jpe?g|gif|webp)$/i.test(replaced) ? replaced : replaced + '.png';
@@ -422,7 +422,7 @@ export default function App() {
                   className="w-full h-full object-cover"
                   onError={(e) => {
                     // Fallback if image fails to load
-                    (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=600&auto=format&fit=crop";
+                    (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1200&auto=format&fit=crop&.jpg";
                   }}
                 />
               </div>
