@@ -23,6 +23,8 @@ export default function App() {
   const [linkTitle, setLinkTitle] = useState('');
   const [description, setDescription] = useState('');
   const [whatsappNumber, setWhatsappNumber] = useState('');
+  // Per-user access key (sent as x-pwp-key). Persisted so it's entered once.
+  const [accessKey, setAccessKey] = useState(() => localStorage.getItem('pwp_api_key') || '');
   const [isUploading, setIsUploading] = useState(false);
   const [isBulkGenerating, setIsBulkGenerating] = useState(false);
 
@@ -102,13 +104,14 @@ export default function App() {
         try {
           const presignRes = await fetch('/api/r2-presign', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'x-pwp-key': accessKey },
             body: JSON.stringify({
               fileName: file.name,
               contentType: file.type || 'application/pdf',
             }),
           });
 
+          if (presignRes.status === 401) throw new Error('存取金鑰無效或未填寫，請於上方輸入正確的存取金鑰');
           if (!presignRes.ok) throw new Error('無法取得上傳授權');
           const { uploadUrl, r2Key } = await presignRes.json();
 
@@ -150,7 +153,7 @@ export default function App() {
 
       const createRes = await fetch('/api/create-link', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-pwp-key': accessKey },
         body: JSON.stringify({
           clients: names,
           f: cleanFileURL,
@@ -275,6 +278,26 @@ export default function App() {
               rows={2}
               className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white resize-none"
             />
+          </div>
+
+          <div>
+            <label htmlFor="accessKey" className="block text-sm font-semibold text-slate-700 mb-1.5">
+              存取金鑰 Access Key <span className="text-rose-500 font-normal">(必填)</span>
+            </label>
+            <input
+              type="password"
+              id="accessKey"
+              value={accessKey}
+              onChange={(e) => {
+                setAccessKey(e.target.value);
+                localStorage.setItem('pwp_api_key', e.target.value);
+              }}
+              placeholder="請輸入您的專屬存取金鑰"
+              className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white"
+            />
+            <p className="text-xs text-slate-400 mt-1.5 ml-1">
+              只需輸入一次（會記住於此瀏覽器）。沒有金鑰將無法產生連結。
+            </p>
           </div>
 
           <div>

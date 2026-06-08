@@ -107,6 +107,30 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 // Middleware to parse JSON
 app.use(express.json());
 
+// ── Access control for link-creation endpoints ────────────────────────────────
+// PWP_API_KEYS = comma-separated "name:key" pairs (name optional). Requests to the
+// creation endpoints must send a matching key in the "x-pwp-key" header.
+// Fail-closed: if no keys are configured, all creation requests are rejected.
+const allowedKeys = new Map<string, string>(); // key -> owner name (for attribution)
+(process.env.PWP_API_KEYS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .forEach((pair) => {
+    const idx = pair.indexOf(":");
+    if (idx > 0) allowedKeys.set(pair.slice(idx + 1).trim(), pair.slice(0, idx).trim());
+    else allowedKeys.set(pair, pair);
+  });
+
+// Returns the owner name on success, or null after sending a 401 response.
+function requireApiKey(req: express.Request, res: express.Response): string | null {
+  const raw = req.headers["x-pwp-key"];
+  const key = Array.isArray(raw) ? raw[0] : raw;
+  if (key && allowedKeys.has(key)) return allowedKeys.get(key) as string;
+  res.status(401).json({ error: "未授權：缺少或無效的存取金鑰 (x-pwp-key)" });
+  return null;
+}
+
 // Startup status check
 console.log('--- Server Status ---');
 console.log(`Telegram Bot: ${process.env.TELEGRAM_BOT_TOKEN ? '✅ LOADED' : '❌ MISSING'}`);
@@ -114,6 +138,7 @@ console.log(`Telegram Chat ID: ${process.env.TELEGRAM_CHAT_ID ? '✅ LOADED' : '
 console.log(`Firebase Project ID: ${process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || '❌ MISSING'}`);
 console.log(`Firebase Bucket: ${process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || '❌ MISSING'}`);
 console.log(`Cloudflare R2: ${process.env.R2_ACCOUNT_ID ? '✅ LOADED' : '❌ MISSING'}`);
+console.log(`Access keys (PWP_API_KEYS): ${allowedKeys.size > 0 ? `✅ ${allowedKeys.size} configured` : '❌ NONE — creation endpoints will reject all requests'}`);
 console.log('------------------------------');
 
 // Cloudflare R2 Client
@@ -393,6 +418,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
 // 新增：建立短連結（伺服器端單一真實來源，供網頁 UI 與 MCP 共用）
 // 接收已上傳檔案的參照 (f) + 中繼資料 + 客戶清單，逐一寫入 Firestore links/{shortId}
 app.post("/api/create-link", async (req, res) => {
+  if (!requireApiKey(req, res)) return;
   const { clients, f, r, t, d, i, w, origin: originInput } = req.body || {};
 
   const names: string[] = Array.isArray(clients)
@@ -469,6 +495,7 @@ app.post("/api/create-link", async (req, res) => {
 
 // Cloudflare R2: Generate Pre-signed URL for client-side PUT upload
 app.post("/api/r2-presign", async (req, res) => {
+  if (!requireApiKey(req, res)) return;
   const { fileName, contentType } = req.body;
 
   if (!fileName || !contentType) {

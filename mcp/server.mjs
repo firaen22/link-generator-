@@ -1,28 +1,28 @@
 #!/usr/bin/env node
 /**
- * Private Wealth Pack — link generator MCP server.
+ * Private Wealth Pack — link generator MCP server (zero-dependency).
  *
  * A pure HTTP client of the deployed app (default https://share.pmd-hk.com).
- * It holds NO secrets: PDF upload reuses the server's /api/r2-presign flow
- * (R2 keys live only on Vercel) and link creation calls /api/create-link.
+ * Holds NO secrets: PDF upload reuses the server's /api/r2-presign flow (R2
+ * keys live only on Vercel) and link creation calls /api/create-link.
+ *
+ * Implements the MCP stdio transport (newline-delimited JSON-RPC 2.0) by hand
+ * so it runs with just Node — no npm install, no node_modules.
  *
  * Tools:
- *   - create_share_link   : upload a local PDF + mint one personalised link per client
- *   - get_whatsapp_link   : turn a share link into a wa.me click-to-chat URL
+ *   - create_share_link : upload a local PDF + mint one personalised link per client
+ *   - get_whatsapp_link : turn a share link into a wa.me click-to-chat URL
  *
- * Config (env): PWP_BASE_URL  — base URL of the deployed app.
+ * Config (env): PWP_BASE_URL — base URL of the deployed app.
  */
 
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
 
 const BASE_URL = (process.env.PWP_BASE_URL || "https://share.pmd-hk.com").replace(/\/$/, "");
+const API_KEY = process.env.PWP_API_KEY || "";
+const SERVER_INFO = { name: "pwp-links", version: "1.1.0" };
+const DEFAULT_PROTOCOL = "2024-11-05";
 
 const TOOLS = [
   {
@@ -35,10 +35,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        pdfPath: {
-          type: "string",
-          description: "Absolute path to the local PDF file to upload.",
-        },
+        pdfPath: { type: "string", description: "Absolute path to the local PDF file to upload." },
         clients: {
           type: "array",
           items: { type: "string" },
@@ -53,10 +50,7 @@ const TOOLS = [
           type: "string",
           description: "Headline shown on the WhatsApp preview card. Defaults to the report name.",
         },
-        description: {
-          type: "string",
-          description: "Sub-text shown on the WhatsApp preview card.",
-        },
+        description: { type: "string", description: "Sub-text shown on the WhatsApp preview card." },
         previewImage: {
           type: "string",
           description: "Public HTTPS image URL for the WhatsApp preview card. Omit for no card / default image.",
@@ -78,26 +72,31 @@ const TOOLS = [
       type: "object",
       properties: {
         shortLink: { type: "string", description: "The /l/<id> share link to send." },
-        message: {
-          type: "string",
-          description: "Optional text to prepend before the link in the pre-filled message.",
-        },
+        message: { type: "string", description: "Optional text to prepend before the link." },
       },
       required: ["shortLink"],
     },
   },
 ];
 
+// ── Tool implementations ──────────────────────────────────────────────────────
+
 async function postJson(path, body) {
   const res = await fetch(`${BASE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(API_KEY ? { "x-pwp-key": API_KEY } : {}),
+    },
     body: JSON.stringify(body),
   });
   const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`${path} failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
+  if (res.status === 401) {
+    throw new Error(
+      "Unauthorised (401): missing or invalid access key. Set PWP_API_KEY in the MCP server's env."
+    );
   }
+  if (!res.ok) throw new Error(`${path} failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
   try {
     return JSON.parse(text);
   } catch {
@@ -107,12 +106,10 @@ async function postJson(path, body) {
 
 async function createShareLink(args) {
   const { pdfPath, clients, reportName, title, description, previewImage, advisorWhatsapp } = args;
-
   if (!pdfPath || typeof pdfPath !== "string") throw new Error("pdfPath is required.");
   const names = Array.isArray(clients) ? clients.map((c) => String(c).trim()).filter(Boolean) : [];
   if (names.length === 0) throw new Error("At least one client name is required.");
 
-  // 1. Read local PDF.
   let bytes;
   try {
     bytes = await readFile(pdfPath);
@@ -121,14 +118,12 @@ async function createShareLink(args) {
   }
   const fileName = basename(pdfPath);
 
-  // 2. Presigned upload URL (R2 keys stay on the server).
   const { uploadUrl, r2Key } = await postJson("/api/r2-presign", {
     fileName,
     contentType: "application/pdf",
   });
   if (!uploadUrl || !r2Key) throw new Error("Presign response missing uploadUrl/r2Key.");
 
-  // 3. Upload bytes straight to R2.
   const putRes = await fetch(uploadUrl, {
     method: "PUT",
     headers: { "Content-Type": "application/pdf" },
@@ -138,7 +133,6 @@ async function createShareLink(args) {
     throw new Error(`R2 upload failed (HTTP ${putRes.status}): ${(await putRes.text()).slice(0, 200)}`);
   }
 
-  // 4. Create one short link per client (single source of truth on the server).
   const { links } = await postJson("/api/create-link", {
     clients: names,
     f: `r2:${r2Key}`,
@@ -151,10 +145,7 @@ async function createShareLink(args) {
   });
 
   const list = (links || []).map((l) => `• ${l.name}: ${l.shortLink}`).join("\n");
-  return {
-    summary: `Created ${links?.length || 0} link(s) from ${fileName}:\n${list}`,
-    links: links || [],
-  };
+  return { summary: `Created ${links?.length || 0} link(s) from ${fileName}:\n${list}`, links: links || [] };
 }
 
 function getWhatsappLink(args) {
@@ -165,33 +156,63 @@ function getWhatsappLink(args) {
   return { summary: `WhatsApp click-to-chat URL:\n${waUrl}`, waUrl };
 }
 
-const server = new Server(
-  { name: "pwp-links", version: "1.0.0" },
-  { capabilities: { tools: {} } }
-);
+// ── MCP stdio JSON-RPC plumbing ───────────────────────────────────────────────
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+function send(msg) {
+  process.stdout.write(JSON.stringify(msg) + "\n");
+}
+const reply = (id, result) => send({ jsonrpc: "2.0", id, result });
+const replyError = (id, code, message) => send({ jsonrpc: "2.0", id, error: { code, message } });
 
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const { name, arguments: args = {} } = req.params;
-  try {
-    let result;
-    if (name === "create_share_link") result = await createShareLink(args);
-    else if (name === "get_whatsapp_link") result = getWhatsappLink(args);
-    else throw new Error(`Unknown tool: ${name}`);
+async function handle(msg) {
+  const { id, method, params } = msg;
 
-    return {
-      content: [{ type: "text", text: result.summary }],
-      structuredContent: result,
-    };
-  } catch (e) {
-    return {
-      isError: true,
-      content: [{ type: "text", text: `Error: ${e.message}` }],
-    };
+  if (method === "initialize") {
+    reply(id, {
+      protocolVersion: params?.protocolVersion || DEFAULT_PROTOCOL,
+      capabilities: { tools: {} },
+      serverInfo: SERVER_INFO,
+    });
+    return;
+  }
+  if (method === "notifications/initialized") return; // notification, no reply
+  if (method === "ping") return reply(id, {});
+  if (method === "tools/list") return reply(id, { tools: TOOLS });
+
+  if (method === "tools/call") {
+    const { name, arguments: args = {} } = params || {};
+    try {
+      let result;
+      if (name === "create_share_link") result = await createShareLink(args);
+      else if (name === "get_whatsapp_link") result = getWhatsappLink(args);
+      else throw new Error(`Unknown tool: ${name}`);
+      reply(id, { content: [{ type: "text", text: result.summary }], structuredContent: result });
+    } catch (e) {
+      reply(id, { isError: true, content: [{ type: "text", text: `Error: ${e.message}` }] });
+    }
+    return;
+  }
+
+  if (id !== undefined) replyError(id, -32601, `Method not found: ${method}`);
+}
+
+let buf = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buf += chunk;
+  let idx;
+  while ((idx = buf.indexOf("\n")) >= 0) {
+    const line = buf.slice(0, idx).trim();
+    buf = buf.slice(idx + 1);
+    if (!line) continue;
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    handle(msg).catch((e) => console.error("[pwp-links] handler error:", e.message));
   }
 });
-
-const transport = new StdioServerTransport();
-await server.connect(transport);
+process.stdin.on("end", () => process.exit(0));
 console.error(`[pwp-links] MCP server ready (base: ${BASE_URL})`);

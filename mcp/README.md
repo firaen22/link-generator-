@@ -1,11 +1,14 @@
 # pwp-links MCP server
 
 Generate Private Wealth Pack share links (and WhatsApp click-to-chat URLs)
-conversationally from Claude Desktop or Codex.
+conversationally from Claude or Codex.
 
-It is a **pure HTTP client** of the deployed app (`https://share.pmd-hk.com`) and
-holds **no secrets**: PDF upload reuses the server's `/api/r2-presign` flow (R2 keys
-live only on Vercel) and link creation calls `/api/create-link`.
+It is a **zero-dependency, pure HTTP client** of the deployed app
+(`https://share.pmd-hk.com`). It holds no R2/Firebase secrets — PDF upload reuses
+the server's `/api/r2-presign` flow and link creation calls `/api/create-link`.
+
+Access is gated by a **per-user access key** (`PWP_API_KEY`), validated against the
+server's allowlist. Without a valid key the endpoints return `401`.
 
 ## Tools
 
@@ -17,37 +20,48 @@ live only on Vercel) and link creation calls `/api/create-link`.
 > The OG preview card only appears in WhatsApp if `previewImage` is a **public HTTPS**
 > image URL, ideally **< 300 KB** (WhatsApp silently drops larger images).
 
-## Setup
+## Install for Codex (one line)
 
 ```bash
-cd mcp && npm install   # installs @modelcontextprotocol/sdk
+curl -fsSL https://raw.githubusercontent.com/firaen22/link-generator-/main/mcp/install.sh | bash
 ```
 
-### Claude Desktop
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
+It downloads the server to `~/.pwp-links/server.mjs`, prompts for your access key,
+and registers it in `~/.codex/config.toml`. To pass the key non-interactively:
 
-```json
-{
-  "mcpServers": {
-    "pwp-links": {
-      "command": "node",
-      "args": ["/Users/yauch/Private Wealth Pack/link-generator-/mcp/server.mjs"]
-    }
-  }
-}
+```bash
+PWP_API_KEY=your-key bash -c "$(curl -fsSL https://raw.githubusercontent.com/firaen22/link-generator-/main/mcp/install.sh)"
 ```
 
-### Codex
-Edit `~/.codex/config.toml`:
+Restart Codex afterwards. (If Codex.app is open it may rewrite `config.toml` on
+launch — re-run the installer if the block disappears.)
+
+## Manual config
+
+**Codex** (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.pwp-links]
 command = "node"
-args = ["/Users/yauch/Private Wealth Pack/link-generator-/mcp/server.mjs"]
+args = ["/ABSOLUTE/PATH/TO/server.mjs"]
+
+[mcp_servers.pwp-links.env]
+PWP_API_KEY = "your-key"
 ```
 
-Restart the host after editing. To point at a different deployment, set
-`PWP_BASE_URL` in the server's `env` block.
+**Claude** (`claude mcp add`):
+
+```bash
+claude mcp add pwp-links --scope user -e PWP_API_KEY=your-key -- node /ABSOLUTE/PATH/TO/server.mjs
+```
+
+Set `PWP_BASE_URL` in the env block to point at a different deployment.
+
+## Admin: managing keys
+
+Keys live only in the Vercel env var `PWP_API_KEYS` (comma-separated `name:key`
+pairs), e.g. `owner:abc,advisor1:def`. Add a teammate by appending a pair; revoke
+by removing theirs. Changes take effect on the next deploy.
 
 ## Example prompts
 
