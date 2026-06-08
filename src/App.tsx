@@ -26,6 +26,7 @@ export default function App() {
   const [previewImage, setPreviewImage] = useState('');
   const [linkTitle, setLinkTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [whatsappNumber, setWhatsappNumber] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [isBulkGenerating, setIsBulkGenerating] = useState(false);
 
@@ -156,6 +157,9 @@ export default function App() {
 
       const fallbackReportName = file ? file.name.replace(/\.[^/.]+$/, "") : "Document";
 
+      // Advisor WhatsApp number for the "預約顧問" CTA — digits only (country code + number)
+      const cleanWhatsapp = whatsappNumber.replace(/\D/g, '');
+
       const writes = names.map(async (name) => {
         const payload = {
           c: name,
@@ -164,6 +168,7 @@ export default function App() {
           d: description,
           i: previewImage,
           f: cleanFileURL,
+          ...(cleanWhatsapp ? { w: cleanWhatsapp } : {}),
         };
         const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
         const shortId = Math.random().toString(36).substring(2, 8);
@@ -288,6 +293,23 @@ export default function App() {
               rows={2}
               className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white resize-none"
             />
+          </div>
+
+          <div>
+            <label htmlFor="whatsappNumber" className="block text-sm font-semibold text-slate-700 mb-1.5">
+              預約顧問 WhatsApp 號碼 <span className="text-slate-400 font-normal">(Optional)</span>
+            </label>
+            <input
+              type="text"
+              id="whatsappNumber"
+              value={whatsappNumber}
+              onChange={(e) => setWhatsappNumber(e.target.value)}
+              placeholder="85265387638"
+              className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white"
+            />
+            <p className="text-xs text-slate-400 mt-1.5 ml-1">
+              客戶點擊「預約顧問」按鈕時打開的 WhatsApp 號碼（含國家碼，留空則用預設 85265387638）。
+            </p>
           </div>
 
           <div>

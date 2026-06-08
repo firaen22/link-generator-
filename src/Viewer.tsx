@@ -34,6 +34,8 @@ export default function Viewer() {
   let reportName = searchParams.get('r') || searchParams.get('report_name') || 'Document';
   let initialFileId = fileIdParam;
   let fileFromProp = '';
+  // Advisor WhatsApp number for the "預約顧問" CTA — falls back to the default below
+  let whatsappNumber = searchParams.get('w') || '85265387638';
 
   const q = searchParams.get('q');
   const decoded = decodeCompressedPayload(q);
@@ -42,6 +44,7 @@ export default function Viewer() {
     if (decoded.c) clientName = decoded.c;
     if (decoded.r) reportName = decoded.r;
     if (decoded.f) fileFromProp = decoded.f;
+    if (decoded.w) whatsappNumber = decoded.w;
   }
 
   // Fallback to extract clean filename from fileFromProp if reportName is generic
@@ -995,7 +998,7 @@ export default function Viewer() {
               onClick={() => {
                 ctaClickPageRef.current = pageNumber;
                 sendTrackingEvent('click_appointment', { page: pageNumber });
-                window.open('https://wa.me/85265387638', '_blank');
+                window.open(`https://wa.me/${whatsappNumber}`, '_blank');
               }}
               className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-[11px] font-bold transition-all relative overflow-hidden group bg-gradient-to-br from-amber-400 to-amber-600 text-[#0f172a] shadow-[0_0_20px_rgba(251,191,36,0.2)] active:scale-95"
             >
