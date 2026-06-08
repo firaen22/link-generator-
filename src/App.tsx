@@ -6,10 +6,6 @@
 import React, { useState, useRef } from 'react';
 import { Copy, Check, Share2, UploadCloud, MessageCircle, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-// import { ref, uploadBytes } from "firebase/storage";
-import { doc, setDoc, Timestamp } from "firebase/firestore";
-import { db } from "./firebase";
-import LZString from 'lz-string';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface GeneratedClient {
@@ -144,52 +140,38 @@ export default function App() {
       setIsUploading(false);
       setIsBulkGenerating(true);
 
-      // ── Step 2: Build Firestore docs for all clients in parallel ────────────
+      // ── Step 2: Create short links via server endpoint (single source of truth) ──
       const customDomain = import.meta.env.VITE_APP_URL;
       const origin = customDomain
         ? (customDomain.endsWith('/') ? customDomain.slice(0, -1) : customDomain)
         : window.location.origin;
 
-      // expireAt must be a Firestore Timestamp — plain ISO strings are ignored by TTL policies
-      const expireAt = Timestamp.fromDate(
-        new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days
-      );
-
       const fallbackReportName = file ? file.name.replace(/\.[^/.]+$/, "") : "Document";
 
-      // Advisor WhatsApp number for the "預約顧問" CTA — digits only (country code + number)
-      const cleanWhatsapp = whatsappNumber.replace(/\D/g, '');
-
-      const writes = names.map(async (name) => {
-        const payload = {
-          c: name,
+      const createRes = await fetch('/api/create-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clients: names,
+          f: cleanFileURL,
           r: reportName || fallbackReportName,
           t: linkTitle || fallbackReportName,
           d: description,
           i: previewImage,
-          f: cleanFileURL,
-          ...(cleanWhatsapp ? { w: cleanWhatsapp } : {}),
-        };
-        const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
-        const shortId = Math.random().toString(36).substring(2, 8);
-
-        await setDoc(doc(db, 'links', shortId), {
-          q: compressed,
-          clientName: name,
-          createdAt: new Date().toISOString(),
-          expireAt,
-        });
-
-        return {
-          name,
-          shortId,
-          shortLink: `${origin}/l/${shortId}`,
-          copied: false,
-        } as GeneratedClient;
+          w: whatsappNumber, // server strips to digits for the "預約顧問" CTA
+          origin,
+        }),
       });
 
-      // Fire all Firestore writes concurrently
-      const results = await Promise.all(writes);
+      if (!createRes.ok) {
+        const errBody = await createRes.json().catch(() => ({}));
+        throw new Error(errBody.error || '建立短連結失敗');
+      }
+
+      const { links } = await createRes.json();
+      const results: GeneratedClient[] = (links || []).map(
+        (l: { name: string; shortId: string; shortLink: string }) => ({ ...l, copied: false })
+      );
       setGeneratedClients(results);
 
       // Set first link as the WhatsApp preview link

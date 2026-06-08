@@ -390,6 +390,83 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
   }
 });
 
+// 新增：建立短連結（伺服器端單一真實來源，供網頁 UI 與 MCP 共用）
+// 接收已上傳檔案的參照 (f) + 中繼資料 + 客戶清單，逐一寫入 Firestore links/{shortId}
+app.post("/api/create-link", async (req, res) => {
+  const { clients, f, r, t, d, i, w, origin: originInput } = req.body || {};
+
+  const names: string[] = Array.isArray(clients)
+    ? clients.map((n: any) => String(n).trim()).filter(Boolean)
+    : [];
+
+  if (names.length === 0) {
+    return res.status(400).json({ error: "請提供至少一個客戶名稱 (clients)" });
+  }
+  if (!f || typeof f !== "string") {
+    return res.status(400).json({ error: "請提供已上傳檔案的參照 (f)，例如 r2:reports/...." });
+  }
+
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+  const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+  if (!projectId || !apiKey) {
+    return res.status(500).json({ error: "伺服器缺少 Firebase 設定 (Project ID / API Key)" });
+  }
+
+  // 報告名稱後備：由檔案參照推導，與 OG 渲染邏輯一致
+  const reportName = (r && String(r).trim()) || extractFileName(f);
+  const title = (t && String(t).trim()) || reportName;
+  const cleanWhatsapp = w ? String(w).replace(/\D/g, "") : "";
+
+  // 建立連結的 origin：優先環境變數，其次用請求 host（與 App.tsx 的 customDomain 邏輯一致）
+  const envOrigin = process.env.VITE_APP_URL || process.env.APP_URL;
+  const rawOrigin = (originInput && String(originInput)) || envOrigin || `${req.protocol}://${req.get("host")}`;
+  const baseOrigin = rawOrigin.endsWith("/") ? rawOrigin.slice(0, -1) : rawOrigin;
+
+  // 30 天後過期（Firestore Timestamp，供 TTL 政策使用）
+  const expireAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const createdAt = new Date().toISOString();
+  const fsBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links`;
+
+  try {
+    const results = await Promise.all(
+      names.map(async (name) => {
+        const payload: Record<string, string> = { c: name, r: reportName, t: title, f };
+        if (d) payload.d = String(d);
+        if (i) payload.i = String(i);
+        if (cleanWhatsapp) payload.w = cleanWhatsapp;
+
+        const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
+        const shortId = Math.random().toString(36).substring(2, 8);
+
+        const writeRes = await fetch(`${fsBase}/${shortId}?key=${apiKey}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fields: {
+              q: { stringValue: compressed },
+              clientName: { stringValue: name },
+              createdAt: { stringValue: createdAt },
+              expireAt: { timestampValue: expireAt },
+            },
+          }),
+        });
+
+        if (!writeRes.ok) {
+          const errText = await writeRes.text();
+          throw new Error(`Firestore 寫入失敗 (${writeRes.status}) for ${name}: ${errText.slice(0, 200)}`);
+        }
+
+        return { name, shortId, shortLink: `${baseOrigin}/l/${shortId}` };
+      })
+    );
+
+    res.json({ links: results });
+  } catch (error: any) {
+    console.error("[CREATE_LINK] Error:", error.message);
+    res.status(500).json({ error: "建立短連結失敗", detail: error.message });
+  }
+});
+
 // Cloudflare R2: Generate Pre-signed URL for client-side PUT upload
 app.post("/api/r2-presign", async (req, res) => {
   const { fileName, contentType } = req.body;
