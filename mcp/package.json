@@ -1,0 +1,11 @@
+{
+  "name": "pwp-links-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server for the Private Wealth Pack link generator (share.pmd-hk.com)",
+  "bin": { "pwp-links-mcp": "server.mjs" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
