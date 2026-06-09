@@ -59,15 +59,15 @@ const resolveOgImage = (imageParam: string): string => {
   return resolved;
 };
 
-const sendTelegram = async (text: string): Promise<void> => {
+const sendTelegram = async (text: string, chatId?: string): Promise<void> => {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) return;
+  const targetChat = chatId || process.env.TELEGRAM_CHAT_ID;
+  if (!token || !targetChat) return;
   try {
     const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+      body: JSON.stringify({ chat_id: targetChat, text, parse_mode: 'HTML' }),
     });
     if (!r.ok) {
       const detail = await r.json().catch(() => ({}));
@@ -81,13 +81,19 @@ const sendTelegram = async (text: string): Promise<void> => {
         await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: chatId, text: plain }),
+          body: JSON.stringify({ chat_id: targetChat, text: plain }),
         });
       }
     }
   } catch (err) {
     console.error('Telegram notification failed:', err);
   }
+};
+
+// Send the same message to several chats, de-duplicated (skips empty targets).
+const sendTelegramTo = async (text: string, chatIds: Array<string | undefined>): Promise<void> => {
+  const targets = [...new Set(chatIds.filter((c): c is string => !!c))];
+  await Promise.all(targets.map((c) => sendTelegram(text, c)));
 };
 
 const getHkTimeOfDay = (): { name: 'morning' | 'afternoon' | 'evening' | 'late night'; label: string } => {
@@ -122,6 +128,18 @@ const allowedKeys = new Map<string, string>(); // key -> owner name (for attribu
     else allowedKeys.set(pair, pair);
   });
 
+// Advisor name -> Telegram chat id, for routing read-notifications to the
+// advisor who created the link. PWP_TELEGRAM_CHATS = "name:chatId,name:chatId".
+const advisorChats = new Map<string, string>();
+(process.env.PWP_TELEGRAM_CHATS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .forEach((pair) => {
+    const idx = pair.indexOf(":");
+    if (idx > 0) advisorChats.set(pair.slice(0, idx).trim(), pair.slice(idx + 1).trim());
+  });
+
 // Returns the owner name on success, or null after sending a 401 response.
 function requireApiKey(req: express.Request, res: express.Response): string | null {
   const raw = req.headers["x-pwp-key"];
@@ -139,6 +157,7 @@ console.log(`Firebase Project ID: ${process.env.VITE_FIREBASE_PROJECT_ID || proc
 console.log(`Firebase Bucket: ${process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || '❌ MISSING'}`);
 console.log(`Cloudflare R2: ${process.env.R2_ACCOUNT_ID ? '✅ LOADED' : '❌ MISSING'}`);
 console.log(`Access keys (PWP_API_KEYS): ${allowedKeys.size > 0 ? `✅ ${allowedKeys.size} configured` : '❌ NONE — creation endpoints will reject all requests'}`);
+console.log(`Advisor TG chats (PWP_TELEGRAM_CHATS): ${advisorChats.size > 0 ? `✅ ${advisorChats.size} mapped` : '— none (owner-only notifications)'}`);
 console.log('------------------------------');
 
 // Cloudflare R2 Client
@@ -357,9 +376,11 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     console.log(`[SHORT_LINK] Resolved: ${shortId} -> Redirecting to: ${viewerUrl}`);
 
     if (!isCrawler) {
-      sendTelegram(
-        `🔔 <b>閱讀通知 (短連結)</b>\n\n👤 <b>客戶：</b> ${cName}\n📄 <b>報告：</b> ${rName}\n🔗 <b>ID：</b> ${shortId}\n⏰ <b>時間：</b> 剛剛`
-      );
+      const advisor = data.fields?.adv?.stringValue || "";
+      const advisorLine = advisor ? `\n👨‍💼 <b>顧問：</b> ${advisor}` : "";
+      const notif = `🔔 <b>閱讀通知 (短連結)</b>\n\n👤 <b>客戶：</b> ${cName}\n📄 <b>報告：</b> ${rName}${advisorLine}\n🔗 <b>ID：</b> ${shortId}\n⏰ <b>時間：</b> 剛剛`;
+      // Route to the advisor who created it (if mapped) AND the owner master log.
+      sendTelegramTo(notif, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
     }
 
     const html = `<!DOCTYPE html>
@@ -418,7 +439,8 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
 // 新增：建立短連結（伺服器端單一真實來源，供網頁 UI 與 MCP 共用）
 // 接收已上傳檔案的參照 (f) + 中繼資料 + 客戶清單，逐一寫入 Firestore links/{shortId}
 app.post("/api/create-link", async (req, res) => {
-  if (!requireApiKey(req, res)) return;
+  const advisor = requireApiKey(req, res);
+  if (advisor === null) return;
   const { clients, f, r, t, d, i, w, origin: originInput } = req.body || {};
 
   const names: string[] = Array.isArray(clients)
@@ -473,6 +495,7 @@ app.post("/api/create-link", async (req, res) => {
               clientName: { stringValue: name },
               createdAt: { stringValue: createdAt },
               expireAt: { timestampValue: expireAt },
+              adv: { stringValue: advisor }, // advisor who created it (for read-notification routing)
             },
           }),
         });
