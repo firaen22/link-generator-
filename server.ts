@@ -379,8 +379,10 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
       const advisor = data.fields?.adv?.stringValue || "";
       const advisorLine = advisor ? `\n👨‍💼 <b>顧問：</b> ${advisor}` : "";
       const notif = `🔔 <b>閱讀通知 (短連結)</b>\n\n👤 <b>客戶：</b> ${cName}\n📄 <b>報告：</b> ${rName}${advisorLine}\n🔗 <b>ID：</b> ${shortId}\n⏰ <b>時間：</b> 剛剛`;
-      // Route to the advisor who created it (if mapped) AND the owner master log.
-      sendTelegramTo(notif, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
+      // Route to the advisor who created it. Fall back to the owner only when the
+      // advisor has no Telegram chat mapped (e.g. old links or unmapped users).
+      const advisorChat = advisor ? advisorChats.get(advisor) : undefined;
+      sendTelegramTo(notif, advisorChat ? [advisorChat] : [process.env.TELEGRAM_CHAT_ID]);
     }
 
     const html = `<!DOCTYPE html>
