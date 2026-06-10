@@ -68,6 +68,7 @@ const sendTelegram = async (text: string, chatId?: string): Promise<void> => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: targetChat, text, parse_mode: 'HTML' }),
+      signal: AbortSignal.timeout(5000),
     });
     if (!r.ok) {
       const detail = await r.json().catch(() => ({}));
@@ -171,7 +172,7 @@ const s3Client = new S3Client({
 });
 
 // API Route for the Link Preview (Supports both old and new shorter path)
-app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
+app.get(["/api/share/:file_id", "/s/:file_id", "/s"], async (req, res) => {
   const { file_id } = req.params;
   const { q, client_name, name, report_name, preview_image, c, r, i, d, desc, t, title: tParam } = req.query;
   const userAgent = req.headers['user-agent'] || '';
@@ -252,7 +253,7 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], (req, res) => {
   console.log(`[SHARE] Redirecting to: ${viewerUrl}`);
 
   if (!isCrawler) {
-    sendTelegram(
+    await sendTelegram(
       `🔔 <b>閱讀通知</b>\n\n` +
       `👤 <b>客戶：</b> ${cName}\n` +
       `📄 <b>報告：</b> ${rName} (${file_id})\n` +
@@ -380,7 +381,9 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
       const advisorLine = advisor ? `\n👨‍💼 <b>顧問：</b> ${advisor}` : "";
       const notif = `🔔 <b>閱讀通知 (短連結)</b>\n\n👤 <b>客戶：</b> ${cName}\n📄 <b>報告：</b> ${rName}${advisorLine}\n🔗 <b>ID：</b> ${shortId}\n⏰ <b>時間：</b> 剛剛`;
       // Route to the advisor who created it (if mapped) AND the owner master log.
-      sendTelegramTo(notif, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
+      // Awaited: on serverless the function is frozen after the response, so a
+      // fire-and-forget fetch would be killed before Telegram receives it.
+      await sendTelegramTo(notif, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
     }
 
     const html = `<!DOCTYPE html>
