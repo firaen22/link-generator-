@@ -46,25 +46,46 @@ if [ -z "$KEY" ]; then
   exit 1
 fi
 
-# 4. Register in Codex config (idempotent)
-mkdir -p "$(dirname "$CODEX_CONFIG")"
-touch "$CODEX_CONFIG"
-if grep -q '^\[mcp_servers.pwp-links\]' "$CODEX_CONFIG"; then
-  echo "✓ Codex already has [mcp_servers.pwp-links] — leaving config unchanged."
-  echo "  To update the key, edit $CODEX_CONFIG (the PWP_API_KEY under [mcp_servers.pwp-links.env])."
-else
-  {
-    echo ""
-    echo "[mcp_servers.pwp-links]"
-    echo "command = \"node\""
-    echo "args = [\"$SERVER\"]"
-    echo ""
-    echo "[mcp_servers.pwp-links.env]"
-    echo "PWP_API_KEY = \"$KEY\""
-  } >> "$CODEX_CONFIG"
-  echo "✓ Added [mcp_servers.pwp-links] to $CODEX_CONFIG"
+# 4. Register with whichever hosts are present (Codex and/or Claude)
+REGISTERED=""
+
+# --- Codex (register if the codex CLI exists or a config already does) ---
+if command -v codex >/dev/null 2>&1 || [ -f "$CODEX_CONFIG" ]; then
+  mkdir -p "$(dirname "$CODEX_CONFIG")"
+  touch "$CODEX_CONFIG"
+  if grep -q '^\[mcp_servers.pwp-links\]' "$CODEX_CONFIG"; then
+    echo "✓ Codex already has [mcp_servers.pwp-links] — leaving config unchanged."
+  else
+    {
+      echo ""
+      echo "[mcp_servers.pwp-links]"
+      echo "command = \"node\""
+      echo "args = [\"$SERVER\"]"
+      echo ""
+      echo "[mcp_servers.pwp-links.env]"
+      echo "PWP_API_KEY = \"$KEY\""
+    } >> "$CODEX_CONFIG"
+    echo "✓ Added [mcp_servers.pwp-links] to $CODEX_CONFIG"
+  fi
+  REGISTERED="${REGISTERED}Codex "
+fi
+
+# --- Claude (register via the claude CLI if available; idempotent) ---
+if command -v claude >/dev/null 2>&1; then
+  claude mcp remove pwp-links --scope user >/dev/null 2>&1 || true
+  if claude mcp add pwp-links --scope user -e PWP_API_KEY="$KEY" -- node "$SERVER" >/dev/null 2>&1; then
+    echo "✓ Registered with Claude (user scope)"
+    REGISTERED="${REGISTERED}Claude "
+  else
+    echo "⚠ Claude CLI found but registration failed — register manually (see README)."
+  fi
+fi
+
+if [ -z "$REGISTERED" ]; then
+  echo "⚠ Neither Codex nor Claude detected. Server is at $SERVER —"
+  echo "  add it manually using the snippets in the README."
 fi
 
 echo ""
-echo "✓ Done. Restart Codex, then try:"
+echo "✓ Done${REGISTERED:+ ($REGISTERED)}. Restart your app, then try:"
 echo "    \"generate a share link for <client> using <pdf path>\""
