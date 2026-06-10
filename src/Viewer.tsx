@@ -252,8 +252,16 @@ export default function Viewer() {
   // Scroll velocity + depth collector — rAF throttled, sampled every 500ms
   useEffect(() => {
     const measure = () => {
+      // The PDF scrolls inside the <main> container (overflow-y-auto), not the
+      // window — read scroll state from that element, or telemetry is always ~0.
+      const el = pdfContainerRef.current;
+      if (!el) {
+        rAFScrollRef.current = requestAnimationFrame(measure);
+        return;
+      }
+
       const now = performance.now();
-      const currentY = window.scrollY;
+      const currentY = el.scrollTop;
       const dt = now - lastScrollTRef.current;
 
       if (dt > 0) {
@@ -266,7 +274,7 @@ export default function Viewer() {
       }
 
       // Track max scroll depth per page (0–100 %)
-      const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+      const docHeight = el.scrollHeight - el.clientHeight;
       if (docHeight > 0) {
         const depthPct = Math.min(100, (currentY / docHeight) * 100);
         const page = currentPageRef.current;
@@ -451,8 +459,8 @@ export default function Viewer() {
 
     handleExitRef.current = handleExit;
 
-    window.addEventListener('beforeunload', () => handleExit());
-    window.addEventListener('pagehide', () => handleExit());
+    window.addEventListener('beforeunload', handleExit);
+    window.addEventListener('pagehide', handleExit);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     // Initial check for recovery
@@ -469,8 +477,8 @@ export default function Viewer() {
     }
 
     return () => {
-      window.removeEventListener('beforeunload', () => handleExit());
-      window.removeEventListener('pagehide', () => handleExit());
+      window.removeEventListener('beforeunload', handleExit);
+      window.removeEventListener('pagehide', handleExit);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [fileId, clientName, reportName]);

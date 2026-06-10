@@ -13,6 +13,26 @@ export const config = {
   },
 };
 
+// Allowlist of hosts the proxy may fetch a user-supplied (vblob_) URL from.
+// Prevents SSRF via an attacker-encoded internal URL.
+const ALLOWED_PDF_HOSTS = [
+  'firebasestorage.googleapis.com',
+  'storage.googleapis.com',
+  '.r2.cloudflarestorage.com',
+  '.r2.dev',
+  '.blob.vercel-storage.com',
+];
+const isAllowedUpstreamUrl = (raw: string): boolean => {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'https:') return false;
+    const host = u.hostname.toLowerCase();
+    return ALLOWED_PDF_HOSTS.some((s) => (s.startsWith('.') ? host.endsWith(s) : host === s));
+  } catch {
+    return false;
+  }
+};
+
 const s3Client = new S3Client({
   region: "auto",
   endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
@@ -75,6 +95,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       let base64 = resolvedFileId.slice(6).replace(/-/g, '+').replace(/_/g, '/');
       while (base64.length % 4) base64 += '=';
       blobUrl = Buffer.from(base64, 'base64').toString('utf8');
+      if (!isAllowedUpstreamUrl(blobUrl)) {
+        return res.status(400).send('Invalid file ID format. Expected r2_, f_, or vblob_ prefix.');
+      }
 
     } else {
       return res.status(400).send('Invalid file ID format. Expected r2_, f_, or vblob_ prefix.');

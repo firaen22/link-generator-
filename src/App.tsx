@@ -49,7 +49,9 @@ export default function App() {
 
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/check-image-size?url=${encodeURIComponent(previewImage)}`);
+        const res = await fetch(`/api/check-image-size?url=${encodeURIComponent(previewImage)}`, {
+          headers: { 'x-pwp-key': accessKey },
+        });
         if (!res.ok) return;
         const data = await res.json();
         
@@ -71,7 +73,7 @@ export default function App() {
     }, 600);
 
     return () => clearTimeout(timer);
-  }, [previewImage]);
+  }, [previewImage, accessKey]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const SESSION_CACHE_KEY = 'pw_uploaded_files';

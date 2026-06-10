@@ -15,6 +15,38 @@ const aiEnabled = apiKeys.length > 0;
 const escapeHTML = (text: string) =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+// Attribute-safe escaping for values interpolated into HTML attributes / elements
+// in the OG preview pages. Also escapes quotes so attacker input can't break out
+// of a content="..." attribute (reflected XSS).
+const escapeHTMLAttr = (text: unknown): string =>
+  String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+// Allowlist of hosts the PDF proxy may fetch a user-supplied (vblob_) URL from.
+// Prevents SSRF: without this, an attacker could encode an internal URL
+// (e.g. http://169.254.169.254/...) and have the server fetch + stream it back.
+const ALLOWED_PDF_HOSTS = [
+  'firebasestorage.googleapis.com',
+  'storage.googleapis.com',
+  '.r2.cloudflarestorage.com',
+  '.r2.dev',
+  '.blob.vercel-storage.com',
+];
+const isAllowedUpstreamUrl = (raw: string): boolean => {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'https:') return false;
+    const host = u.hostname.toLowerCase();
+    return ALLOWED_PDF_HOSTS.some((s) => (s.startsWith('.') ? host.endsWith(s) : host === s));
+  } catch {
+    return false;
+  }
+};
+
 const fromUrlSafeBase64 = (encoded: string): string => {
   let base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
   while (base64.length % 4) base64 += '=';
@@ -252,6 +284,16 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], async (req, res) => {
 
   console.log(`[SHARE] Redirecting to: ${viewerUrl}`);
 
+  // Escape everything that lands in the HTML/attributes below (reflected XSS guard)
+  const safeTitle = escapeHTMLAttr(title);
+  const safeDescription = escapeHTMLAttr(description);
+  const safeOgImage = escapeHTMLAttr(ogImage);
+  const safeOgUrl = escapeHTMLAttr(`${req.protocol}://${req.get('host')}${req.originalUrl}`);
+  // JS-string-safe form for the redirect <script> below. finalFileId is a raw
+  // path param, so a plain "${viewerUrl}" would allow JS-string / </script>
+  // breakout. JSON.stringify quotes+escapes; the <-replace blocks </script>.
+  const safeViewerJs = JSON.stringify(viewerUrl).replace(/</g, '\\u003c');
+
   if (!isCrawler) {
     await sendTelegram(
       `🔔 <b>閱讀通知</b>\n\n` +
@@ -267,16 +309,16 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], async (req, res) => {
   <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>${title}</title>
-      <meta property="og:title" content="${title}" />
-      <meta property="og:description" content="${description}" />
-      <meta property="og:image" content="${ogImage}" />
-      <meta property="og:image:alt" content="${title}" />
+      <title>${safeTitle}</title>
+      <meta property="og:title" content="${safeTitle}" />
+      <meta property="og:description" content="${safeDescription}" />
+      <meta property="og:image" content="${safeOgImage}" />
+      <meta property="og:image:alt" content="${safeTitle}" />
       <meta property="og:type" content="website" />
       <meta property="og:site_name" content="Antigravity 財富管理" />
-      <meta property="og:url" content="${req.protocol}://${req.get('host')}${req.originalUrl}" />
+      <meta property="og:url" content="${safeOgUrl}" />
       <meta name="twitter:card" content="summary_large_image" />
-      <meta name="twitter:image" content="${ogImage}" />
+      <meta name="twitter:image" content="${safeOgImage}" />
       
       <style>
           body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
@@ -288,7 +330,7 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], async (req, res) => {
       ${!isCrawler ? `
       <script>
           // Use window.location.origin to ensure absolute path redirect
-          const targetUrl = window.location.origin + "${viewerUrl}";
+          const targetUrl = window.location.origin + ${safeViewerJs};
           console.log('[SHARE] Client-side redirecting to:', targetUrl);
           setTimeout(function() {
               window.location.replace(targetUrl);
@@ -376,6 +418,15 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
 
     console.log(`[SHORT_LINK] Resolved: ${shortId} -> Redirecting to: ${viewerUrl}`);
 
+    // Escape everything that lands in the HTML/attributes below (reflected XSS guard)
+    const safeTitle = escapeHTMLAttr(title);
+    const safeDescription = escapeHTMLAttr(description);
+    const safeOgImage = escapeHTMLAttr(ogImage);
+    const safeOgUrl = escapeHTMLAttr(`${req.protocol}://${req.get('host')}${req.originalUrl}`);
+    // JS-string-safe form for the redirect <script> below (defense in depth —
+    // viewerUrl here is already encodeURIComponent'd, but keep both routes uniform).
+    const safeViewerJs = JSON.stringify(viewerUrl).replace(/</g, '\\u003c');
+
     if (!isCrawler) {
       const advisor = data.fields?.adv?.stringValue || "";
       const advisorLine = advisor ? `\n👨‍💼 <b>顧問：</b> ${advisor}` : "";
@@ -391,20 +442,20 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>${title}</title>
-        <meta name="description" content="${description}" />
-        <meta property="og:title" content="${title}" />
-        <meta property="og:description" content="${description}" />
-        <meta property="og:image" content="${ogImage}" />
-        <meta property="og:image:secure_url" content="${ogImage}" />
+        <title>${safeTitle}</title>
+        <meta name="description" content="${safeDescription}" />
+        <meta property="og:title" content="${safeTitle}" />
+        <meta property="og:description" content="${safeDescription}" />
+        <meta property="og:image" content="${safeOgImage}" />
+        <meta property="og:image:secure_url" content="${safeOgImage}" />
         <meta property="og:image:width" content="1200" />
         <meta property="og:image:height" content="630" />
-        <meta property="og:image:alt" content="${title}" />
+        <meta property="og:image:alt" content="${safeTitle}" />
         <meta property="og:site_name" content="Antigravity 財富管理" />
         <meta property="og:type" content="website" />
-        <meta property="og:url" content="${req.protocol}://${req.get('host')}${req.originalUrl}" />
+        <meta property="og:url" content="${safeOgUrl}" />
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:image" content="${ogImage}" />
+        <meta name="twitter:image" content="${safeOgImage}" />
         
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
@@ -415,7 +466,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
         
         ${!isCrawler ? `
         <script>
-            const targetUrl = window.location.origin + "${viewerUrl}";
+            const targetUrl = window.location.origin + ${safeViewerJs};
             console.log('[SHORT_LINK] Redirection Target:', targetUrl);
             setTimeout(function() { 
                 window.location.replace(targetUrl); 
@@ -487,26 +538,42 @@ app.post("/api/create-link", async (req, res) => {
         if (cleanWhatsapp) payload.w = cleanWhatsapp;
 
         const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
-        const shortId = Math.random().toString(36).substring(2, 8);
-
-        const writeRes = await fetch(`${fsBase}/${shortId}?key=${apiKey}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            fields: {
-              q: { stringValue: compressed },
-              clientName: { stringValue: name },
-              createdAt: { stringValue: createdAt },
-              expireAt: { timestampValue: expireAt },
-              adv: { stringValue: advisor }, // advisor who created it (for read-notification routing)
-            },
-          }),
+        const body = JSON.stringify({
+          fields: {
+            q: { stringValue: compressed },
+            clientName: { stringValue: name },
+            createdAt: { stringValue: createdAt },
+            expireAt: { timestampValue: expireAt },
+            adv: { stringValue: advisor }, // advisor who created it (for read-notification routing)
+          },
         });
 
-        if (!writeRes.ok) {
+        // Create-only write: currentDocument.exists=false makes Firestore reject
+        // (precondition failed) instead of silently overwriting an existing link.
+        // Retry with a fresh id on collision.
+        let shortId = "";
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const candidate = Math.random().toString(36).substring(2, 8);
+          const writeRes = await fetch(
+            `${fsBase}/${candidate}?key=${apiKey}&currentDocument.exists=false`,
+            { method: "PATCH", headers: { "Content-Type": "application/json" }, body }
+          );
+
+          if (writeRes.ok) {
+            shortId = candidate;
+            break;
+          }
+
           const errText = await writeRes.text();
+          // 409 / FAILED_PRECONDITION => id already taken; regenerate and retry.
+          if (writeRes.status === 409 || /exists|FAILED_PRECONDITION/i.test(errText)) {
+            console.warn(`[CREATE_LINK] ID collision on ${candidate}, retrying (${attempt + 1}/5)`);
+            continue;
+          }
           throw new Error(`Firestore 寫入失敗 (${writeRes.status}) for ${name}: ${errText.slice(0, 200)}`);
         }
+
+        if (!shortId) throw new Error(`短連結 ID 連續碰撞，請重試 (${name})`);
 
         return { name, shortId, shortLink: `${baseOrigin}/l/${shortId}` };
       })
@@ -564,6 +631,10 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       blobUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media`;
     } else if (file_id.startsWith('vblob_')) {
       blobUrl = fromUrlSafeBase64(file_id.slice(6));
+      if (!isAllowedUpstreamUrl(blobUrl)) {
+        console.error(`[PDF_PROXY] Blocked disallowed vblob_ host: ${blobUrl.split('?')[0]}`);
+        return res.status(400).send("Invalid file ID format.");
+      }
       console.log(`[PDF_PROXY] vblob_ ID: ${file_id.slice(0, 15)}... | Resolved URL: ${blobUrl.split('?')[0]}...`);
     } else if (file_id.startsWith('r2_')) {
       const r2Key = fromUrlSafeBase64(file_id.slice(3));
@@ -658,6 +729,7 @@ app.post("/api/shorten", async (req, res) => {
 
 // 新增：圖片大小檢查 API 端點
 app.get("/api/check-image-size", async (req, res) => {
+  if (!requireApiKey(req, res)) return; // advisor-only utility; also limits SSRF surface
   const { url } = req.query;
   if (!url || typeof url !== "string") {
     return res.status(400).json({ error: "缺少 url 參數" });
