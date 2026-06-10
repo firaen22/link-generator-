@@ -20,14 +20,16 @@ server's allowlist. Without a valid key the endpoints return `401`.
 > The OG preview card only appears in WhatsApp if `previewImage` is a **public HTTPS**
 > image URL, ideally **< 300 KB** (WhatsApp silently drops larger images).
 
-## Install for Codex (one line)
+## Install (one line — Claude and/or Codex)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/firaen22/link-generator-/main/mcp/install.sh | bash
 ```
 
 It downloads the server to `~/.pwp-links/server.mjs`, prompts for your access key,
-and registers it in `~/.codex/config.toml`. To pass the key non-interactively:
+and auto-registers with whichever hosts are present: the Codex config
+(`~/.codex/config.toml`) and/or Claude (`claude mcp add`, user scope). To pass the
+key non-interactively:
 
 ```bash
 PWP_API_KEY=your-key bash -c "$(curl -fsSL https://raw.githubusercontent.com/firaen22/link-generator-/main/mcp/install.sh)"
