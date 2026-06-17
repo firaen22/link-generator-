@@ -12,8 +12,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const apiKeys = (process.env.GEMINI_API_KEY || "").split(',').map(k => k.trim()).filter(Boolean);
 const aiEnabled = apiKeys.length > 0;
 
-const escapeHTML = (text: string) =>
-  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const escapeHTML = (text: unknown) =>
+  String(text ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // Attribute-safe escaping for values interpolated into HTML attributes / elements
 // in the OG preview pages. Also escapes quotes so attacker input can't break out
@@ -140,11 +140,51 @@ const getHkTimeOfDay = (): { name: 'morning' | 'afternoon' | 'evening' | 'late n
   return { name: 'late night', label: '🌙 Late Night' };
 };
 
+// Best-effort, per-process sliding-window rate limiter for the two UNauthenticated
+// telemetry endpoints (/api/track, /api/session-end). They can't use requireApiKey
+// (the public reader calls them), so this caps abuse: forged session_end requests
+// would otherwise loop the paid Gemini API + spam Telegram.
+//
+// Deliberately in-memory and fail-OPEN: on Vercel each serverless instance keeps
+// its own window, and a cold start / map reset only ever ALLOWS more through — so a
+// real reader's telemetry is never wrongly dropped. It stops drive-by abuse and
+// blunts single-source floods; a distributed multi-IP flood is out of scope for
+// app-level code (would need a WAF or a durable global counter).
+const rlHits = new Map<string, number[]>();
+const allow = (key: string, max: number, windowMs: number): boolean => {
+  // Bound memory under a key-spraying flood; clearing only resets windows (fail-open).
+  if (rlHits.size > 5000) rlHits.clear();
+  const now = Date.now();
+  const cutoff = now - windowMs;
+  const hits = (rlHits.get(key) || []).filter((t) => t > cutoff);
+  if (hits.length >= max) {
+    rlHits.set(key, hits);
+    return false;
+  }
+  hits.push(now);
+  rlHits.set(key, hits);
+  return true;
+};
+
+// Best-effort client IP. Prefer Vercel's x-real-ip (set by the platform to the true
+// client IP) over the leftmost x-forwarded-for hop, which is client-supplied and
+// trivially spoofable. Still best-effort — the per-session and global AI caps below
+// do NOT rely on the IP, so an attacker who spoofs it can't bypass those.
+const clientIp = (req: express.Request): string => {
+  const realIp = req.headers["x-real-ip"];
+  if (realIp) return Array.isArray(realIp) ? realIp[0] : realIp;
+  const xff = req.headers["x-forwarded-for"];
+  const raw = Array.isArray(xff) ? xff[0] : xff;
+  if (raw) return raw.split(",")[0].trim();
+  return req.socket?.remoteAddress || "unknown";
+};
+
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
-// Middleware to parse JSON
-app.use(express.json());
+// Parse JSON, capped at 1mb. A long deep-read session_end (scroll_samples every
+// 500ms) is ~250KB, so 1mb fits any real session while rejecting abusive payloads.
+app.use(express.json({ limit: "1mb" }));
 
 // ── Access control for link-creation endpoints ────────────────────────────────
 // PWP_API_KEYS = comma-separated "name:key" pairs (name optional). Requests to the
@@ -828,7 +868,16 @@ app.post("/api/track", async (req, res) => {
 
   // Await on serverless: a fire-and-forget send is killed when the function is
   // frozen after res.json (same reason the /l/:shortId handler awaits).
-  if (text) await sendTelegram(text);
+  // Rate-limit the send per client IP: a real reader fires only a handful of
+  // Telegram-worthy events (open / heartbeat / click) per session, so 12/min is
+  // far above legitimate use while it caps an attacker spamming forged events.
+  if (text) {
+    if (allow(`tg:${clientIp(req)}`, 12, 60_000)) {
+      await sendTelegram(text);
+    } else {
+      console.warn(`[TRACK] Telegram rate-limited for ${clientIp(req)} (${event})`);
+    }
+  }
 
   res.json({ status: "ok" });
 });
@@ -977,10 +1026,28 @@ app.post("/api/session-end", async (req, res) => {
   // Return visit = at least the second session for this file+client combo. Strong buying signal —
   // always trigger AI analysis even if this individual session was short.
   const isReturnVisit = (tab_switch_count ?? 0) >= 2;
+  const wantsAnalysis = aiEnabled && (isDeepRead || isReturnVisit);
+
+  // Gate the paid Gemini loop with three checks (short-circuit && — a slot is only
+  // consumed once all prior checks pass):
+  //   1. per session_id, 1/min  — stops replay storms of a single forged session.
+  //   2. per IP, 30/hour        — caps a flood that rotates session_ids from one IP.
+  //   3. global, 40/hour        — final backstop that bounds total Gemini spend on
+  //      this instance even if the attacker also spoofs the IP. Scales with traffic
+  //      (Vercel adds instances, each with its own budget).
+  // A genuine return visit gets a FRESH session_id (see useTelemetry), so every real
+  // return still gets its own analysis — the limits only bite abuse. When throttled,
+  // flow falls through to the cheap summary branches below (the advisor is still
+  // notified; no Gemini call is made).
+  const ip = clientIp(req);
+  const aiAllowed = wantsAnalysis
+    && allow(`ai:s:${session_id ?? "none"}`, 1, 60_000)
+    && allow(`ai:ip:${ip}`, 30, 3_600_000)
+    && allow("ai:global", 40, 3_600_000);
 
   let text = "";
 
-  if (aiEnabled && (isDeepRead || isReturnVisit)) {
+  if (aiAllowed) {
     try {
       // ── Pre-calculate Z-score server-side (AI receives it, not calculates it) ──
       // Baseline: empirical mean/σ for a typical advisory session.
@@ -1240,7 +1307,13 @@ ${nba}`;
     text = `📊 <b>閱讀結算 (無 AI)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>頁數：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>長度：</b> ${total_duration_sec}s`;
   }
 
-  await sendTelegram(text);
+  // The AI path is already volume-bounded by aiAllowed; gate the cheaper summary
+  // sends per IP so forged session_end requests can't spam Telegram.
+  if (text && (aiAllowed || allow(`tg:${ip}`, 12, 60_000))) {
+    await sendTelegram(text);
+  } else if (text) {
+    console.warn(`[SESSION-END] Telegram rate-limited for ${ip}`);
+  }
 
   res.json({ status: "ok" });
 });
