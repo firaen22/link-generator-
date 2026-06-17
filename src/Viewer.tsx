@@ -45,6 +45,11 @@ export default function Viewer() {
   // (scroll/zoom sampling) and navigation (swipe binding).
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Fire the swipe hint once: the left/right swipe (usePageNavigation) is a hidden
+  // gesture, so touch clients get a one-time cue. Skipped on mouse/desktop and
+  // single-page docs (nothing to flip to).
+  const swipeHintShownRef = useRef(false);
+
   const { scale, zoomIn, zoomOut } = usePdfZoom();
   const containerWidth = useContainerWidth();
   const { isFullscreen, toggleFullscreen } = useFullscreen();
@@ -61,6 +66,16 @@ export default function Viewer() {
 
   const { isWindowFocused } = useContentGuard({ sendTrackingEvent, numPages, pageNumber, showToast });
 
+  // Shown after the disclaimer is dismissed and the PDF has loaded — whichever
+  // happens last calls this; the ref guard keeps it to a single appearance.
+  const maybeShowSwipeHint = (totalPages: number | null) => {
+    if (swipeHintShownRef.current) return;
+    if (!totalPages || totalPages <= 1) return;
+    if (!window.matchMedia('(pointer: coarse)').matches) return;
+    swipeHintShownRef.current = true;
+    showToast('💡 左右滑動即可翻頁');
+  };
+
   const handleManualClose = () => {
     if (handleExitRef.current) handleExitRef.current();
     setIsClosed(true);
@@ -72,6 +87,7 @@ export default function Viewer() {
     setNumPages(loadedNumPages);
     setLoading(false);
     markOpenTracked(loadedNumPages);
+    if (!showDisclaimer) maybeShowSwipeHint(loadedNumPages);
   }
 
   const handleCtaClick = (page: number) => {
@@ -89,7 +105,7 @@ export default function Viewer() {
       style={{ fontFamily: FONT_STACK }}
     >
       {showDisclaimer && (
-        <DisclaimerModal isDarkMode={isDarkMode} onDismiss={() => setShowDisclaimer(false)} />
+        <DisclaimerModal isDarkMode={isDarkMode} onDismiss={() => { setShowDisclaimer(false); maybeShowSwipeHint(numPages); }} />
       )}
 
       <ViewerHeader
