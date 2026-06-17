@@ -80,7 +80,9 @@ export function useContentGuard({ sendTrackingEvent, numPages, pageNumber, showT
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [numPages, pageNumber]);
+    // Handler reads only the stable showToast (useCallback) and sendTrackingEvent
+    // (reads live refs), so bind once — numPages/pageNumber were unused churn.
+  }, []);
 
   return { isWindowFocused };
 }

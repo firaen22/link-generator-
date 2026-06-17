@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import LZString from 'lz-string';
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -295,10 +295,12 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], async (req, res) => {
   const safeViewerJs = JSON.stringify(viewerUrl).replace(/</g, '\\u003c');
 
   if (!isCrawler) {
+    // cName/rName/file_id are attacker-controllable (raw query params / route
+    // param) and sent with parse_mode:'HTML' — escape them like /api/session-end.
     await sendTelegram(
       `🔔 <b>閱讀通知</b>\n\n` +
-      `👤 <b>客戶：</b> ${cName}\n` +
-      `📄 <b>報告：</b> ${rName} (${file_id})\n` +
+      `👤 <b>客戶：</b> ${escapeHTML(String(cName))}\n` +
+      `📄 <b>報告：</b> ${escapeHTML(String(rName))} (${escapeHTML(String(file_id ?? ''))})\n` +
       `⏰ <b>時間：</b> 剛剛`
     );
   }
@@ -371,7 +373,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`[SHORT_LINK] Firestore error (${response.status}) for ID: ${shortId}: ${errorText}`);
-      return res.status(404).send(`找不到此連結 (${shortId}) 或連結已失效 (Status: ${response.status})`);
+      return res.status(404).send(`找不到此連結 (${escapeHTMLAttr(shortId)}) 或連結已失效 (Status: ${response.status})`);
     }
 
     const data = await response.json();
@@ -429,8 +431,8 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
 
     if (!isCrawler) {
       const advisor = data.fields?.adv?.stringValue || "";
-      const advisorLine = advisor ? `\n👨‍💼 <b>顧問：</b> ${advisor}` : "";
-      const notif = `🔔 <b>閱讀通知 (短連結)</b>\n\n👤 <b>客戶：</b> ${cName}\n📄 <b>報告：</b> ${rName}${advisorLine}\n🔗 <b>ID：</b> ${shortId}\n⏰ <b>時間：</b> 剛剛`;
+      const advisorLine = advisor ? `\n👨‍💼 <b>顧問：</b> ${escapeHTML(advisor)}` : "";
+      const notif = `🔔 <b>閱讀通知 (短連結)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(cName)}\n📄 <b>報告：</b> ${escapeHTML(rName)}${advisorLine}\n🔗 <b>ID：</b> ${shortId}\n⏰ <b>時間：</b> 剛剛`;
       // Route to the advisor who created it (if mapped) AND the owner master log.
       // Awaited: on serverless the function is frozen after the response, so a
       // fire-and-forget fetch would be killed before Telegram receives it.
@@ -597,8 +599,11 @@ app.post("/api/r2-presign", async (req, res) => {
 
   try {
     const bucketName = process.env.R2_BUCKET_NAME || "reports";
+    // Sanitize to a basename so a caller can't escape the reports/ prefix via
+    // slashes or "../" segments in fileName.
+    const safeName = String(fileName).replace(/[\\/]/g, "_").replace(/\.\./g, "_");
     // Avoid filename collisions by prefixing with timestamp
-    const r2Key = `reports/${Date.now().toString(36)}_${fileName}`;
+    const r2Key = `reports/${Date.now().toString(36)}_${safeName}`;
     
     const command = new PutObjectCommand({
       Bucket: bucketName,
@@ -692,6 +697,7 @@ app.get("/api/pdf/:file_id", async (req, res) => {
 
 // 新增：Dub.co 短連結轉換 API 端點
 app.post("/api/shorten", async (req, res) => {
+  if (!requireApiKey(req, res)) return; // advisor-only: forwards to the paid Dub.co API
   const { url } = req.body;
 
   if (!url) {
@@ -790,11 +796,17 @@ app.post("/api/track", async (req, res) => {
 
   console.log(`[TRACK] ${event} | ${client_name} | ${rName}`);
 
+  // /api/track is unauthenticated and these values come from the request body;
+  // they're sent with parse_mode:'HTML', so escape them — mirrors /api/session-end.
+  const cn = escapeHTML(String(client_name ?? ''));
+  const rn = escapeHTML(String(rName));
+  const fid = escapeHTML(String(file_id ?? ''));
+
   let text = "";
 
   if (event === 'open') {
-    const totalPages = req.body.total_pages || "未知";
-    text = `🔔 <b>報告已開啟</b>\n\n👤 <b>客戶：</b> ${client_name}\n📄 <b>報告：</b> ${rName}\n📑 <b>總頁數：</b> ${totalPages}\n🔗 <b>ID：</b> ${file_id}`;
+    const totalPages = escapeHTML(String(req.body.total_pages ?? "未知"));
+    text = `🔔 <b>報告已開啟</b>\n\n👤 <b>客戶：</b> ${cn}\n📄 <b>報告：</b> ${rn}\n📑 <b>總頁數：</b> ${totalPages}\n🔗 <b>ID：</b> ${fid}`;
   } else if (event === 'security_alert') {
     const { type } = req.body;
     let actionDesc = '截圖報告';
@@ -803,18 +815,20 @@ app.post("/api/track", async (req, res) => {
     if (type === 'screenshot_detected_mac') actionDesc = 'Mac 截圖 (Cmd+Shift)';
     if (type === 'potential_screenshot_mac') actionDesc = '潛在 Mac 截圖 (Cmd+Shift)';
     text = `🚨 <b>安全警報：偵測到未經授權的操作</b> 🚨\n\n` +
-      `👤 <b>客戶：</b> ${client_name}\n` +
-      `📄 <b>報告：</b> ${rName}\n` +
+      `👤 <b>客戶：</b> ${cn}\n` +
+      `📄 <b>報告：</b> ${rn}\n` +
       `⚠️ <b>行為：</b> 嘗試 ${actionDesc} !!`;
   } else if (event === 'click_appointment') {
-    const pageNote = page != null ? `（停留喺第 ${page} 頁）` : '';
-    text = `🔥 <b>高價值意向！</b>\n\n👤 客戶 <b>${client_name}</b> 點擊咗<b>預約顧問</b>按鈕${pageNote}！\n請準備透過 WhatsApp 跟進。`;
+    const pageNote = page != null ? `（停留喺第 ${escapeHTML(String(page))} 頁）` : '';
+    text = `🔥 <b>高價值意向！</b>\n\n👤 客戶 <b>${cn}</b> 點擊咗<b>預約顧問</b>按鈕${pageNote}！\n請準備透過 WhatsApp 跟進。`;
   } else if (event === 'heartbeat' && duration_seconds != null && duration_seconds >= 60 && duration_seconds < 90) {
-    const pageNote = page != null ? `（目前喺第 ${page} 頁）` : '';
-    text = `🟢 <b>正在閱讀中</b>\n\n👤 客戶 <b>${client_name}</b> 已閱讀 <b>${rName}</b> 超過 1 分鐘${pageNote}。\n建議：準備 WhatsApp，等客戶讀完馬上跟進。`;
+    const pageNote = page != null ? `（目前喺第 ${escapeHTML(String(page))} 頁）` : '';
+    text = `🟢 <b>正在閱讀中</b>\n\n👤 客戶 <b>${cn}</b> 已閱讀 <b>${rn}</b> 超過 1 分鐘${pageNote}。\n建議：準備 WhatsApp，等客戶讀完馬上跟進。`;
   }
 
-  if (text) void sendTelegram(text);
+  // Await on serverless: a fire-and-forget send is killed when the function is
+  // frozen after res.json (same reason the /l/:shortId handler awaits).
+  if (text) await sendTelegram(text);
 
   res.json({ status: "ok" });
 });
@@ -989,9 +1003,10 @@ app.post("/api/session-end", async (req, res) => {
 
       const behaviorSummary = Object.entries(pages_data || {}).map(([page, data]: [string, any]) => {
         const activeSec = Math.round((data.activeDwellMs || 0) / 1000);
-        const totalSec = Math.round(data.dwellMs / 1000);
+        const totalSec = Math.round((data.dwellMs || 0) / 1000);
+        const maxScale = typeof data.maxScale === 'number' ? data.maxScale : 1;
         const depth = data.maxScrollDepthPct != null ? `${data.maxScrollDepthPct}%` : 'n/a';
-        return `Page ${page}: ${totalSec}s total (${activeSec}s active), zoom ${data.maxScale.toFixed(1)}x, scroll depth ${depth}`;
+        return `Page ${page}: ${totalSec}s total (${activeSec}s active), zoom ${maxScale.toFixed(1)}x, scroll depth ${depth}`;
       }).join('\n');
 
       const pathSummary = navigation_path?.join(' → ') || 'unknown';
