@@ -322,17 +322,25 @@ export function useTelemetry({
 
       localStorage.removeItem(storageKey);
 
-      try {
-        const url = '/api/session-end';
-        const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-        navigator.sendBeacon(url, blob);
-      } catch (err) {
+      const sendViaFetch = () => {
         fetch('/api/session-end', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
           keepalive: true,
         }).catch(e => console.error('Session end dispatch failed', e));
+      };
+
+      try {
+        const url = '/api/session-end';
+        const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+        // sendBeacon returns false (without throwing) when the payload exceeds the
+        // browser's beacon limit or the queue is full — fall back to keepalive fetch
+        // so a long session's telemetry isn't silently dropped.
+        const queued = typeof navigator.sendBeacon === 'function' && navigator.sendBeacon(url, blob);
+        if (!queued) sendViaFetch();
+      } catch (err) {
+        sendViaFetch();
       }
     };
 
