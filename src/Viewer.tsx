@@ -555,6 +555,71 @@ export default function Viewer() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [numPages, pageNumber]);
 
+  // 3. Keyboard navigation: ← / → page through the report. We deliberately use only
+  // the horizontal arrows — PageUp/PageDown/Home/End and Space stay with the browser so
+  // a reader can still scroll within a page that is taller than the viewport. Modified
+  // combos (Alt+←, ⌘+→, Ctrl+…) are ignored so browser/system shortcuts keep working.
+  // Bounds come from numPagesRef (live) + functional setState, so no re-bind per page.
+  useEffect(() => {
+    const handleNavKey = (e: KeyboardEvent) => {
+      if (showDisclaimer) return; // don't flip pages behind the consent modal
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      const total = numPagesRef.current;
+      if (!total) return;
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setPageNumber(p => (p < total ? p + 1 : p));
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setPageNumber(p => (p > 1 ? p - 1 : p));
+      }
+    };
+    window.addEventListener('keydown', handleNavKey);
+    return () => window.removeEventListener('keydown', handleNavKey);
+  }, [showDisclaimer]);
+
+  // 4. Touch swipe navigation (mobile): a dominant horizontal swipe flips pages.
+  // Single-finger only (ignores pinch-zoom); requires horizontal travel to clearly
+  // beat vertical so it never hijacks normal scrolling.
+  useEffect(() => {
+    const el = pdfContainerRef.current;
+    if (!el) return;
+    let startX = 0, startY = 0, tracking = false;
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) { tracking = false; return; }
+      tracking = true;
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+    };
+    const onEnd = (e: TouchEvent) => {
+      if (!tracking) return;
+      tracking = false;
+      const t = e.changedTouches[0];
+      if (!t) return;
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      // When the reader has zoomed in — pinch-zoom (visualViewport) on mobile or the
+      // in-app zoom control — a horizontal drag is a pan to read the page edge, not a
+      // page flip. Leave it to the browser. (visualViewport is optional-chained for
+      // older engines; Chromium-based browsers like Comet support it.)
+      if ((window.visualViewport?.scale ?? 1) > 1.01 || scaleRef.current > 1.01) return;
+      const total = numPagesRef.current;
+      if (!total) return;
+      if (dx < 0) setPageNumber(p => (p < total ? p + 1 : p)); // swipe left → next
+      else setPageNumber(p => (p > 1 ? p - 1 : p));            // swipe right → previous
+    };
+    el.addEventListener('touchstart', onStart, { passive: true });
+    el.addEventListener('touchend', onEnd, { passive: true });
+    return () => {
+      el.removeEventListener('touchstart', onStart);
+      el.removeEventListener('touchend', onEnd);
+    };
+  }, []);
+
   // Send tracking event to backend
   const sendTrackingEvent = (event: string, data: any = {}) => {
     const payload = {
@@ -643,10 +708,15 @@ export default function Viewer() {
       const sessionDuration = Math.floor((now - startTimeRef.current) / 1000);
       setTimeSpent(sessionDuration);
 
-      // Dynamically calculate estimated time left
-      if (numPages && pageNumber < numPages) {
-        const avgPace = pageNumber > 1 ? (sessionDuration / (pageNumber - 1)) : 45; // default 45s per page initially
-        const estSeconds = (numPages - pageNumber) * avgPace;
+      // Dynamically calculate estimated time left.
+      // Read live values from refs: this interval is bound once (deps []), so
+      // closing over the `numPages`/`pageNumber` state would freeze them at their
+      // mount values (null / 1) — the estimate would never appear.
+      const totalPages = numPagesRef.current;
+      const curPage = currentPageRef.current;
+      if (totalPages && curPage < totalPages) {
+        const avgPace = curPage > 1 ? (sessionDuration / (curPage - 1)) : 45; // default 45s per page initially
+        const estSeconds = (totalPages - curPage) * avgPace;
         setEstLeftMins(Math.max(1, Math.ceil(estSeconds / 60)));
       } else {
         setEstLeftMins(0);
@@ -656,7 +726,7 @@ export default function Viewer() {
       if (now - lastPingRef.current > 30000) {
         sendTrackingEvent('heartbeat', {
           duration_seconds: sessionDuration,
-          current_page: pageNumber
+          current_page: currentPageRef.current
         });
         lastPingRef.current = now;
       }
@@ -670,7 +740,7 @@ export default function Viewer() {
   // Safe Exit Fallback Screen (for Safari/Chrome that block tab closing)
   if (isClosed) {
     return (
-      <div className={`min-h-screen flex flex-col items-center justify-center font-sans ${isDarkMode ? 'bg-[#121212]' : 'bg-[#F9FAFB]'}`}>
+      <div className={`min-h-dvh flex flex-col items-center justify-center font-sans ${isDarkMode ? 'bg-[#121212]' : 'bg-[#F9FAFB]'}`}>
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -701,7 +771,7 @@ export default function Viewer() {
   }
 
   return (
-    <div className={`min-h-screen flex flex-col font-sans transition-colors duration-300 ${isDarkMode ? 'bg-[#121212] text-slate-300' : 'bg-[#F9FAFB] text-slate-900'}`}>
+    <div className={`min-h-dvh flex flex-col font-sans transition-colors duration-300 ${isDarkMode ? 'bg-[#121212] text-slate-300' : 'bg-[#F9FAFB] text-slate-900'}`}>
       {/* Disclaimer Modal */}
       {showDisclaimer && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
@@ -753,6 +823,7 @@ export default function Viewer() {
         <div className="flex items-center gap-3 sm:gap-5">
           <button
             onClick={handleManualClose}
+            aria-label="關閉報告"
             className={`p-2 rounded-xl transition-all active:scale-90 ${isDarkMode ? 'bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-500'}`}
             title="關閉報告"
           >
@@ -787,6 +858,8 @@ export default function Viewer() {
           {/* Action: Dark Mode (Smart Invert) */}
           <button
             onClick={() => setIsDarkMode(!isDarkMode)}
+            aria-label={isDarkMode ? '切換至淺色模式' : '切換至深色模式'}
+            aria-pressed={isDarkMode}
             className={`p-1.5 sm:p-2 rounded-lg transition-all ${isDarkMode ? 'text-amber-400 hover:bg-slate-800' : 'text-slate-500 hover:text-blue-600 hover:bg-blue-50'}`}
             title="Dark Mode (Smart Invert)"
           >
@@ -797,6 +870,8 @@ export default function Viewer() {
           <div className={`hidden md:flex items-center gap-1 rounded-lg p-1 border ${isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
             <button
               onClick={zoomOut}
+              aria-label="縮小"
+              title="縮小"
               className={`p-1.5 rounded-md transition-all active:scale-95 ${isDarkMode ? 'hover:bg-slate-700 text-slate-400' : 'hover:bg-white hover:shadow-sm text-slate-600'}`}
             >
               <ZoomOut className="w-4 h-4" />
@@ -804,6 +879,8 @@ export default function Viewer() {
             <span className={`text-xs font-medium w-12 text-center select-none ${isDarkMode ? 'text-slate-300' : ''}`}>{Math.round(scale * 100)}%</span>
             <button
               onClick={zoomIn}
+              aria-label="放大"
+              title="放大"
               className={`p-1.5 rounded-md transition-all active:scale-95 ${isDarkMode ? 'hover:bg-slate-700 text-slate-400' : 'hover:bg-white hover:shadow-sm text-slate-600'}`}
             >
               <ZoomIn className="w-4 h-4" />
@@ -814,7 +891,7 @@ export default function Viewer() {
 
       {/* Main Content - 專注模式下動態調整 Padding 與背景色 */}
       <main
-        className={`cs-mask flex-1 flex justify-center overflow-y-auto scroll-smooth select-none transition-all duration-500 ease-in-out relative ${isFullscreen
+        className={`cs-mask flex-1 flex justify-center overflow-y-auto overscroll-contain scroll-smooth select-none transition-all duration-500 ease-in-out relative ${isFullscreen
           ? 'pt-4 sm:pt-6 bg-slate-900' // 全螢幕：極小頂部留白 + 沉浸式深色背景
           : `pt-16 sm:pt-20 ${isDarkMode ? 'bg-[#121212]' : 'bg-[#F9FAFB]'}` // 正常：預留 Header 空間 + 使用者選的深淺色背景
           } ${(isWindowFocused || isFullscreen)
@@ -977,6 +1054,7 @@ export default function Viewer() {
               <button
                 onClick={previousPage}
                 disabled={pageNumber <= 1}
+                aria-label="上一頁"
                 className="p-2 hover:bg-white/10 text-slate-400 hover:text-amber-400 rounded-xl disabled:opacity-20 transition-all active:scale-90"
                 title="Previous Page"
               >
@@ -992,6 +1070,7 @@ export default function Viewer() {
               <button
                 onClick={nextPage}
                 disabled={pageNumber >= (numPages || 1)}
+                aria-label="下一頁"
                 className="p-2 hover:bg-white/10 text-slate-400 hover:text-amber-400 rounded-xl disabled:opacity-20 transition-all active:scale-90"
                 title="Next Page"
               >
@@ -1021,6 +1100,8 @@ export default function Viewer() {
             <div className="hidden sm:flex items-center gap-1">
               <button
                 onClick={toggleFullscreen}
+                aria-label={isFullscreen ? "退出全螢幕" : "進入全螢幕"}
+                aria-pressed={isFullscreen}
                 className={`p-2 rounded-xl transition-all active:scale-90 ${isFullscreen ? 'text-amber-400 bg-amber-400/10' : 'text-slate-400 hover:bg-white/10 hover:text-white'}`}
                 title={isFullscreen ? "退出全螢幕" : "進入全螢幕"}
               >
