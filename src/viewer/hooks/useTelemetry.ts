@@ -15,6 +15,11 @@ interface UseTelemetryParams {
   containerRef: React.MutableRefObject<HTMLDivElement | null>;
 }
 
+/** Fresh per-session identifier; crypto.randomUUID with a non-secure fallback. */
+function genSessionId() {
+  return crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+}
+
 /**
  * The reader's full tracking engine. Owns session identity, activity monitoring,
  * per-page dwell/scroll/zoom accumulation, LocalStorage persistence + recovery,
@@ -36,7 +41,7 @@ export function useTelemetry({
   containerRef,
 }: UseTelemetryParams) {
   // 0. Session Identity
-  const sessionIdRef = useRef(crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15));
+  const sessionIdRef = useRef(genSessionId());
 
   // Tracking refs
   const startTimeRef = useRef(Date.now());
@@ -242,7 +247,10 @@ export function useTelemetry({
       file_id: fileId,
       client_name: clientName,
       report_name: reportName,
-      total_pages: numPages,
+      // Live ref, not the `numPages` state: the deps-[] heartbeat timer holds the
+      // mount-time closure where the state is still null, so reading the ref keeps
+      // total_pages correct for heartbeats (and harmless for every other caller).
+      total_pages: numPagesRef.current,
       timestamp: new Date().toISOString(),
       ...data,
     };
@@ -337,11 +345,20 @@ export function useTelemetry({
       } else if (document.visibilityState === 'visible') {
         if (hasSentSessionEndRef.current) {
           console.log('用戶重返報告，開啟全新會話 tracking...');
+          // Fresh session: new id + clear every per-session accumulator, so the
+          // next session_end isn't polluted with the previous visit's path,
+          // zoom/scroll samples, or CTA page.
           hasSentSessionEndRef.current = false;
+          sessionIdRef.current = genSessionId();
           startTimeRef.current = Date.now();
           pageEnterTimeRef.current = Date.now();
+          lastPingRef.current = Date.now();
           sessionDataRef.current = {};
           navigationPathRef.current = [];
+          navHistoryRef.current = [];
+          zoomClustersRef.current = [];
+          scrollSamplesRef.current = [];
+          ctaClickPageRef.current = null;
         }
       }
     };
