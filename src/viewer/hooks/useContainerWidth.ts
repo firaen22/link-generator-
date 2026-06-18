@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-/** Tracks window.innerWidth for the responsive <Page width> prop. */
+/** Tracks window.innerWidth for the responsive <Page width> cap. */
 export function useContainerWidth(): number {
   const [containerWidth, setContainerWidth] = useState(window.innerWidth);
 

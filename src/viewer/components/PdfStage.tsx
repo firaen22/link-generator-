@@ -8,6 +8,7 @@ interface PdfStageProps {
   pageNumber: number;
   scale: number;
   containerWidth: number;
+  availableHeight: number;
   isDarkMode: boolean;
   clientName: string;
   loadError: string | null;
@@ -18,11 +19,18 @@ interface PdfStageProps {
 /** The PDF render surface: Document/Page, honest loading + error states, the
  *  per-page turn animation, and a GPU-cheap tiled watermark. */
 export function PdfStage({
-  pdfUrl, pageNumber, scale, containerWidth, isDarkMode, clientName,
+  pdfUrl, pageNumber, scale, containerWidth, availableHeight, isDarkMode, clientName,
   loadError, onLoadSuccess, onLoadError,
 }: PdfStageProps) {
   const reduceMotion = useReducedMotion();
   const [progress, setProgress] = useState<number | null>(null);
+  // Page aspect ratio (width / height), learned from the first rendered page.
+  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
+
+  // Fit the whole page inside the viewport: bound by width on phones, by height
+  // on desktop/landscape. `scale` then multiplies this so zoom stays an override.
+  const maxWidth = Math.min(containerWidth - 32, 1000);
+  const fitWidth = aspectRatio ? Math.min(maxWidth, availableHeight * aspectRatio) : maxWidth;
 
   // One tiled SVG node instead of 30 rotated divs — never re-rasterizes on flip.
   // NOTE: clientName is URL-controllable. It is safe HERE only because wmSvg is
@@ -96,7 +104,8 @@ export function PdfStage({
             <Page
               pageNumber={pageNumber}
               scale={scale}
-              width={Math.min(containerWidth - 32, 1000)}
+              width={fitWidth}
+              onLoadSuccess={(page) => setAspectRatio(page.originalWidth / page.originalHeight)}
               renderTextLayer={true}
               renderAnnotationLayer={true}
               className={`rounded-md bg-white border ${isDarkMode ? 'border-white/10 ring-1 ring-black/5 brightness-[0.97]' : 'border-slate-200'} shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_rgba(0,0,0,0.08)]`}

@@ -16,6 +16,7 @@ import { useFullscreen } from './viewer/hooks/useFullscreen';
 import { useContentGuard } from './viewer/hooks/useContentGuard';
 import { usePdfZoom } from './viewer/hooks/usePdfZoom';
 import { useContainerWidth } from './viewer/hooks/useContainerWidth';
+import { useFitHeight } from './viewer/hooks/useFitHeight';
 import { useToast } from './viewer/hooks/useToast';
 import { ViewerHeader } from './viewer/components/ViewerHeader';
 import { PdfStage } from './viewer/components/PdfStage';
@@ -53,6 +54,16 @@ export default function Viewer() {
   const { scale, zoomIn, zoomOut } = usePdfZoom();
   const containerWidth = useContainerWidth();
   const { isFullscreen, toggleFullscreen } = useFullscreen();
+
+  // Wraps the page; its padding-bottom reserves the floating bottom bar (incl.
+  // safe-area inset). Measured by useFitHeight so the page fit is exact.
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  // Real vertical room for the page, measured from the live layout. Re-measured
+  // on the fullscreen toggle (it changes <main>'s top padding). Drives fit-to-
+  // page so the whole page is visible without scrolling at 100% zoom.
+  const availableHeight = useFitHeight(containerRef, contentRef, isFullscreen);
+
   const { toast, showToast } = useToast();
 
   const {
@@ -131,12 +142,13 @@ export default function Viewer() {
         ref={containerRef}
         onContextMenu={(e) => e.preventDefault()}
       >
-        <div className="w-full max-w-6xl flex flex-col items-center" style={{ paddingBottom: 'calc(7rem + env(safe-area-inset-bottom))' }}>
+        <div ref={contentRef} className="w-full max-w-6xl flex flex-col items-center" style={{ paddingBottom: 'calc(7rem + env(safe-area-inset-bottom))' }}>
           <PdfStage
             pdfUrl={pdfUrl}
             pageNumber={pageNumber}
             scale={scale}
             containerWidth={containerWidth}
+            availableHeight={availableHeight}
             isDarkMode={isDarkMode}
             clientName={clientName}
             loadError={loadError}
