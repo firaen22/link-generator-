@@ -4,8 +4,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/firaen22/link-generator-/main/mcp/install.sh | bash
 #
-# Downloads the zero-dependency server and registers it in ~/.codex/config.toml.
-# Prompts for your personal access key (or pass it via PWP_API_KEY=... ).
+# Downloads the server (+ its one dependency, sharp) and registers it in
+# ~/.codex/config.toml. Prompts for your access key (or pass it via PWP_API_KEY=).
 #
 # Override (for testing): PWP_INSTALL_DIR, CODEX_CONFIG, PWP_SRC
 set -euo pipefail
@@ -18,9 +18,13 @@ SRC="${PWP_SRC:-$REPO_RAW/server.mjs}"
 
 echo "→ Installing pwp-links MCP for Codex…"
 
-# 1. Node check
+# 1. Node + npm check
 if ! command -v node >/dev/null 2>&1; then
   echo "✗ Node.js is required but not found. Install Node 18+ from https://nodejs.org and re-run." >&2
+  exit 1
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "✗ npm is required (it installs the 'sharp' image-compression dependency) but not found." >&2
   exit 1
 fi
 
@@ -32,6 +36,18 @@ else
   echo "→ Downloading server to $SERVER"
   curl -fsSL "$SRC" -o "$SERVER"
 fi
+
+# 2b. Install the sharp dependency into the install dir. The server does
+#     `import sharp` to compress preview images, so node_modules must be present
+#     alongside server.mjs. A local package.json keeps the install self-contained.
+echo "→ Installing sharp into $INSTALL_DIR (one-time)…"
+cat > "$INSTALL_DIR/package.json" <<'PKG'
+{ "name": "pwp-links-installed", "private": true, "type": "module", "dependencies": { "sharp": "^0.33.5" } }
+PKG
+( cd "$INSTALL_DIR" && npm install --omit=dev --no-audit --no-fund >/dev/null 2>&1 ) || {
+  echo "✗ Failed to install 'sharp'. Run: cd $INSTALL_DIR && npm install" >&2
+  exit 1
+}
 
 # 3. Access key (from env or interactive prompt via the terminal)
 KEY="${PWP_API_KEY:-}"

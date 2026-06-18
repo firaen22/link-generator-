@@ -53,6 +53,13 @@ const fromUrlSafeBase64 = (encoded: string): string => {
   return Buffer.from(base64, 'base64').toString('utf8');
 };
 
+const toUrlSafeBase64 = (str: string): string =>
+  Buffer.from(str, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
 const extractFileName = (filePath: string | null | undefined): string => {
   if (!filePath) return "Document";
   // Strip prefixes like "r2:" or "r2_"
@@ -639,12 +646,15 @@ app.post("/api/r2-presign", async (req, res) => {
 
   try {
     const bucketName = process.env.R2_BUCKET_NAME || "reports";
-    // Sanitize to a basename so a caller can't escape the reports/ prefix via
+    // Sanitize to a basename so a caller can't escape the prefix via
     // slashes or "../" segments in fileName.
     const safeName = String(fileName).replace(/[\\/]/g, "_").replace(/\.\./g, "_");
+    // Preview images live under images/, reports (PDFs) under reports/.
+    const isImage = String(contentType).startsWith("image/");
+    const prefix = isImage ? "images" : "reports";
     // Avoid filename collisions by prefixing with timestamp
-    const r2Key = `reports/${Date.now().toString(36)}_${safeName}`;
-    
+    const r2Key = `${prefix}/${Date.now().toString(36)}_${safeName}`;
+
     const command = new PutObjectCommand({
       Bucket: bucketName,
       Key: r2Key,
@@ -652,8 +662,12 @@ app.post("/api/r2-presign", async (req, res) => {
     });
 
     const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
-    
-    res.json({ uploadUrl, r2Key });
+
+    // Stable, crawler-public URL for OG previews (.jpg suffix keeps strict
+    // crawlers happy; /api/img strips it before decoding the key).
+    const publicPath = `/api/img/r2_${toUrlSafeBase64(r2Key)}.jpg`;
+
+    res.json({ uploadUrl, r2Key, publicPath });
   } catch (error: any) {
     console.error("[R2_PRESIGN] Error:", error.message);
     res.status(500).json({ error: "Failed to generate upload URL" });
@@ -732,6 +746,48 @@ app.get("/api/pdf/:file_id", async (req, res) => {
   } catch (error: any) {
     console.error("[PDF_PROXY_CRITICAL] Exception:", error.message);
     res.status(500).send("A critical error occurred while retrieving the document.");
+  }
+});
+
+// Proxy for preview/OG images stored in R2. Kept PUBLIC (no API key) so the
+// WhatsApp/Telegram crawlers can fetch the og:image. Mirrors /api/pdf's r2_
+// branch: a short-lived presigned GET is generated per request, so the public
+// URL stays stable for the whole link lifetime without a public bucket.
+app.get("/api/img/:file_id", async (req, res) => {
+  // The public URL carries an image extension so strict crawlers accept it;
+  // strip it before decoding the R2 key.
+  const file_id = req.params.file_id.replace(/\.(png|jpe?g|gif|webp)$/i, "");
+
+  if (!file_id.startsWith("r2_")) {
+    return res.status(400).send("Invalid image ID format.");
+  }
+
+  try {
+    const r2Key = fromUrlSafeBase64(file_id.slice(3));
+    const bucket = process.env.R2_BUCKET_NAME || "reports";
+
+    const command = new GetObjectCommand({ Bucket: bucket, Key: r2Key });
+    const blobUrl = await getSignedUrl(s3Client, command, { expiresIn: 60 });
+
+    const response = await fetch(blobUrl);
+    if (!response.ok) {
+      console.error(`[IMG_PROXY] Upstream failure: ${response.status} ${response.statusText}`);
+      return res.status(response.status).send("Upstream Fetch Error");
+    }
+
+    res.setHeader("Content-Type", response.headers.get("content-type") || "image/jpeg");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+
+    if (response.body) {
+      // @ts-ignore — Web stream iteration
+      for await (const chunk of response.body) res.write(chunk);
+      res.end();
+    } else {
+      res.send(Buffer.from(await response.arrayBuffer()));
+    }
+  } catch (error: any) {
+    console.error("[IMG_PROXY_CRITICAL] Exception:", error.message);
+    res.status(500).send("Failed to retrieve image.");
   }
 });
 

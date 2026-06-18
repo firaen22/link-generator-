@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 /**
- * Private Wealth Pack — link generator MCP server (zero-dependency).
+ * Private Wealth Pack — link generator MCP server.
  *
  * A pure HTTP client of the deployed app (default https://share.pmd-hk.com).
  * Holds NO secrets: PDF upload reuses the server's /api/r2-presign flow (R2
  * keys live only on Vercel) and link creation calls /api/create-link.
  *
- * Implements the MCP stdio transport (newline-delimited JSON-RPC 2.0) by hand
- * so it runs with just Node — no npm install, no node_modules.
+ * Implements the MCP stdio transport (newline-delimited JSON-RPC 2.0) by hand.
+ * One dependency, sharp, is used to compress preview images to <300KB before
+ * upload (WhatsApp/Telegram silently drop larger OG images) — run `npm install`
+ * in this folder before first use.
  *
  * Tools:
  *   - create_share_link : upload a local PDF + mint one personalised link per client
@@ -18,10 +20,11 @@
 
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
+import sharp from "sharp";
 
 const BASE_URL = (process.env.PWP_BASE_URL || "https://share.pmd-hk.com").replace(/\/$/, "");
 const API_KEY = process.env.PWP_API_KEY || "";
-const SERVER_INFO = { name: "pwp-links", version: "1.1.0" };
+const SERVER_INFO = { name: "pwp-links", version: "1.2.0" };
 const DEFAULT_PROTOCOL = "2024-11-05";
 
 const TOOLS = [
@@ -30,8 +33,9 @@ const TOOLS = [
     description:
       "Upload a local PDF report and generate a personalised, trackable share link for each client. " +
       "Returns one https://<domain>/l/<id> link per client name. The link shows an Open Graph preview " +
-      "card in WhatsApp when previewImage is supplied (must be a public HTTPS image URL, ideally <300KB " +
-      "or WhatsApp silently drops it). reportName/title default to the PDF filename if omitted.",
+      "card in WhatsApp. For the card image, prefer previewImagePath (a local image file) — it is " +
+      "auto-compressed to <300KB, uploaded, and hosted for you. Alternatively pass previewImage as an " +
+      "already-public HTTPS URL. reportName/title default to the PDF filename if omitted.",
     inputSchema: {
       type: "object",
       properties: {
@@ -51,9 +55,17 @@ const TOOLS = [
           description: "Headline shown on the WhatsApp preview card. Defaults to the report name.",
         },
         description: { type: "string", description: "Sub-text shown on the WhatsApp preview card." },
+        previewImagePath: {
+          type: "string",
+          description:
+            "Absolute path to a local image for the WhatsApp preview card. Auto-compressed to <300KB JPEG, " +
+            "uploaded, and hosted. Takes precedence over previewImage. Use this instead of pre-hosting an image.",
+        },
         previewImage: {
           type: "string",
-          description: "Public HTTPS image URL for the WhatsApp preview card. Omit for no card / default image.",
+          description:
+            "Already-public HTTPS image URL for the WhatsApp preview card. Ignored if previewImagePath is set. " +
+            "Must be <300KB or WhatsApp silently drops it. Omit both for no card / default image.",
         },
         advisorWhatsapp: {
           type: "string",
@@ -104,8 +116,61 @@ async function postJson(path, body) {
   }
 }
 
+// Compress an image buffer to a WhatsApp/Telegram-friendly JPEG under ~290KB
+// (headroom below the 300KB cap). Steps quality down, then dimensions, until it
+// fits. Mirrors the web app's client-side canvas compression.
+async function compressToJpegUnder(bytes, maxBytes = 290 * 1024) {
+  const render = (width, quality) =>
+    sharp(bytes)
+      .rotate() // honour EXIF orientation
+      .flatten({ background: "#ffffff" }) // JPEG has no alpha
+      .resize({ width, height: width, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality, mozjpeg: true })
+      .toBuffer();
+
+  let out = null;
+  for (const q of [85, 75, 65, 55, 45, 35]) {
+    out = await render(1200, q);
+    if (out.length <= maxBytes) return out;
+  }
+  for (const w of [1000, 800, 600]) {
+    out = await render(w, 45);
+    if (out.length <= maxBytes) return out;
+  }
+  return out; // best effort — return the smallest we produced
+}
+
+// Read a local image, compress it, upload to R2, and return its hosted URL.
+async function uploadPreviewImage(imagePath) {
+  let bytes;
+  try {
+    bytes = await readFile(imagePath);
+  } catch (e) {
+    throw new Error(`Cannot read image at "${imagePath}": ${e.message}`);
+  }
+
+  const jpeg = await compressToJpegUnder(bytes);
+  const fileName = `${basename(imagePath).replace(/\.[^/.]+$/, "") || "preview"}.jpg`;
+
+  const { uploadUrl, publicPath } = await postJson("/api/r2-presign", {
+    fileName,
+    contentType: "image/jpeg",
+  });
+  if (!uploadUrl || !publicPath) throw new Error("Presign response missing uploadUrl/publicPath.");
+
+  const putRes = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": "image/jpeg" },
+    body: jpeg,
+  });
+  if (!putRes.ok) {
+    throw new Error(`Image upload failed (HTTP ${putRes.status}): ${(await putRes.text()).slice(0, 200)}`);
+  }
+  return `${BASE_URL}${publicPath}`;
+}
+
 async function createShareLink(args) {
-  const { pdfPath, clients, reportName, title, description, previewImage, advisorWhatsapp } = args;
+  const { pdfPath, clients, reportName, title, description, previewImage, previewImagePath, advisorWhatsapp } = args;
   if (!pdfPath || typeof pdfPath !== "string") throw new Error("pdfPath is required.");
   const names = Array.isArray(clients) ? clients.map((c) => String(c).trim()).filter(Boolean) : [];
   if (names.length === 0) throw new Error("At least one client name is required.");
@@ -133,13 +198,18 @@ async function createShareLink(args) {
     throw new Error(`R2 upload failed (HTTP ${putRes.status}): ${(await putRes.text()).slice(0, 200)}`);
   }
 
+  // previewImagePath (local file, auto-compressed + hosted) wins over a raw URL.
+  const finalPreviewImage = previewImagePath
+    ? await uploadPreviewImage(previewImagePath)
+    : previewImage;
+
   const { links } = await postJson("/api/create-link", {
     clients: names,
     f: `r2:${r2Key}`,
     ...(reportName ? { r: reportName } : {}),
     ...(title ? { t: title } : {}),
     ...(description ? { d: description } : {}),
-    ...(previewImage ? { i: previewImage } : {}),
+    ...(finalPreviewImage ? { i: finalPreviewImage } : {}),
     ...(advisorWhatsapp ? { w: advisorWhatsapp } : {}),
     origin: BASE_URL,
   });
