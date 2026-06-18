@@ -35,7 +35,8 @@ const TOOLS = [
       "Returns one https://<domain>/l/<id> link per client name. The link shows an Open Graph preview " +
       "card in WhatsApp. For the card image, prefer previewImagePath (a local image file) — it is " +
       "auto-compressed to <300KB, uploaded, and hosted for you. Alternatively pass previewImage as an " +
-      "already-public HTTPS URL. reportName/title default to the PDF filename if omitted.",
+      "already-public HTTPS URL. If title or description is omitted, it is auto-generated from the " +
+      "PDF's actual content; reportName defaults to the PDF filename if omitted.",
     inputSchema: {
       type: "object",
       properties: {
@@ -52,9 +53,12 @@ const TOOLS = [
         },
         title: {
           type: "string",
-          description: "Headline shown on the WhatsApp preview card. Defaults to the report name.",
+          description: "Headline on the WhatsApp preview card. Omit to auto-generate from the PDF content.",
         },
-        description: { type: "string", description: "Sub-text shown on the WhatsApp preview card." },
+        description: {
+          type: "string",
+          description: "Sub-text on the WhatsApp preview card. Omit to auto-generate from the PDF content.",
+        },
         previewImagePath: {
           type: "string",
           description:
@@ -203,12 +207,26 @@ async function createShareLink(args) {
     ? await uploadPreviewImage(previewImagePath)
     : previewImage;
 
+  // Auto-generate title/description from the PDF content when omitted (parity
+  // with the web app). Non-fatal: on failure, fall back to defaults below.
+  let finalTitle = title;
+  let finalDescription = description;
+  if (!finalTitle || !finalDescription) {
+    try {
+      const meta = await postJson("/api/generate-meta", { f: `r2:${r2Key}` });
+      if (!finalTitle && meta.title) finalTitle = meta.title;
+      if (!finalDescription && meta.description) finalDescription = meta.description;
+    } catch (e) {
+      console.error(`[create_share_link] auto title/description failed: ${e.message}`);
+    }
+  }
+
   const { links } = await postJson("/api/create-link", {
     clients: names,
     f: `r2:${r2Key}`,
     ...(reportName ? { r: reportName } : {}),
-    ...(title ? { t: title } : {}),
-    ...(description ? { d: description } : {}),
+    ...(finalTitle ? { t: finalTitle } : {}),
+    ...(finalDescription ? { d: finalDescription } : {}),
     ...(finalPreviewImage ? { i: finalPreviewImage } : {}),
     ...(advisorWhatsapp ? { w: advisorWhatsapp } : {}),
     origin: BASE_URL,
