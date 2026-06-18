@@ -3,9 +3,12 @@
 Generate Private Wealth Pack share links (and WhatsApp click-to-chat URLs)
 conversationally from Claude or Codex.
 
-It is a **zero-dependency, pure HTTP client** of the deployed app
-(`https://share.pmd-hk.com`). It holds no R2/Firebase secrets — PDF upload reuses
-the server's `/api/r2-presign` flow and link creation calls `/api/create-link`.
+It is a **pure HTTP client** of the deployed app (`https://share.pmd-hk.com`) with
+a single dependency (`sharp`, for preview-image compression). It holds no
+R2/Firebase secrets — PDF and image upload reuse the server's `/api/r2-presign`
+flow and link creation calls `/api/create-link`. The one-line installer below
+provisions `sharp` automatically; for a manual checkout run `npm install` in this
+folder first.
 
 Access is gated by a **per-user access key** (`PWP_API_KEY`), validated against the
 server's allowlist. Without a valid key the endpoints return `401`.
@@ -14,11 +17,14 @@ server's allowlist. Without a valid key the endpoints return `401`.
 
 | Tool | What it does |
 |------|--------------|
-| `create_share_link` | Uploads a local PDF and mints one personalised `/l/<id>` link per client name. Optional `title`, `description`, `previewImage` (WhatsApp OG card), `advisorWhatsapp` (in-report CTA). |
+| `create_share_link` | Uploads a local PDF and mints one personalised `/l/<id>` link per client name. Optional `title`, `description`, `previewImagePath` / `previewImage` (WhatsApp OG card), `advisorWhatsapp` (in-report CTA). |
 | `get_whatsapp_link` | Turns a share link into a `wa.me/?text=…` click-to-chat URL (opens WhatsApp with the message pre-filled; does not auto-send). |
 
-> The OG preview card only appears in WhatsApp if `previewImage` is a **public HTTPS**
-> image URL, ideally **< 300 KB** (WhatsApp silently drops larger images).
+> **Preview card image:** pass `previewImagePath` (a **local image file**) and it is
+> auto-compressed to **< 300 KB** JPEG, uploaded, and hosted for you — no manual
+> image hosting needed. Alternatively pass `previewImage` as an already-public HTTPS
+> URL (must be < 300 KB yourself, or WhatsApp silently drops it). `previewImagePath`
+> takes precedence.
 
 ## Install (one line — Claude and/or Codex)
 

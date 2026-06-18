@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useRef } from 'react';
-import { Copy, Check, Share2, UploadCloud, MessageCircle, Loader2 } from 'lucide-react';
+import { Copy, Check, Share2, UploadCloud, MessageCircle, Loader2, ImagePlus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -13,6 +13,66 @@ interface GeneratedClient {
   shortId: string;
   shortLink: string;
   copied: boolean;
+}
+
+// ── Client-side image compression ──────────────────────────────────────────────
+// WhatsApp/Telegram drop preview images over ~300KB, so compress to JPEG in the
+// browser before upload. Scales down to a sensible OG width, then steps quality
+// (and, if needed, dimensions) down until the blob fits comfortably under cap.
+async function compressImageToJpeg(file: File, maxBytes = 290 * 1024): Promise<Blob> {
+  const dataUrl: string = await new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result as string);
+    fr.onerror = () => reject(new Error('讀取圖片失敗'));
+    fr.readAsDataURL(file);
+  });
+
+  const img: HTMLImageElement = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error('圖片格式無法解析'));
+    i.src = dataUrl;
+  });
+
+  const MAX_DIM = 1200; // ideal OG width; bigger gains nothing for a preview card
+  let baseW = img.width;
+  let baseH = img.height;
+  if (Math.max(baseW, baseH) > MAX_DIM) {
+    const scale = MAX_DIM / Math.max(baseW, baseH);
+    baseW = Math.round(baseW * scale);
+    baseH = Math.round(baseH * scale);
+  }
+
+  const encode = (w: number, h: number, q: number): Promise<Blob> => {
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return Promise.reject(new Error('瀏覽器不支援圖片壓縮'));
+    // Flatten transparency onto white — JPEG has no alpha channel.
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    return new Promise((resolve, reject) =>
+      canvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error('壓縮失敗'))),
+        'image/jpeg',
+        q
+      )
+    );
+  };
+
+  // Try quality first at full size, then progressively shrink dimensions.
+  for (const dimScale of [1, 0.85, 0.7, 0.55, 0.4]) {
+    const w = Math.max(1, Math.round(baseW * dimScale));
+    const h = Math.max(1, Math.round(baseH * dimScale));
+    for (const q of [0.85, 0.75, 0.65, 0.55, 0.45]) {
+      const blob = await encode(w, h, q);
+      if (blob.size <= maxBytes) return blob;
+    }
+  }
+  // Last resort — smallest attempt, return whatever we got.
+  return encode(Math.max(1, Math.round(baseW * 0.4)), Math.max(1, Math.round(baseH * 0.4)), 0.4);
 }
 
 export default function App() {
@@ -27,6 +87,7 @@ export default function App() {
   const [accessKey, setAccessKey] = useState(() => localStorage.getItem('pwp_api_key') || '');
   const [isUploading, setIsUploading] = useState(false);
   const [isBulkGenerating, setIsBulkGenerating] = useState(false);
+  const [isImageUploading, setIsImageUploading] = useState(false);
 
   // Bulk results — one entry per client name
   const [generatedClients, setGeneratedClients] = useState<GeneratedClient[]>([]);
@@ -188,6 +249,54 @@ export default function App() {
     } finally {
       setIsUploading(false);
       setIsBulkGenerating(false);
+    }
+  };
+
+  // Compress a chosen image to <300KB, upload to R2, and auto-fill the preview
+  // image URL — replaces the manual "upload to meee.com.tw and paste" step.
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!accessKey) {
+      alert('請先於上方輸入存取金鑰，再上傳預覽圖');
+      e.target.value = '';
+      return;
+    }
+
+    setIsImageUploading(true);
+    setImageSizeWarning('');
+    try {
+      const blob = await compressImageToJpeg(file);
+
+      const baseName = file.name.replace(/\.[^/.]+$/, '') || 'preview';
+      const presignRes = await fetch('/api/r2-presign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-pwp-key': accessKey },
+        body: JSON.stringify({ fileName: `${baseName}.jpg`, contentType: 'image/jpeg' }),
+      });
+      if (presignRes.status === 401) throw new Error('存取金鑰無效或未填寫');
+      if (!presignRes.ok) throw new Error('無法取得圖片上傳授權');
+      const { uploadUrl, publicPath } = await presignRes.json();
+
+      const uploadRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        body: blob,
+        headers: { 'Content-Type': 'image/jpeg' },
+      });
+      if (!uploadRes.ok) throw new Error('圖片上傳至 R2 失敗');
+
+      const customDomain = import.meta.env.VITE_APP_URL;
+      const origin = customDomain
+        ? (customDomain.endsWith('/') ? customDomain.slice(0, -1) : customDomain)
+        : window.location.origin;
+
+      setPreviewImage(`${origin}${publicPath}`);
+    } catch (error) {
+      console.error('圖片上傳失敗:', error);
+      alert(error instanceof Error ? error.message : '圖片處理失敗');
+    } finally {
+      setIsImageUploading(false);
+      e.target.value = ''; // allow re-selecting the same file
     }
   };
 
@@ -385,6 +494,28 @@ export default function App() {
             <p className="text-xs text-slate-400 mt-1.5 ml-1">
               Custom image for WhatsApp/Telegram preview card.
             </p>
+
+            {/* Upload + auto-compress: fills the URL above automatically */}
+            <label
+              className={`mt-2.5 flex items-center justify-center gap-2 py-2.5 px-4 border border-dashed border-indigo-200 rounded-xl text-sm font-semibold text-indigo-600 bg-indigo-50/50 transition-all ${isImageUploading ? 'opacity-75 cursor-wait' : 'hover:bg-indigo-50 cursor-pointer'}`}
+            >
+              {isImageUploading ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> 壓縮並上傳中...</>
+              ) : (
+                <><ImagePlus className="w-4 h-4" /> 上傳圖片（自動壓縮至 300KB 以下）</>
+              )}
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleImageUpload}
+                disabled={isImageUploading}
+                className="hidden"
+              />
+            </label>
+            <p className="text-xs text-slate-400 mt-1.5 ml-1">
+              選擇任何圖片即可，系統會自動壓縮並產生可用的預覽圖網址（毋須再用 meee.com.tw）。
+            </p>
+
             {imageSizeWarning && (
               <p className="text-xs text-rose-600 mt-2.5 ml-1 font-semibold bg-rose-50 border border-rose-100 rounded-xl p-3 flex items-start gap-2 shadow-sm shadow-rose-50/50">
                 <span className="shrink-0 text-sm leading-none">⚠️</span>
