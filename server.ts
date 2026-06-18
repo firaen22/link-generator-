@@ -863,6 +863,101 @@ app.get("/api/check-image-size", async (req, res) => {
   }
 });
 
+// Auto-generate a WhatsApp preview title + description from the uploaded PDF's
+// actual content. Advisor-gated (requireApiKey), so no public-abuse rate limit
+// is needed — the heavy AI gating on /api/session-end is for its unauth callers.
+app.post("/api/generate-meta", async (req, res) => {
+  if (!requireApiKey(req, res)) return;
+  if (apiKeys.length === 0) {
+    return res.status(500).json({ error: "伺服器未設定 GEMINI_API_KEY" });
+  }
+
+  const { f } = req.body;
+  if (!f || typeof f !== "string" || !f.startsWith("r2:")) {
+    return res.status(400).json({ error: "缺少或不支援的檔案參考 (f)，僅支援 R2 上傳" });
+  }
+
+  const MAX_PDF_BYTES = 14 * 1024 * 1024;
+
+  // Resolve the PDF bytes from R2 via a short-lived presigned GET (same pattern
+  // as the /api/pdf proxy).
+  let pdfBuffer: Buffer;
+  try {
+    const r2Key = f.slice(3);
+    const bucket = process.env.R2_BUCKET_NAME || "reports";
+    const command = new GetObjectCommand({ Bucket: bucket, Key: r2Key });
+    const url = await getSignedUrl(s3Client, command, { expiresIn: 60 });
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`R2 fetch ${resp.status}`);
+    // Gemini's inline-data request cap is ~20MB and base64 inflates ~1.33×, so
+    // guard at 14MB raw. Check Content-Length first to avoid buffering an
+    // oversized object into memory; fall back to a post-read check if absent.
+    const declaredSize = Number(resp.headers.get("content-length") || 0);
+    if (declaredSize > MAX_PDF_BYTES) {
+      return res.status(413).json({ error: "PDF 過大，無法自動生成，請手動填寫標題與描述" });
+    }
+    pdfBuffer = Buffer.from(await resp.arrayBuffer());
+  } catch (e: any) {
+    console.error("[GENERATE_META] PDF fetch failed:", e.message);
+    return res.status(502).json({ error: "無法讀取 PDF 內容" });
+  }
+
+  if (pdfBuffer.length > MAX_PDF_BYTES) {
+    return res.status(413).json({ error: "PDF 過大，無法自動生成，請手動填寫標題與描述" });
+  }
+
+  const prompt = `你是一家香港財富管理公司的內容編輯。以下是一份要透過 WhatsApp 分享給客戶的報告 PDF。
+請依據 PDF 的實際內容，產生用於 WhatsApp 連結預覽卡的「標題」與「描述」。
+要求：
+- 一律使用繁體中文。
+- title：簡潔有力，最多 20 字，點出報告主題；不要包含客戶名稱或日期。
+- description：一句吸引客戶閱讀的摘要，最多 60 字，帶出閱讀的價值。
+- 只輸出 JSON 物件：{"title":"...","description":"..."}`;
+
+  const pdfPart = {
+    inlineData: { mimeType: "application/pdf", data: pdfBuffer.toString("base64") },
+  };
+
+  // Rotate keys over time; lite/high-quota models lead since this is a simple,
+  // frequent task. JSON is requested via mime-type + prompt and parsed defensively
+  // (no responseSchema — keeps the whole fallback list compatible).
+  const startIndex = Math.floor(Date.now() / 60_000) % apiKeys.length;
+  for (let i = 0; i < apiKeys.length; i++) {
+    const key = apiKeys[(startIndex + i) % apiKeys.length];
+    for (const modelName of STANDARD_MODELS) {
+      try {
+        const genAI = new GoogleGenerativeAI(key);
+        const model = genAI.getGenerativeModel({
+          model: modelName,
+          // Gemma models have no JSON mode and reject responseMimeType — omit it
+          // for them (the prompt + defensive parse still yields JSON). Mirrors the
+          // telemetry fallback, which never sets responseMimeType on standard models.
+          ...(modelName.startsWith("gemma")
+            ? {}
+            : { generationConfig: { responseMimeType: "application/json" } as any }),
+        });
+        const result = (await Promise.race([
+          model.generateContent([prompt, pdfPart]),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 20000)),
+        ])) as any;
+        const raw = result.response.text().replace(/^```json|```$/gm, "").trim();
+        const parsed = JSON.parse(raw);
+        const title = String(parsed?.title || "").trim();
+        const description = String(parsed?.description || "").trim();
+        if (title && description) {
+          console.log(`[GENERATE_META] Success | ${modelName}`);
+          return res.json({ title, description });
+        }
+        throw new Error("Empty title/description");
+      } catch (err: any) {
+        console.warn(`[GENERATE_META WARN] ${modelName}: ${(err.message || "").slice(0, 60)}`);
+      }
+    }
+  }
+
+  return res.status(502).json({ error: "自動生成失敗，請稍後再試或手動填寫" });
+});
+
 
 // Tracking Endpoint
 app.post("/api/track", async (req, res) => {

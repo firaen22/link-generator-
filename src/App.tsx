@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useRef } from 'react';
-import { Copy, Check, Share2, UploadCloud, MessageCircle, Loader2, ImagePlus } from 'lucide-react';
+import { Copy, Check, Share2, UploadCloud, MessageCircle, Loader2, ImagePlus, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -88,6 +88,7 @@ export default function App() {
   const [isUploading, setIsUploading] = useState(false);
   const [isBulkGenerating, setIsBulkGenerating] = useState(false);
   const [isImageUploading, setIsImageUploading] = useState(false);
+  const [isGeneratingMeta, setIsGeneratingMeta] = useState(false);
 
   // Bulk results — one entry per client name
   const [generatedClients, setGeneratedClients] = useState<GeneratedClient[]>([]);
@@ -139,6 +140,70 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const SESSION_CACHE_KEY = 'pw_uploaded_files';
 
+  // Upload the PDF to R2 once (cached per file in this session) and return its
+  // r2: reference. Shared by link generation and auto title/description.
+  const uploadPdfIfNeeded = async (file: File): Promise<string> => {
+    const fileIdentifier = `${file.name}_${file.size}`;
+    const sessionCache = JSON.parse(sessionStorage.getItem(SESSION_CACHE_KEY) || '{}');
+    if (sessionCache[fileIdentifier]) {
+      console.log('[UPLOAD] Reusing cached path:', sessionCache[fileIdentifier]);
+      return sessionCache[fileIdentifier];
+    }
+
+    console.log('[UPLOAD] Requesting R2 pre-signed URL...');
+    const presignRes = await fetch('/api/r2-presign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-pwp-key': accessKey },
+      body: JSON.stringify({ fileName: file.name, contentType: file.type || 'application/pdf' }),
+    });
+    if (presignRes.status === 401) throw new Error('存取金鑰無效或未填寫，請於上方輸入正確的存取金鑰');
+    if (!presignRes.ok) throw new Error('無法取得上傳授權');
+    const { uploadUrl, r2Key } = await presignRes.json();
+
+    console.log('[UPLOAD] Uploading directly to R2...');
+    const uploadRes = await fetch(uploadUrl, {
+      method: 'PUT',
+      body: file,
+      headers: { 'Content-Type': file.type || 'application/pdf' },
+    });
+    if (!uploadRes.ok) throw new Error('檔案上傳至 R2 失敗');
+
+    const cleanFileURL = `r2:${r2Key}`; // 'r2:' prefix so pdfBridge resolves it
+    sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({ ...sessionCache, [fileIdentifier]: cleanFileURL }));
+    console.log('[UPLOAD] Success:', cleanFileURL);
+    return cleanFileURL;
+  };
+
+  // Read the PDF's content via Gemini and fill the title + description fields.
+  // Editable afterwards — this is a starting point, not a lock-in.
+  const handleAutoGenerate = async () => {
+    const file = fileInputRef.current?.files?.[0];
+    if (!file) return alert('請先選擇 PDF 檔案');
+    if (!accessKey) return alert('請先於上方輸入存取金鑰');
+
+    setIsGeneratingMeta(true);
+    try {
+      const f = await uploadPdfIfNeeded(file);
+      const res = await fetch('/api/generate-meta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-pwp-key': accessKey },
+        body: JSON.stringify({ f }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error || '自動生成失敗');
+      }
+      const { title, description: desc } = await res.json();
+      if (title) setLinkTitle(title);
+      if (desc) setDescription(desc);
+    } catch (error) {
+      console.error('自動生成失敗:', error);
+      alert(error instanceof Error ? error.message : '自動生成失敗');
+    } finally {
+      setIsGeneratingMeta(false);
+    }
+  };
+
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
     const file = fileInputRef.current?.files?.[0];
@@ -156,52 +221,7 @@ export default function App() {
 
     try {
       // ── Step 1: Upload PDF once, reuse path for all clients ─────────────────
-      const fileIdentifier = `${file.name}_${file.size}`;
-      const sessionCache = JSON.parse(sessionStorage.getItem(SESSION_CACHE_KEY) || '{}');
-      let cleanFileURL: string = sessionCache[fileIdentifier] || '';
-
-      if (cleanFileURL) {
-        console.log('[UPLOAD] Reusing cached path:', cleanFileURL);
-      } else {
-        console.log('[UPLOAD] Requesting R2 pre-signed URL...');
-        try {
-          const presignRes = await fetch('/api/r2-presign', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-pwp-key': accessKey },
-            body: JSON.stringify({
-              fileName: file.name,
-              contentType: file.type || 'application/pdf',
-            }),
-          });
-
-          if (presignRes.status === 401) throw new Error('存取金鑰無效或未填寫，請於上方輸入正確的存取金鑰');
-          if (!presignRes.ok) throw new Error('無法取得上傳授權');
-          const { uploadUrl, r2Key } = await presignRes.json();
-
-          console.log('[UPLOAD] Uploading directly to R2...');
-          const uploadRes = await fetch(uploadUrl, {
-            method: 'PUT',
-            body: file,
-            headers: {
-              'Content-Type': file.type || 'application/pdf',
-            },
-          });
-
-          if (!uploadRes.ok) throw new Error('檔案上傳至 R2 失敗');
-
-          // Use 'r2:' prefix so pdfBridge knows how to resolve it
-          cleanFileURL = `r2:${r2Key}`;
-          
-          sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({
-            ...sessionCache,
-            [fileIdentifier]: cleanFileURL,
-          }));
-          console.log('[UPLOAD] Success:', cleanFileURL);
-        } catch (uploadError) {
-          console.error('R2 Upload Error:', uploadError);
-          throw new Error(`R2 上傳失敗：${uploadError instanceof Error ? uploadError.message : '未知錯誤'}`);
-        }
-      }
+      const cleanFileURL = await uploadPdfIfNeeded(file);
 
       setIsUploading(false);
       setIsBulkGenerating(true);
@@ -389,6 +409,22 @@ export default function App() {
               rows={2}
               className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white resize-none"
             />
+            {/* AI auto-fill: reads the PDF and fills Title + Description above */}
+            <button
+              type="button"
+              onClick={handleAutoGenerate}
+              disabled={isGeneratingMeta}
+              className="mt-2.5 w-full flex items-center justify-center gap-2 py-2.5 px-4 border border-indigo-200 rounded-xl text-sm font-semibold text-indigo-600 bg-indigo-50/50 hover:bg-indigo-50 transition-all disabled:opacity-75 disabled:cursor-wait cursor-pointer"
+            >
+              {isGeneratingMeta ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> 依 PDF 內容生成中...</>
+              ) : (
+                <><Sparkles className="w-4 h-4" /> 自動生成標題與描述（依 PDF 內容）</>
+              )}
+            </button>
+            <p className="text-xs text-slate-400 mt-1.5 ml-1">
+              需先選擇下方的 PDF 檔案。生成後可自行修改。
+            </p>
           </div>
 
           <div>
