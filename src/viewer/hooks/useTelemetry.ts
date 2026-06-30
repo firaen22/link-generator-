@@ -426,7 +426,9 @@ export function useTelemetry({
       if (now - lastPingRef.current > 30000) {
         sendTrackingEvent('heartbeat', {
           duration_seconds: sessionDuration,
-          current_page: currentPageRef.current,
+          // Server /api/track reads `page` (not current_page) for the heartbeat
+          // 「正在閱讀中」 page note — send under that key so it isn't dropped.
+          page: currentPageRef.current,
         });
         lastPingRef.current = now;
       }
