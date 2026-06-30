@@ -157,19 +157,40 @@ const getHkTimeOfDay = (): { name: 'morning' | 'afternoon' | 'evening' | 'late n
 // real reader's telemetry is never wrongly dropped. It stops drive-by abuse and
 // blunts single-source floods; a distributed multi-IP flood is out of scope for
 // app-level code (would need a WAF or a durable global counter).
+const RL_MAX_WINDOW_MS = 3_600_000; // longest window any caller uses (per-IP / global AI caps)
+// Cost counters (ai:global, ai:ip:<ip>) live in a SEPARATE map that is never bulk-
+// cleared. They're bounded by the number of real client IPs (x-real-ip, set by the
+// platform), so a single attacker can't grow them — and they must NOT be wipeable, or
+// an attacker could spray unique session ids into the map below to force a clear and
+// reset the Gemini spend caps.
+const rlCost = new Map<string, number[]>();
+// Sprayable counters (tg:<ip>, ai:s:<session_id> — session id is request-supplied).
 const rlHits = new Map<string, number[]>();
 const allow = (key: string, max: number, windowMs: number): boolean => {
-  // Bound memory under a key-spraying flood; clearing only resets windows (fail-open).
-  if (rlHits.size > 5000) rlHits.clear();
   const now = Date.now();
+  const isCostKey = key === "ai:global" || key.startsWith("ai:ip:");
+  const store = isCostKey ? rlCost : rlHits;
+
+  // Bound memory under a key-spraying flood. Prune only entries whose newest hit is
+  // already older than the longest window (genuinely expired). If a fresh-key flood
+  // still overruns the sprayable store, clear THAT store only (fail-open) — the cost
+  // store is never cleared, so spraying can't reset the AI spend caps.
+  if (store.size > 5000) {
+    const stale = now - RL_MAX_WINDOW_MS;
+    for (const [k, ts] of store) {
+      if (ts.length === 0 || ts[ts.length - 1] <= stale) store.delete(k);
+    }
+    if (!isCostKey && store.size > 5000) store.clear();
+  }
+
   const cutoff = now - windowMs;
-  const hits = (rlHits.get(key) || []).filter((t) => t > cutoff);
+  const hits = (store.get(key) || []).filter((t) => t > cutoff);
   if (hits.length >= max) {
-    rlHits.set(key, hits);
+    store.set(key, hits);
     return false;
   }
   hits.push(now);
-  rlHits.set(key, hits);
+  store.set(key, hits);
   return true;
 };
 
@@ -714,8 +735,12 @@ app.get("/api/pdf/:file_id", async (req, res) => {
     const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || "market-update-56e1c";
     console.log(`[PDF_PROXY] Request: ${file_id.slice(0, 10)}... | Project: ${projectId}`);
 
-    // 2. Fetch with browser-like headers to avoid bot filters
+    // 2. Fetch with browser-like headers to avoid bot filters.
+    // redirect:'manual' — the vblob_ host allowlist is validated on the INITIAL url
+    // only, so following a 3xx from an allowed host to an internal target would be an
+    // SSRF bypass. Object stores serve bytes directly (200), so legit flows never 3xx.
     const response = await fetch(blobUrl, {
+      redirect: 'manual',
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
       }
@@ -769,7 +794,9 @@ app.get("/api/img/:file_id", async (req, res) => {
     const command = new GetObjectCommand({ Bucket: bucket, Key: r2Key });
     const blobUrl = await getSignedUrl(s3Client, command, { expiresIn: 60 });
 
-    const response = await fetch(blobUrl);
+    // redirect:'manual' for parity with /api/pdf — R2 presigned GETs serve bytes
+    // directly (200), so a 3xx would never be a legitimate response here.
+    const response = await fetch(blobUrl, { redirect: 'manual' });
     if (!response.ok) {
       console.error(`[IMG_PROXY] Upstream failure: ${response.status} ${response.statusText}`);
       return res.status(response.status).send("Upstream Fetch Error");
