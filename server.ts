@@ -47,6 +47,34 @@ const isAllowedUpstreamUrl = (raw: string): boolean => {
   }
 };
 
+// Blocks obvious SSRF targets for endpoints that must fetch arbitrary *public*
+// image URLs (where the strict PDF allowlist above is too narrow). Rejects
+// non-http(s), localhost, link-local metadata (169.254.x / cloud metadata), and
+// RFC1918 private ranges given as IP literals. Not a substitute for a network
+// egress policy, but stops the cheap internal-scan attempts.
+const isPublicHttpUrl = (raw: string): boolean => {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+  const host = u.hostname.toLowerCase();
+  if (host === 'localhost' || host === '0.0.0.0' || host.endsWith('.local')) return false;
+  if (host === '::1' || host === '[::1]') return false;
+  // IPv4 literal private / link-local / loopback ranges.
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 10 || a === 127) return false;
+    if (a === 169 && b === 254) return false; // link-local incl. cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 168) return false;
+  }
+  return true;
+};
+
 const fromUrlSafeBase64 = (encoded: string): string => {
   let base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
   while (base64.length % 4) base64 += '=';
@@ -122,6 +150,7 @@ const sendTelegram = async (text: string, chatId?: string): Promise<void> => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chat_id: targetChat, text: plain }),
+          signal: AbortSignal.timeout(5000),
         });
       }
     }
@@ -198,12 +227,20 @@ const allow = (key: string, max: number, windowMs: number): boolean => {
 // client IP) over the leftmost x-forwarded-for hop, which is client-supplied and
 // trivially spoofable. Still best-effort — the per-session and global AI caps below
 // do NOT rely on the IP, so an attacker who spoofs it can't bypass those.
+// Only trust proxy-set forwarding headers when actually running behind a trusted
+// proxy (Vercel sets x-real-ip to the true client IP). On a standalone `node`
+// deployment these headers are attacker-supplied and spoofable, so an attacker
+// could rotate x-real-ip to dodge the per-IP AI cap — fall back to the real
+// socket address there. (The global AI cap bounds spend regardless.)
+const TRUST_PROXY_HEADERS = !!process.env.VERCEL;
 const clientIp = (req: express.Request): string => {
-  const realIp = req.headers["x-real-ip"];
-  if (realIp) return Array.isArray(realIp) ? realIp[0] : realIp;
-  const xff = req.headers["x-forwarded-for"];
-  const raw = Array.isArray(xff) ? xff[0] : xff;
-  if (raw) return raw.split(",")[0].trim();
+  if (TRUST_PROXY_HEADERS) {
+    const realIp = req.headers["x-real-ip"];
+    if (realIp) return Array.isArray(realIp) ? realIp[0] : realIp;
+    const xff = req.headers["x-forwarded-for"];
+    const raw = Array.isArray(xff) ? xff[0] : xff;
+    if (raw) return raw.split(",")[0].trim();
+  }
   return req.socket?.remoteAddress || "unknown";
 };
 
@@ -430,6 +467,13 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
   if (!projectId) {
     console.error("Missing Project ID in env");
     return res.status(500).send("伺服器缺少 Firebase Project ID 設定");
+  }
+
+  // shortId is interpolated into the Firestore REST path; restrict it to the
+  // charset our generator produces (base36) so an encoded '/' or '..' can't
+  // reshape the upstream request path.
+  if (!/^[a-z0-9]{1,32}$/i.test(shortId)) {
+    return res.status(404).send(`找不到此連結 (${escapeHTMLAttr(shortId)})`);
   }
 
   try {
@@ -741,6 +785,7 @@ app.get("/api/pdf/:file_id", async (req, res) => {
     // SSRF bypass. Object stores serve bytes directly (200), so legit flows never 3xx.
     const response = await fetch(blobUrl, {
       redirect: 'manual',
+      signal: AbortSignal.timeout(30000), // cap slow upstreams so they can't tie up a worker
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
       }
@@ -796,7 +841,7 @@ app.get("/api/img/:file_id", async (req, res) => {
 
     // redirect:'manual' for parity with /api/pdf — R2 presigned GETs serve bytes
     // directly (200), so a 3xx would never be a legitimate response here.
-    const response = await fetch(blobUrl, { redirect: 'manual' });
+    const response = await fetch(blobUrl, { redirect: 'manual', signal: AbortSignal.timeout(30000) });
     if (!response.ok) {
       console.error(`[IMG_PROXY] Upstream failure: ${response.status} ${response.statusText}`);
       return res.status(response.status).send("Upstream Fetch Error");
@@ -867,14 +912,22 @@ app.get("/api/check-image-size", async (req, res) => {
   // 使用 resolveOgImage 解析最終的圖片網址 (自動修正 meee.com.tw 等)
   const resolvedUrl = resolveOgImage(url);
 
+  // SSRF guard: this fetches a caller-supplied URL, so block internal/private
+  // targets and never follow a redirect from a public host into an internal one.
+  if (!isPublicHttpUrl(resolvedUrl)) {
+    return res.status(400).json({ error: "不支援的圖片網址" });
+  }
+  const ssrfSafeFetch = (u: string, method: "HEAD" | "GET") =>
+    fetch(u, { method, redirect: "manual", signal: AbortSignal.timeout(8000) });
+
   try {
     // 優先使用輕量 HEAD 請求
-    let response = await fetch(resolvedUrl, { method: "HEAD" });
+    let response = await ssrfSafeFetch(resolvedUrl, "HEAD");
     let contentLength = response.headers.get("content-length");
 
     // 若 HEAD 回傳無大小，嘗試用 GET 讀取標頭
     if (!contentLength) {
-      response = await fetch(resolvedUrl, { method: "GET" });
+      response = await ssrfSafeFetch(resolvedUrl, "GET");
       contentLength = response.headers.get("content-length");
     }
 
@@ -1195,11 +1248,19 @@ app.post("/api/session-end", async (req, res) => {
 
   if (event !== 'session_end') return res.json({ status: "ignored" });
 
-  const maxReachedPage = pages_data && Object.keys(pages_data).length > 0
-    ? Math.max(...Object.keys(pages_data).map(Number))
-    : 1;
+  // pages_data is unauthenticated request input. Guard against (a) non-numeric keys
+  // (Number('x') → NaN poisoning the whole computation) and (b) a huge object whose
+  // key spread into Math.max(...) would throw a RangeError / stall the worker.
+  const pageNumbers =
+    pages_data && typeof pages_data === "object"
+      ? Object.keys(pages_data).map(Number).filter(Number.isFinite).slice(0, 5000)
+      : [];
+  const maxReachedPage = pageNumbers.length > 0 ? Math.max(...pageNumbers) : 1;
 
-  const progressPercent = total_pages ? (maxReachedPage / total_pages) * 100 : 0;
+  const totalPagesNum = Number(total_pages);
+  const progressPercent = Number.isFinite(totalPagesNum) && totalPagesNum > 0
+    ? (maxReachedPage / totalPagesNum) * 100
+    : 0;
   const isDeepRead = progressPercent >= 30;
   // Return visit = at least the second session for this file+client combo. Strong buying signal —
   // always trigger AI analysis even if this individual session was short.
@@ -1232,7 +1293,10 @@ app.post("/api/session-end", async (req, res) => {
       // Replace with real Firestore aggregate when you have enough historical data.
       const MU = 120;   // seconds — historical average session duration
       const SIGMA = 60; // seconds — historical standard deviation
-      const zScore = parseFloat(((total_duration_sec - MU) / SIGMA).toFixed(2));
+      const durationSec = Number(total_duration_sec);
+      const zScore = Number.isFinite(durationSec)
+        ? parseFloat(((durationSec - MU) / SIGMA).toFixed(2))
+        : 0;
 
       const microLoops = detectMicroLoops(nav_history || []);
       const topZoomPages = (zoom_clusters || [])
