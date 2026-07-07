@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import type React from 'react';
-import type { SessionDataMap } from '../types';
+import type { PageSessionData, SessionDataMap } from '../types';
 
 interface UseTelemetryParams {
   fileId: string;
@@ -83,6 +83,10 @@ export function useTelemetry({
   const currentPageRef = useRef(1);
   const pageEnterTimeRef = useRef(Date.now());
   const hasSentSessionEndRef = useRef(false);
+  const hasSentEngaged60Ref = useRef(false);
+  // Page the reader was on when the 60s milestone fired — carried into the
+  // session_end payload so the AI analysis can reference it.
+  const engaged60PageRef = useRef<number | null>(null);
   const scaleRef = useRef(1.0);
   const numPagesRef = useRef<number | null>(null);
 
@@ -115,6 +119,7 @@ export function useTelemetry({
 
   // Register page transitions into navHistoryRef
   useEffect(() => {
+    if (navHistoryRef.current.length >= 600) navHistoryRef.current.shift();
     navHistoryRef.current.push({ page: pageNumber, t: performance.now() });
   }, [pageNumber]);
 
@@ -136,7 +141,18 @@ export function useTelemetry({
       if (dt > 0) {
         const v = Math.abs(currentY - lastScrollYRef.current) / dt; // px/ms
         if (now - lastSampleTRef.current >= 500) {
-          scrollSamplesRef.current.push({ v: parseFloat(v.toFixed(4)), t: now });
+          const sampleV = parseFloat(v.toFixed(4));
+          if (sampleV !== 0) {
+            if (scrollSamplesRef.current.length >= 1200) {
+              let writeIndex = 0;
+              for (let readIndex = 0; readIndex < scrollSamplesRef.current.length; readIndex += 2) {
+                scrollSamplesRef.current[writeIndex] = scrollSamplesRef.current[readIndex];
+                writeIndex += 1;
+              }
+              scrollSamplesRef.current.length = writeIndex;
+            }
+            scrollSamplesRef.current.push({ v: sampleV, t: now });
+          }
           lastSampleTRef.current = now;
         }
       }
@@ -175,6 +191,7 @@ export function useTelemetry({
     let clientY = 0;
 
     if (e instanceof WheelEvent) {
+      if (!e.ctrlKey && !e.metaKey) return;
       clientX = e.clientX;
       clientY = e.clientY;
     } else if (e instanceof TouchEvent && e.touches.length >= 2) {
@@ -187,6 +204,7 @@ export function useTelemetry({
     const normX = parseFloat(((clientX - rect.left) / rect.width).toFixed(3));
     const normY = parseFloat(((clientY - rect.top) / rect.height).toFixed(3));
 
+    if (zoomClustersRef.current.length >= 300) zoomClustersRef.current.shift();
     zoomClustersRef.current.push({
       x: normX,
       y: normY,
@@ -224,15 +242,24 @@ export function useTelemetry({
     }
 
     if (navigationPathRef.current[navigationPathRef.current.length - 1] !== pageNum) {
+      if (navigationPathRef.current.length >= 2000) navigationPathRef.current.shift();
       navigationPathRef.current.push(pageNum);
     }
 
+    persistSessionSnapshot();
+  };
+
+  // Single writer for the recovery blob — also called right when engaged_60s
+  // fires, so a tab killed without pagehide can't replay the milestone.
+  const persistSessionSnapshot = () => {
     try {
       localStorage.setItem(storageKey, JSON.stringify({
         pages_data: sessionDataRef.current,
         path: navigationPathRef.current,
         startTime: startTimeRef.current,
         sessionId: sessionIdRef.current,
+        engaged60: hasSentEngaged60Ref.current,
+        engaged60Page: engaged60PageRef.current,
       }));
     } catch (e) { /* ignore quota issues */ }
   };
@@ -259,11 +286,15 @@ export function useTelemetry({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      keepalive: true,
     }).catch(err => console.error('Tracking failed', err));
 
     if (typeof window.gtag === 'function') {
       window.gtag('event', event, {
         ...data,
+        // session_id lets GA4 Explorations / BigQuery join all events of one
+        // reading session (GA's own session scope resets on tab-hide re-opens).
+        session_id: sessionIdRef.current,
         file_id: fileId,
         client_name: clientName,
         report_name: reportName,
@@ -318,9 +349,55 @@ export function useTelemetry({
         cta_click_page: ctaClickPageRef.current,
         device_type: deviceTypeRef.current,
         tab_switch_count: tabSwitchCountRef.current,
+        engaged_60s_page: engaged60PageRef.current,
       };
 
+      while (
+        JSON.stringify(payload).length > 60000 &&
+        (
+          payload.scroll_samples.length > 8 ||
+          payload.zoom_clusters.length > 8 ||
+          payload.nav_history.length > 8
+        )
+      ) {
+        payload.scroll_samples = payload.scroll_samples.filter((_, index) => index % 2 === 0);
+        payload.zoom_clusters = payload.zoom_clusters.filter((_, index) => index % 2 === 0);
+        payload.nav_history = payload.nav_history.filter((_, index) => index % 2 === 0);
+      }
+
       localStorage.removeItem(storageKey);
+
+      // Mirror a FLAT session summary to GA4 — GA is the long-term analytics
+      // store, but its event params must stay scalar, so the arrays live only
+      // in the /api/session-end payload.
+      if (typeof window.gtag === 'function') {
+        // Recovery can restore corrupt localStorage rows, so filter to finite
+        // values and clamp the ratio — GA silently drops params it can't parse.
+        const pagesViewed = Object.keys(sessionDataRef.current).map(Number).filter(Number.isFinite);
+        const maxPageReached = pagesViewed.length > 0 ? Math.max(...pagesViewed) : 0;
+        const perPage: PageSessionData[] = Object.values(sessionDataRef.current);
+        const dwellTotalMs = perPage.reduce((sum, p) => sum + (Number.isFinite(p.dwellMs) ? p.dwellMs : 0), 0);
+        const activeTotalMs = perPage.reduce((sum, p) => sum + (Number.isFinite(p.activeDwellMs) ? p.activeDwellMs : 0), 0);
+        const totalPages = numPagesRef.current;
+        window.gtag('event', 'report_session_end', {
+          session_id: sessionIdRef.current,
+          file_id: fileId,
+          client_name: clientName,
+          report_name: reportName,
+          total_duration_sec: totalActiveTime,
+          total_pages: totalPages ?? 0,
+          max_page_reached: maxPageReached,
+          progress_pct: totalPages && maxPageReached > 0 ? Math.min(100, Math.round((maxPageReached / totalPages) * 100)) : 0,
+          active_ratio_pct: dwellTotalMs > 0 ? Math.min(100, Math.max(0, Math.round((activeTotalMs / dwellTotalMs) * 100))) : 0,
+          pages_viewed: pagesViewed.length,
+          tab_switch_count: tabSwitchCountRef.current,
+          cta_click_page: ctaClickPageRef.current ?? 0,
+          device_type: deviceTypeRef.current,
+          peak_scroll_velocity: peakScrollVelocity,
+          // Fires during pagehide/visibilitychange — ask gtag for beacon transport.
+          transport_type: 'beacon',
+        });
+      }
 
       const sendViaFetch = () => {
         fetch('/api/session-end', {
@@ -367,6 +444,8 @@ export function useTelemetry({
           zoomClustersRef.current = [];
           scrollSamplesRef.current = [];
           ctaClickPageRef.current = null;
+          hasSentEngaged60Ref.current = false;
+          engaged60PageRef.current = null;
         }
       }
     };
@@ -386,6 +465,10 @@ export function useTelemetry({
         navigationPathRef.current = parsed.path || [];
         if (parsed.startTime) startTimeRef.current = parsed.startTime;
         if (parsed.sessionId) sessionIdRef.current = parsed.sessionId;
+        if (parsed.engaged60) hasSentEngaged60Ref.current = true;
+        if (Number.isInteger(parsed.engaged60Page) && parsed.engaged60Page >= 1) {
+          engaged60PageRef.current = parsed.engaged60Page;
+        }
         console.log(`[TRACK] Recovered session ${sessionIdRef.current.slice(0, 8)} from LocalStorage`);
       } catch (e) { }
     }
@@ -422,6 +505,19 @@ export function useTelemetry({
     const timer = setInterval(() => {
       const now = Date.now();
       const sessionDuration = Math.floor((now - startTimeRef.current) / 1000);
+
+      if (!hasSentEngaged60Ref.current && sessionDuration >= 60) {
+        hasSentEngaged60Ref.current = true;
+        engaged60PageRef.current = currentPageRef.current;
+        // Persist the flag NOW — waiting for the next updateSessionData would
+        // let a tab killed without pagehide recover with engaged60=false and
+        // replay the milestone (duplicate advisor notification).
+        persistSessionSnapshot();
+        sendTrackingEvent('engaged_60s', {
+          duration_seconds: sessionDuration,
+          page: currentPageRef.current,
+        });
+      }
 
       if (now - lastPingRef.current > 30000) {
         sendTrackingEvent('heartbeat', {
