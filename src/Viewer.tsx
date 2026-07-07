@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { pdfjs } from 'react-pdf';
 import { X } from 'lucide-react';
@@ -45,6 +45,17 @@ export default function Viewer() {
   // The single scrollable <main> element, shared (by reference) with telemetry
   // (scroll/zoom sampling) and navigation (swipe binding).
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Persist last read page so a returning reader resumes where they left off.
+  useEffect(() => {
+    if (numPages) {
+      try {
+        localStorage.setItem(`ag_lastpage_${fileId}`, String(pageNumber));
+      } catch (e) {
+        // ignore storage errors (quota, privacy)
+      }
+    }
+  }, [pageNumber, numPages, fileId]);
 
   // Fire the swipe hint once: the left/right swipe (usePageNavigation) is a hidden
   // gesture, so touch clients get a one-time cue. Skipped on mouse/desktop and
@@ -98,6 +109,18 @@ export default function Viewer() {
     setNumPages(loadedNumPages);
     setLoading(false);
     markOpenTracked(loadedNumPages);
+    // Restore last read page if available
+    try {
+      const stored = localStorage.getItem(`ag_lastpage_${fileId}`) || '';
+      // Strict digits-only parse: "2.9" / "2abc" must not restore.
+      const saved = /^[1-9]\d*$/.test(stored) ? Number(stored) : NaN;
+      if (Number.isInteger(saved) && saved >= 2 && saved <= loadedNumPages && saved !== pageNumber) {
+        setPageNumber(saved);
+        showToast('已回到上次閱讀位置');
+      }
+    } catch (e) {
+      // ignore storage errors (e.g., privacy mode)
+    }
     if (!showDisclaimer) maybeShowSwipeHint(loadedNumPages);
   }
 

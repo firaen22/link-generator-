@@ -6,6 +6,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import LZString from 'lz-string';
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { sanitizeSessionEnd } from "./sanitizeSessionEnd";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -129,7 +130,12 @@ const resolveOgImage = (imageParam: string): string => {
 const sendTelegram = async (text: string, chatId?: string): Promise<void> => {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const targetChat = chatId || process.env.TELEGRAM_CHAT_ID;
-  if (!token || !targetChat) return;
+  if (!token || !targetChat) {
+    // Local/dev without credentials: surface the would-be message so the
+    // notification content is verifiable without a live bot.
+    console.log(`[TELEGRAM DRY-RUN]\n${text}`);
+    return;
+  }
   try {
     const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
@@ -1092,7 +1098,10 @@ app.post("/api/track", async (req, res) => {
   } else if (event === 'click_appointment') {
     const pageNote = page != null ? `（停留喺第 ${escapeHTML(String(page))} 頁）` : '';
     text = `🔥 <b>高價值意向！</b>\n\n👤 客戶 <b>${cn}</b> 點擊咗<b>預約顧問</b>按鈕${pageNote}！\n請準備透過 WhatsApp 跟進。`;
-  } else if (event === 'heartbeat' && duration_seconds != null && duration_seconds >= 60 && duration_seconds < 90) {
+  } else if (event === 'engaged_60s') {
+    // One-shot client milestone (fired once per session at >=60s). Replaces the
+    // old heartbeat 60-90s window check, which silently missed the alert when
+    // the single qualifying heartbeat was dropped (hidden tab / network blip).
     const pageNote = page != null ? `（目前喺第 ${escapeHTML(String(page))} 頁）` : '';
     text = `🟢 <b>正在閱讀中</b>\n\n👤 客戶 <b>${cn}</b> 已閱讀 <b>${rn}</b> 超過 1 分鐘${pageNote}。\n建議：準備 WhatsApp，等客戶讀完馬上跟進。`;
   }
@@ -1212,15 +1221,45 @@ function detectMicroLoops(navHistory: Array<{ page: number; t: number }>): strin
 }
 
 // AI-Powered Session Analysis Endpoint
+// Compact per-page reader-behaviour block for the Telegram summaries. The raw
+// matrix used to be visible only inside the Gemini prompt, so a throttled or
+// failed AI run threw the behaviour data away. Inputs are sanitized numerics
+// (no escaping needed); top-5 pages keeps the message far below Telegram's
+// 4096-char limit.
+const buildBehaviorBlock = (
+  pagesData: Record<string, { dwellMs: number; activeDwellMs: number; maxScale: number; maxScrollDepthPct: number }>,
+  navigationPath: number[],
+): string => {
+  const entries = Object.entries(pagesData)
+    .map(([page, d]) => ({ page: Number(page), ...d }))
+    .filter(e => Number.isFinite(e.page) && e.dwellMs > 0)
+    .sort((a, b) => b.dwellMs - a.dwellMs)
+    .slice(0, 5);
+  if (entries.length === 0) return "";
+  const lines = entries.map(e => {
+    const totalSec = Math.round(e.dwellMs / 1000);
+    const activeSec = Math.round(e.activeDwellMs / 1000);
+    const zoom = e.maxScale > 1 ? `｜🔍 ${e.maxScale.toFixed(1)}x` : "";
+    return `• 第 ${e.page} 頁：${totalSec}s（專注 ${activeSec}s）｜深度 ${Math.round(e.maxScrollDepthPct)}%${zoom}`;
+  });
+  const path = navigationPath.length > 1
+    ? `\n🧭 <b>路徑：</b> ${navigationPath.slice(0, 20).join(' → ')}${navigationPath.length > 20 ? ' …' : ''}`
+    : "";
+  return `\n\n📖 <b>閱讀行為（最專注頁面）：</b>\n${lines.join('\n')}${path}`;
+};
+
 app.post("/api/session-end", async (req, res) => {
+  const { event, session_id, client_name, report_name, file_id } = req.body;
+  // Everything numeric/array below is unauthenticated client input. Coerce and
+  // clamp it in one place (kills NaN poisoning, oversized arrays, and HTML
+  // injection via number-shaped fields interpolated into Telegram parse_mode).
   const {
-    event, session_id, client_name, report_name, file_id,
     total_duration_sec, total_pages, pages_data, navigation_path,
     // Phase 3 deep telemetry
     nav_history, zoom_clusters, scroll_samples, peak_scroll_velocity,
     // Phase 4 enrichment
-    cta_click_page, device_type, tab_switch_count
-  } = req.body;
+    cta_click_page, device_type, tab_switch_count, engaged_60s_page
+  } = sanitizeSessionEnd(req.body);
 
   let rName = report_name || "Document";
   if (rName === "Document" && file_id) {
@@ -1285,6 +1324,7 @@ app.post("/api/session-end", async (req, res) => {
     && allow("ai:global", 40, 3_600_000);
 
   let text = "";
+  const behaviorBlock = buildBehaviorBlock(pages_data, navigation_path);
 
   if (aiAllowed) {
     try {
@@ -1319,8 +1359,21 @@ app.post("/api/session-end", async (req, res) => {
       }).join('\n');
 
       const pathSummary = navigation_path?.join(' → ') || 'unknown';
-      const skimRate = peak_scroll_velocity != null
+      // Sanitizer maps "absent" to 0, so 0 now means not captured.
+      const skimRate = peak_scroll_velocity > 0
         ? `${peak_scroll_velocity} px/ms peak`
+        : 'not captured';
+
+      // Skim profile from the full sample series (peak alone over-weights one
+      // flick). 3 px/ms matches the Visual rep-system threshold in the prompt.
+      const SKIM_THRESHOLD = 3;
+      const scrollProfile = scroll_samples.length > 0
+        ? (() => {
+            const avg = scroll_samples.reduce((sum, s) => sum + s.v, 0) / scroll_samples.length;
+            const fastCount = scroll_samples.filter((s) => s.v > SKIM_THRESHOLD).length;
+            const fastPct = Math.round((fastCount / scroll_samples.length) * 100);
+            return `avg ${avg.toFixed(2)} px/ms over ${scroll_samples.length} samples, ${fastPct}% above skim threshold (${SKIM_THRESHOLD} px/ms)`;
+          })()
         : 'not captured';
 
       // ── System prompt: behavioural finance framework, no HTML instructions ──
@@ -1344,6 +1397,7 @@ CONTEXT SIGNALS:
 - Time of day: morning/afternoon = work-context reading (often interrupted); evening = personal/family-context reading (higher emotional weight, better follow-up window); late night = high personal motivation but defer outreach until next morning.
 
 NLP REPRESENTATIONAL SYSTEM INFERENCE (from telemetry):
+- Prefer the scroll PROFILE (% of samples above skim threshold) over the single peak value — one fast flick does not make a Visual reader; a sustained >30% skim share does.
 - Visual (V): peak scroll velocity > 3 px/ms OR average page dwell < 15s AND many pages covered rapidly. Client is result-oriented and impatient — get to the point, use visual language (清晰, 前景, 一目了然).
 - Auditory Digital (Ad): long dwell (>45s) on data-heavy or compliance pages, zoom clusters on numbers/text, low scroll velocity on analytical content. Client is analytical and self-talks — provide logic, step-by-step reasoning, use language like 明白, 分析, 理解.
 - Kinesthetic (K): micro-loops present, slow deliberate navigation, long pauses between page changes, short active dwell vs total dwell ratio. Client is feeling-based — slow down, create feelings, use language like 感受, 掌握, 如釋重負.
@@ -1394,6 +1448,8 @@ SESSION DATA:
 - Micro-loops detected: ${microLoops.length > 0 ? microLoops.join('; ') : 'none'}
 - Top zoom clusters: ${zoomSummary}
 - Peak scroll velocity (skim rate): ${skimRate}
+- Scroll profile: ${scrollProfile}
+- 60s engagement milestone: ${engaged_60s_page != null ? `crossed while on page ${engaged_60s_page} — sustained early engagement there` : 'not reached (session under 60s or milestone page unknown)'}
 - CTA click page (WhatsApp appointment button): ${cta_click_page != null ? `Page ${cta_click_page} — STRONGEST INTEREST SIGNAL` : 'not clicked'}
 - Device: ${device_type || 'unknown'}
 - Tab switch count (cumulative returns to this report): ${tab_switch_count ?? 0}
@@ -1538,16 +1594,21 @@ ${cialdiniLever}
 ${vossLabel}
 
 💡 <b>NBA WhatsApp 話術：</b>
-${nba}`;
+${nba}${behaviorBlock}`;
 
     } catch (err) {
-      text = `📊 <b>閱讀結算 (基礎)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n⚠️ AI 分析失敗: ${escapeHTML((err as any).message)}`;
+      text = `📊 <b>閱讀結算 (基礎)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n⚠️ AI 分析失敗: ${escapeHTML((err as any).message)}${behaviorBlock}`;
     }
   } else if (!isDeepRead) {
-    text = `📊 <b>閱讀結算 (快速翻閱)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages} (${progressPercent.toFixed(1)}%)\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n💡 提示：客戶僅快速掃描。`;
+    text = `📊 <b>閱讀結算 (快速翻閱)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages} (${progressPercent.toFixed(1)}%)\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n💡 提示：客戶僅快速掃描。${behaviorBlock}`;
   } else {
-    text = `📊 <b>閱讀結算 (無 AI)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>頁數：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>長度：</b> ${total_duration_sec}s`;
+    text = `📊 <b>閱讀結算 (無 AI)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>頁數：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>長度：</b> ${total_duration_sec}s${behaviorBlock}`;
   }
+
+  // Telegram rejects messages over 4096 chars; the AI-generated fields are
+  // unbounded, so truncate defensively. A cut mid-tag is fine — sendTelegram
+  // already falls back to a tag-stripped plain resend on parse errors.
+  if (text.length > 3900) text = text.slice(0, 3900) + '…';
 
   // The AI path is already volume-bounded by aiAllowed; gate the cheaper summary
   // sends per IP so forged session_end requests can't spam Telegram.
