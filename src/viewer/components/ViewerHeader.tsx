@@ -57,8 +57,9 @@ export function ViewerHeader({
           {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
         </button>
 
-        {/* Zoom controls (desktop) */}
-        <div className={`hidden md:flex items-center gap-1 rounded-xl p-1 border ${isDarkMode ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'}`}>
+        {/* Zoom controls — all sizes; the % readout is desktop-only to keep the
+            header compact next to the truncating title on phones */}
+        <div className={`flex items-center gap-1 rounded-xl p-1 border ${isDarkMode ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'}`}>
           <button
             onClick={onZoomOut}
             aria-label="縮小"
@@ -67,7 +68,7 @@ export function ViewerHeader({
           >
             <ZoomOut className="w-4 h-4" />
           </button>
-          <span className={`text-xs font-medium w-12 text-center select-none ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>
+          <span className={`hidden md:block text-xs font-medium w-12 text-center select-none ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>
             {Math.round(scale * 100)}%
           </span>
           <button

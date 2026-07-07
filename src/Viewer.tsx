@@ -38,7 +38,17 @@ export default function Viewer() {
   const [pageNumber, setPageNumber] = useState(1);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  // Dark mode: restore the reader's saved choice, else follow the OS preference.
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    try {
+      const stored = localStorage.getItem('ag_darkmode');
+      if (stored === '1') return true;
+      if (stored === '0') return false;
+    } catch (e) {
+      // ignore storage errors (privacy mode)
+    }
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+  });
   const [showDisclaimer, setShowDisclaimer] = useState(true);
   const [isClosed, setIsClosed] = useState(false);
 
@@ -98,6 +108,23 @@ export default function Viewer() {
     showToast('💡 左右滑動即可翻頁');
   };
 
+  const handleToggleDark = () => {
+    const next = !isDarkMode;
+    try {
+      localStorage.setItem('ag_darkmode', next ? '1' : '0');
+    } catch (e) {
+      // ignore storage errors (quota, privacy)
+    }
+    setIsDarkMode(next);
+  };
+
+  // Direct jump (from the page counter input). Clamped; pageNumber stays owned
+  // here so telemetry keeps seeing every page change.
+  const jumpToPage = (page: number) => {
+    if (!numPages || !Number.isInteger(page)) return;
+    setPageNumber(Math.min(Math.max(page, 1), numPages));
+  };
+
   const handleManualClose = () => {
     if (handleExitRef.current) handleExitRef.current();
     setIsClosed(true);
@@ -149,7 +176,7 @@ export default function Viewer() {
         isDarkMode={isDarkMode}
         scale={scale}
         onClose={handleManualClose}
-        onToggleDark={() => setIsDarkMode(!isDarkMode)}
+        onToggleDark={handleToggleDark}
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
       />
@@ -204,8 +231,12 @@ export default function Viewer() {
         numPages={numPages}
         isFullscreen={isFullscreen}
         isDarkMode={isDarkMode}
+        scale={scale}
         onPrev={previousPage}
         onNext={nextPage}
+        onJumpToPage={jumpToPage}
+        onZoomIn={zoomIn}
+        onZoomOut={zoomOut}
         onToggleFullscreen={toggleFullscreen}
         onCtaClick={handleCtaClick}
       />
