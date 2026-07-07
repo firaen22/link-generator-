@@ -97,6 +97,10 @@ const TOOLS = [
 
 // ── Tool implementations ──────────────────────────────────────────────────────
 
+// Cap every outbound request so a hung/slow network can never wedge a tool call
+// forever (the MCP transport has no per-call timeout of its own).
+const FETCH_TIMEOUT_MS = 30_000;
+
 async function postJson(path, body) {
   const res = await fetch(`${BASE_URL}${path}`, {
     method: "POST",
@@ -105,6 +109,7 @@ async function postJson(path, body) {
       ...(API_KEY ? { "x-pwp-key": API_KEY } : {}),
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   const text = await res.text();
   if (res.status === 401) {
@@ -141,6 +146,7 @@ async function compressToJpegUnder(bytes, maxBytes = 290 * 1024) {
     out = await render(w, 45);
     if (out.length <= maxBytes) return out;
   }
+  if (!out) throw new Error("Image could not be encoded (unsupported or corrupt file).");
   return out; // best effort — return the smallest we produced
 }
 
@@ -166,6 +172,7 @@ async function uploadPreviewImage(imagePath) {
     method: "PUT",
     headers: { "Content-Type": "image/jpeg" },
     body: jpeg,
+    signal: AbortSignal.timeout(60_000),
   });
   if (!putRes.ok) {
     throw new Error(`Image upload failed (HTTP ${putRes.status}): ${(await putRes.text()).slice(0, 200)}`);
@@ -176,8 +183,15 @@ async function uploadPreviewImage(imagePath) {
 async function createShareLink(args) {
   const { pdfPath, clients, reportName, title, description, previewImage, previewImagePath, advisorWhatsapp } = args;
   if (!pdfPath || typeof pdfPath !== "string") throw new Error("pdfPath is required.");
-  const names = Array.isArray(clients) ? clients.map((c) => String(c).trim()).filter(Boolean) : [];
-  if (names.length === 0) throw new Error("At least one client name is required.");
+  if (!Array.isArray(clients)) throw new Error("clients must be an array of names.");
+  if (clients.length > 100) throw new Error("Too many clients (max 100 per call).");
+  // Only accept string names — a number/null/object would otherwise be coerced into
+  // a bogus name like "null" or "[object Object]".
+  const names = clients
+    .filter((c) => typeof c === "string")
+    .map((c) => c.trim())
+    .filter(Boolean);
+  if (names.length === 0) throw new Error("At least one non-empty client name (string) is required.");
 
   let bytes;
   try {
@@ -197,6 +211,7 @@ async function createShareLink(args) {
     method: "PUT",
     headers: { "Content-Type": "application/pdf" },
     body: bytes,
+    signal: AbortSignal.timeout(120_000),
   });
   if (!putRes.ok) {
     throw new Error(`R2 upload failed (HTTP ${putRes.status}): ${(await putRes.text()).slice(0, 200)}`);
@@ -256,8 +271,10 @@ async function handle(msg) {
   const { id, method, params } = msg;
 
   if (method === "initialize") {
+    // Advertise the version we actually implement rather than blindly echoing the
+    // client's requested version (which we may not support).
     reply(id, {
-      protocolVersion: params?.protocolVersion || DEFAULT_PROTOCOL,
+      protocolVersion: DEFAULT_PROTOCOL,
       capabilities: { tools: {} },
       serverInfo: SERVER_INFO,
     });
