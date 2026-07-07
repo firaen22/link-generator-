@@ -83,7 +83,7 @@ export function PdfStage({
             請稍後再試，或直接聯絡您的顧問。
           </p>
           {loadError && (
-            <div className="text-[10px] text-red-500 font-mono bg-red-50/50 px-3 py-2 rounded-lg border border-red-100 max-w-sm mb-4">
+            <div className={`text-xs text-red-500 font-mono px-3 py-2 rounded-lg border max-w-sm mb-4 ${isDarkMode ? 'bg-red-500/10 border-red-500/20' : 'bg-red-50/50 border-red-100'}`}>
               <b>載入錯誤：</b> {loadError}
             </div>
           )}
@@ -113,7 +113,7 @@ export function PdfStage({
               onLoadSuccess={(page) => setAspectRatio(page.originalWidth / page.originalHeight)}
               renderTextLayer={true}
               renderAnnotationLayer={true}
-              className={`rounded-md bg-white border ${isDarkMode ? 'border-white/10 ring-1 ring-black/5 brightness-[0.97]' : 'border-slate-200'} shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_rgba(0,0,0,0.08)]`}
+              className={`rounded-md bg-white border ${isDarkMode ? 'border-white/10 ring-1 ring-black/5 brightness-[0.87] contrast-[1.02]' : 'border-slate-200'} shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_rgba(0,0,0,0.08)]`}
               loading={null}
             />
           </motion.div>
