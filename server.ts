@@ -6,7 +6,11 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import LZString from 'lz-string';
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { sanitizeSessionEnd } from "./sanitizeSessionEnd";
+// The .js extension is required: Vercel's Node runtime compiles each TS file
+// separately and keeps import specifiers as-is, so an extensionless relative
+// import crashes the whole function at load (ERR_MODULE_NOT_FOUND) even though
+// tsx resolves it fine in local dev.
+import { sanitizeSessionEnd } from "./sanitizeSessionEnd.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1619,6 +1623,26 @@ ${nba}${behaviorBlock}`;
   }
 
   res.json({ status: "ok" });
+});
+
+// Unmatched /api/* requests: clean JSON 404, or 405 (with Allow header) when the
+// path exists under a different method. Registered after every /api route so it
+// only sees fall-throughs; non-/api paths keep Express's default handling (and
+// the SPA/static handlers added below for local runs).
+app.use((req, res, next) => {
+  if (!req.path.startsWith("/api/")) return next();
+  const allowed = new Set<string>();
+  for (const layer of (app as any)._router.stack) {
+    if (layer.route && layer.regexp?.test(req.path)) {
+      Object.keys(layer.route.methods).forEach((m) => allowed.add(m.toUpperCase()));
+    }
+  }
+  allowed.delete("_ALL");
+  if (allowed.size > 0) {
+    res.set("Allow", [...allowed].join(", "));
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+  res.status(404).json({ error: "Not found" });
 });
 
 // For Vercel Serverless Functions
