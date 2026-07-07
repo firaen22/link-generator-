@@ -26,6 +26,8 @@ export function PdfStage({
   const [progress, setProgress] = useState<number | null>(null);
   // Page aspect ratio (width / height), learned from the first rendered page.
   const [aspectRatio, setAspectRatio] = useState<number | null>(null);
+  // Local copy of the page count, needed to bound the next-page prefetch.
+  const [numPages, setNumPages] = useState<number | null>(null);
 
   // Fit the whole page inside the viewport: bound by width on phones, by height
   // on desktop/landscape. `scale` then multiplies this so zoom stays an override.
@@ -52,7 +54,10 @@ export function PdfStage({
   return (
     <Document
       file={pdfUrl}
-      onLoadSuccess={({ numPages }) => onLoadSuccess(numPages)}
+      onLoadSuccess={({ numPages: loadedNumPages }) => {
+        setNumPages(loadedNumPages);
+        onLoadSuccess(loadedNumPages);
+      }}
       onLoadProgress={({ loaded, total }) => {
         if (total) setProgress(Math.min(100, Math.round((loaded / total) * 100)));
       }}
@@ -113,6 +118,21 @@ export function PdfStage({
             />
           </motion.div>
         </AnimatePresence>
+
+        {/* Pre-rasterize the next page offscreen so a page turn is instant.
+            Hidden + aria-hidden; no text/annotation layers (pixels only). */}
+        {numPages !== null && pageNumber < numPages && (
+          <div className="hidden" aria-hidden="true">
+            <Page
+              pageNumber={pageNumber + 1}
+              scale={scale}
+              width={fitWidth}
+              renderTextLayer={false}
+              renderAnnotationLayer={false}
+              loading={null}
+            />
+          </div>
+        )}
 
         {/* Tiled watermark — sibling of the animating page, so it isn't repainted on flip */}
         <div

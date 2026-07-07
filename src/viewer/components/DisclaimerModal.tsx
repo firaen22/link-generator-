@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import type React from 'react';
 import { motion } from 'motion/react';
 import { ShieldCheck, AlertCircle, ChevronDown } from 'lucide-react';
 
@@ -12,12 +13,36 @@ import { ShieldCheck, AlertCircle, ChevronDown } from 'lucide-react';
  */
 export function DisclaimerModal({ isDarkMode, onDismiss }: { isDarkMode: boolean; onDismiss: () => void }) {
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { confirmRef.current?.focus(); }, []);
+
+  // Focus trap: Tab cycles within the dialog. Esc deliberately does NOT dismiss —
+  // this is a consent gate, so leaving requires the explicit confirm button.
+  const handleTrapKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Tab') return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusables = dialog.querySelectorAll<HTMLElement>(
+      'button, summary, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
       <motion.div
+        ref={dialogRef}
+        onKeyDown={handleTrapKeyDown}
         role="dialog"
         aria-modal="true"
         aria-labelledby="disclaimer-title"
