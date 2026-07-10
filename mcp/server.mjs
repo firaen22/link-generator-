@@ -24,8 +24,14 @@ import sharp from "sharp";
 
 const BASE_URL = (process.env.PWP_BASE_URL || "https://share.pmd-hk.com").replace(/\/$/, "");
 const API_KEY = process.env.PWP_API_KEY || "";
-const SERVER_INFO = { name: "pwp-links", version: "1.2.0" };
+const SERVER_INFO = { name: "pwp-links", version: "1.3.0" };
+// Newest first; we echo the client's requested version when we support it.
+// Elicitation (server-initiated user forms) entered the spec in 2025-06-18.
+const SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const DEFAULT_PROTOCOL = "2024-11-05";
+
+// Set during initialize: whether the connected client can show elicitation forms.
+let clientSupportsElicitation = false;
 
 const TOOLS = [
   {
@@ -36,7 +42,9 @@ const TOOLS = [
       "card in WhatsApp. For the card image, prefer previewImagePath (a local image file) — it is " +
       "auto-compressed to <300KB, uploaded, and hosted for you. Alternatively pass previewImage as an " +
       "already-public HTTPS URL. If title or description is omitted, it is auto-generated from the " +
-      "PDF's actual content; reportName defaults to the PDF filename if omitted.",
+      "PDF's actual content; reportName defaults to the PDF filename if omitted. Before creating links, " +
+      "any omitted optional fields are offered to the user in a form (each can be left blank to skip) — " +
+      "so you may call this with just pdfPath and clients and let the user decide the rest.",
     inputSchema: {
       type: "object",
       properties: {
@@ -180,18 +188,90 @@ async function uploadPreviewImage(imagePath) {
   return `${BASE_URL}${publicPath}`;
 }
 
-async function createShareLink(args) {
-  const { pdfPath, clients, reportName, title, description, previewImage, previewImagePath, advisorWhatsapp } = args;
-  if (!pdfPath || typeof pdfPath !== "string") throw new Error("pdfPath is required.");
-  if (!Array.isArray(clients)) throw new Error("clients must be an array of names.");
-  if (clients.length > 100) throw new Error("Too many clients (max 100 per call).");
+// Fields the user is offered a chance to fill in (or skip) before link creation.
+// All optional: blank/skipped fields fall back to the same defaults as before.
+const ELICIT_FIELDS = {
+  reportName: {
+    type: "string",
+    title: "Report name",
+    description: "Internal label used in tracking notifications. Leave blank to use the PDF filename.",
+  },
+  title: {
+    type: "string",
+    title: "Preview card headline",
+    description: "Headline on the WhatsApp preview card. Leave blank to auto-generate from the PDF.",
+  },
+  description: {
+    type: "string",
+    title: "Preview card sub-text",
+    description: "Sub-text on the WhatsApp preview card. Leave blank to auto-generate from the PDF.",
+  },
+  previewImagePath: {
+    type: "string",
+    title: "Preview image (local path)",
+    description: "Absolute path to a local image for the preview card. Leave blank for none/default.",
+  },
+  advisorWhatsapp: {
+    type: "string",
+    title: "Advisor WhatsApp number",
+    description: "For the in-report 預約顧問 CTA. Leave blank to omit the CTA.",
+  },
+};
+
+// Show the user every optional field not already supplied, and let them fill in
+// or skip each one. Returns the merged args. Decline = keep defaults; cancel =
+// abort the tool call. No-op when the client can't render elicitation forms.
+async function elicitMissingFields(args) {
+  if (!clientSupportsElicitation) return args;
+  const missing = Object.keys(ELICIT_FIELDS).filter((k) => !args[k]);
+  // previewImage (hosted URL) also satisfies the preview-image slot.
+  if (args.previewImage) {
+    const i = missing.indexOf("previewImagePath");
+    if (i >= 0) missing.splice(i, 1);
+  }
+  if (missing.length === 0) return args;
+
+  const properties = Object.fromEntries(missing.map((k) => [k, ELICIT_FIELDS[k]]));
+  let res;
+  try {
+    res = await request("elicitation/create", {
+      message:
+        "Optional details for this share link — fill in any you want, leave the rest blank to skip " +
+        "(blank fields are auto-generated or omitted).",
+      requestedSchema: { type: "object", properties, required: [] },
+    });
+  } catch (e) {
+    // A client that advertised elicitation but fails/times out shouldn't block
+    // link creation — fall back to defaults, loudly.
+    console.error(`[create_share_link] elicitation unavailable, using defaults: ${e.message}`);
+    return args;
+  }
+  if (res?.action === "cancel") throw new Error("Link creation cancelled by user.");
+  if (res?.action !== "accept" || !res.content) return args; // declined → defaults
+
+  const merged = { ...args };
+  for (const k of missing) {
+    const v = res.content[k];
+    if (typeof v === "string" && v.trim()) merged[k] = v.trim();
+  }
+  return merged;
+}
+
+async function createShareLink(rawArgs) {
+  if (!rawArgs.pdfPath || typeof rawArgs.pdfPath !== "string") throw new Error("pdfPath is required.");
+  if (!Array.isArray(rawArgs.clients)) throw new Error("clients must be an array of names.");
+  if (rawArgs.clients.length > 100) throw new Error("Too many clients (max 100 per call).");
   // Only accept string names — a number/null/object would otherwise be coerced into
   // a bogus name like "null" or "[object Object]".
-  const names = clients
+  const names = rawArgs.clients
     .filter((c) => typeof c === "string")
     .map((c) => c.trim())
     .filter(Boolean);
   if (names.length === 0) throw new Error("At least one non-empty client name (string) is required.");
+
+  // Before any upload work, offer the user the full set of optional fields.
+  const { pdfPath, reportName, title, description, previewImage, previewImagePath, advisorWhatsapp } =
+    await elicitMissingFields(rawArgs);
 
   let bytes;
   try {
@@ -267,14 +347,47 @@ function send(msg) {
 const reply = (id, result) => send({ jsonrpc: "2.0", id, result });
 const replyError = (id, code, message) => send({ jsonrpc: "2.0", id, error: { code, message } });
 
+// ── Server → client requests (used for elicitation) ──────────────────────────
+// Elicitation waits on a human filling a form, so the timeout is generous.
+const ELICIT_TIMEOUT_MS = 10 * 60 * 1000;
+let nextOutboundId = 1;
+const pendingOutbound = new Map(); // id → { resolve, reject, timer }
+
+function request(method, params, timeoutMs = ELICIT_TIMEOUT_MS) {
+  const id = `srv-${nextOutboundId++}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingOutbound.delete(id);
+      reject(new Error(`${method} timed out after ${timeoutMs / 1000}s (no response from client).`));
+    }, timeoutMs);
+    pendingOutbound.set(id, { resolve, reject, timer });
+    send({ jsonrpc: "2.0", id, method, params });
+  });
+}
+
+// Route a JSON-RPC *response* (has id, no method) back to its awaiting request.
+function handleResponse(msg) {
+  const entry = pendingOutbound.get(msg.id);
+  if (!entry) return;
+  pendingOutbound.delete(msg.id);
+  clearTimeout(entry.timer);
+  if (msg.error) entry.reject(new Error(msg.error.message || `Client error ${msg.error.code}`));
+  else entry.resolve(msg.result);
+}
+
 async function handle(msg) {
   const { id, method, params } = msg;
 
+  // Responses to our own outbound requests carry no method.
+  if (method === undefined && id !== undefined) return handleResponse(msg);
+
   if (method === "initialize") {
-    // Advertise the version we actually implement rather than blindly echoing the
-    // client's requested version (which we may not support).
+    // Echo the client's requested version when we support it, else our default.
+    const requested = params?.protocolVersion;
+    const negotiated = SUPPORTED_PROTOCOLS.includes(requested) ? requested : DEFAULT_PROTOCOL;
+    clientSupportsElicitation = Boolean(params?.capabilities?.elicitation);
     reply(id, {
-      protocolVersion: DEFAULT_PROTOCOL,
+      protocolVersion: negotiated,
       capabilities: { tools: {} },
       serverInfo: SERVER_INFO,
     });
