@@ -212,7 +212,11 @@ const RL_MAX_WINDOW_MS = 3_600_000; // longest window any caller uses (per-IP / 
 const rlCost = new Map<string, number[]>();
 // Sprayable counters (tg:<ip>, ai:s:<session_id> — session id is request-supplied).
 const rlHits = new Map<string, number[]>();
-const allow = (key: string, max: number, windowMs: number): boolean => {
+// commit=false peeks whether a call would be allowed without consuming budget — used
+// where multiple caps must ALL pass before any of them is charged (e.g. jargon's
+// per-IP + global caps must not burn a user's per-IP budget on a request that the
+// global cap will reject anyway).
+const allow = (key: string, max: number, windowMs: number, commit = true): boolean => {
   const now = Date.now();
   const isCostKey = key === "ai:global" || key.startsWith("ai:ip:") || key === "jg:global" || key.startsWith("jg:ip:");
   const store = isCostKey ? rlCost : rlHits;
@@ -232,9 +236,10 @@ const allow = (key: string, max: number, windowMs: number): boolean => {
   const cutoff = now - windowMs;
   const hits = (store.get(key) || []).filter((t) => t > cutoff);
   if (hits.length >= max) {
-    store.set(key, hits);
+    if (commit) store.set(key, hits);
     return false;
   }
+  if (!commit) return true;
   hits.push(now);
   store.set(key, hits);
   return true;
@@ -1212,9 +1217,11 @@ ${textCandidate}
     }
 
     const ip = clientIp(req);
-    if (!allow(`jg:ip:${ip}`, 40, 3_600_000) || !allow("jg:global", 200, 3_600_000)) {
+    if (!allow(`jg:ip:${ip}`, 40, 3_600_000, false) || !allow("jg:global", 200, 3_600_000, false)) {
       return res.status(429).json({ success: false, error: "Rate limited" });
     }
+    allow(`jg:ip:${ip}`, 40, 3_600_000);
+    allow("jg:global", 200, 3_600_000);
 
     const startIndex = Math.floor(Date.now() / 60_000) % apiKeys.length;
     for (let i = 0; i < apiKeys.length; i++) {

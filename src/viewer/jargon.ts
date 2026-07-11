@@ -24,8 +24,8 @@ export function jargonImageDims(w: number, h: number, maxDim = JARGON_IMAGE_MAX_
     const safeMaxDim = Number.isFinite(maxDim) && maxDim > 0 ? maxDim : JARGON_IMAGE_MAX_DIM;
     const scale = Math.min(1, safeMaxDim / Math.max(w, h));
     return {
-        width: Math.max(1, Math.round(w * scale)),
-        height: Math.max(1, Math.round(h * scale)),
+        width: Math.max(1, Math.floor(w * scale)),
+        height: Math.max(1, Math.floor(h * scale)),
     };
 }
 
