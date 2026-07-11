@@ -1026,8 +1026,10 @@ app.post("/api/generate-meta", async (req, res) => {
             ? {}
             : { generationConfig: { responseMimeType: "application/json" } as any }),
         });
+        const apiCall = model.generateContent([prompt, pdfPart]);
+        apiCall.catch(() => {}); // avoid unhandled rejection if the timeout wins the race
         const result = (await Promise.race([
-          model.generateContent([prompt, pdfPart]),
+          apiCall,
           new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 20000)),
         ])) as any;
         const raw = result.response.text().replace(/^```json|```$/gm, "").trim();
@@ -1495,8 +1497,10 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
               } as any,
             });
 
+            const apiCall = model.generateContent(systemPrompt + '\n\n' + userPrompt);
+            apiCall.catch(() => {}); // avoid unhandled rejection if the timeout wins the race
             const result = await Promise.race([
-              model.generateContent(systemPrompt + '\n\n' + userPrompt),
+              apiCall,
               new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 25000))
             ]) as any;
 
@@ -1528,8 +1532,10 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
 
               const fallbackPrompt = `${systemPrompt}\n\n${userPrompt}\n\nRespond with ONLY a valid JSON object matching this schema: ${JSON.stringify(RESPONSE_SCHEMA)}`;
 
+              const apiCall = model.generateContent(fallbackPrompt);
+              apiCall.catch(() => {}); // avoid unhandled rejection if the timeout wins the race
               const result = await Promise.race([
-                model.generateContent(fallbackPrompt),
+                apiCall,
                 new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 15000))
               ]) as any;
 
