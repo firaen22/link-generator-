@@ -18,9 +18,11 @@ import { usePdfZoom } from './viewer/hooks/usePdfZoom';
 import { useContainerWidth } from './viewer/hooks/useContainerWidth';
 import { useFitHeight } from './viewer/hooks/useFitHeight';
 import { useToast } from './viewer/hooks/useToast';
+import { useJargon } from './viewer/hooks/useJargon';
 import { ViewerHeader } from './viewer/components/ViewerHeader';
 import { PdfStage } from './viewer/components/PdfStage';
 import { BottomNavBar } from './viewer/components/BottomNavBar';
+import { JargonCard } from './viewer/components/JargonCard';
 import { DisclaimerModal } from './viewer/components/DisclaimerModal';
 import { SafeExitScreen } from './viewer/components/SafeExitScreen';
 import { Toast } from './viewer/components/Toast';
@@ -97,6 +99,12 @@ export default function Viewer() {
   });
 
   const { isWindowFocused } = useContentGuard({ sendTrackingEvent, numPages, pageNumber, showToast });
+  const jargonEnabled = !showDisclaimer && !isClosed && !loadError;
+  const jargon = useJargon({ enabled: jargonEnabled, pdfUrl, fileId });
+
+  useEffect(() => {
+    jargon.onPageChange();
+  }, [pageNumber, jargon.onPageChange]);
 
   // Shown after the disclaimer is dismissed and the PDF has loaded — whichever
   // happens last calls this; the ref guard keeps it to a single appearance.
@@ -207,6 +215,7 @@ export default function Viewer() {
               console.error('Error loading PDF:', error);
               setLoadError(error.message);
             }}
+            onPageText={jargonEnabled ? jargon.onPageText : undefined}
           />
 
           {numPages && (
@@ -240,6 +249,10 @@ export default function Viewer() {
         onToggleFullscreen={toggleFullscreen}
         onCtaClick={handleCtaClick}
       />
+
+      {numPages !== null && !showDisclaimer && (
+        <JargonCard terms={jargon.terms} isDarkMode={isDarkMode} visible={isWindowFocused || isFullscreen} />
+      )}
 
       <Toast message={toast} isDarkMode={isDarkMode} />
     </div>

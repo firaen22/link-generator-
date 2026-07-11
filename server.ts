@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from "express";
+import crypto from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -11,6 +12,12 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 // import crashes the whole function at load (ERR_MODULE_NOT_FOUND) even though
 // tsx resolves it fine in local dev.
 import { sanitizeSessionEnd } from "./sanitizeSessionEnd.js";
+import {
+  JARGON_IMAGE_MAX_B64_LEN,
+  JARGON_MAX_TEXT_LEN,
+  JARGON_MIN_TEXT_LEN,
+  type JargonTerm,
+} from "./src/viewer/jargon.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -197,17 +204,21 @@ const getHkTimeOfDay = (): { name: 'morning' | 'afternoon' | 'evening' | 'late n
 // blunts single-source floods; a distributed multi-IP flood is out of scope for
 // app-level code (would need a WAF or a durable global counter).
 const RL_MAX_WINDOW_MS = 3_600_000; // longest window any caller uses (per-IP / global AI caps)
-// Cost counters (ai:global, ai:ip:<ip>) live in a SEPARATE map that is never bulk-
+// Cost counters (ai:global, ai:ip:<ip>, jg:global, jg:ip:<ip>) live in a SEPARATE map that is never bulk-
 // cleared. They're bounded by the number of real client IPs (x-real-ip, set by the
 // platform), so a single attacker can't grow them — and they must NOT be wipeable, or
 // an attacker could spray unique session ids into the map below to force a clear and
-// reset the Gemini spend caps.
+// reset the Gemini spend caps for telemetry or jargon explanation.
 const rlCost = new Map<string, number[]>();
 // Sprayable counters (tg:<ip>, ai:s:<session_id> — session id is request-supplied).
 const rlHits = new Map<string, number[]>();
-const allow = (key: string, max: number, windowMs: number): boolean => {
+// commit=false peeks whether a call would be allowed without consuming budget — used
+// where multiple caps must ALL pass before any of them is charged (e.g. jargon's
+// per-IP + global caps must not burn a user's per-IP budget on a request that the
+// global cap will reject anyway).
+const allow = (key: string, max: number, windowMs: number, commit = true): boolean => {
   const now = Date.now();
-  const isCostKey = key === "ai:global" || key.startsWith("ai:ip:");
+  const isCostKey = key === "ai:global" || key.startsWith("ai:ip:") || key === "jg:global" || key.startsWith("jg:ip:");
   const store = isCostKey ? rlCost : rlHits;
 
   // Bound memory under a key-spraying flood. Prune only entries whose newest hit is
@@ -225,9 +236,10 @@ const allow = (key: string, max: number, windowMs: number): boolean => {
   const cutoff = now - windowMs;
   const hits = (store.get(key) || []).filter((t) => t > cutoff);
   if (hits.length >= max) {
-    store.set(key, hits);
+    if (commit) store.set(key, hits);
     return false;
   }
+  if (!commit) return true;
   hits.push(now);
   store.set(key, hits);
   return true;
@@ -1048,6 +1060,215 @@ app.post("/api/generate-meta", async (req, res) => {
   }
 
   return res.status(502).json({ error: "自動生成失敗，請稍後再試或手動填寫" });
+});
+
+const JARGON_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const JARGON_CACHE_MAX = 500;
+const jargonCache = new Map<string, { terms: JargonTerm[]; at: number }>();
+
+const sha256Hex = (value: string): string => crypto.createHash("sha256").update(value).digest("hex");
+
+const isValidJargonImageBase64 = (value: unknown): value is string => {
+  if (typeof value !== "string") return false;
+  if (value.length < 100 || value.length > JARGON_IMAGE_MAX_B64_LEN) return false;
+  if (value.length % 4 !== 0) return false;
+  if (!/^[A-Za-z0-9+/=]+$/.test(value)) return false;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
+  return true;
+};
+
+const hasJpegMagic = (base64: string): boolean => {
+  try {
+    const bytes = Buffer.from(base64.slice(0, 12), "base64");
+    return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  } catch {
+    return false;
+  }
+};
+
+const sanitizeJargonTerms = (terms: unknown): JargonTerm[] => {
+  if (!Array.isArray(terms)) return [];
+  return terms
+    .filter((entry): entry is { term: unknown; explanation: unknown } => !!entry && typeof entry === "object")
+    .map((entry) => ({
+      term: typeof entry.term === "string" ? entry.term.trim().slice(0, 80) : "",
+      explanation: typeof entry.explanation === "string" ? entry.explanation.trim().slice(0, 240) : "",
+    }))
+    .filter((entry) => entry.term.length > 0 && entry.explanation.length > 0)
+    .slice(0, 4);
+};
+
+const setJargonCache = (key: string, terms: JargonTerm[]): void => {
+  if (terms.length === 0) return;
+  if (!jargonCache.has(key) && jargonCache.size >= JARGON_CACHE_MAX) {
+    let oldestKey: string | null = null;
+    let oldestAt = Infinity;
+    for (const [entryKey, entry] of jargonCache) {
+      if (entry.at < oldestAt) {
+        oldestAt = entry.at;
+        oldestKey = entryKey;
+      }
+    }
+    if (oldestKey) jargonCache.delete(oldestKey);
+  }
+  jargonCache.set(key, { terms, at: Date.now() });
+};
+
+const readJargonStore = async (key: string): Promise<JargonTerm[] | null> => {
+  try {
+    const command = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME || "reports", Key: key });
+    const response = await s3Client.send(command);
+    const body = response.Body as { transformToString?: () => Promise<string> } | undefined;
+    const raw = body?.transformToString ? await body.transformToString() : "";
+    const parsed = JSON.parse(raw);
+    const terms = sanitizeJargonTerms(parsed?.terms);
+    return terms.length > 0 ? terms : null;
+  } catch (err: any) {
+    console.warn(`[JARGON] store read failed: ${(err?.message || "").slice(0, 60)}`);
+    return null;
+  }
+};
+
+const writeJargonStore = async (key: string, terms: JargonTerm[]): Promise<void> => {
+  try {
+    const command = new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET_NAME || "reports",
+      Key: key,
+      Body: JSON.stringify({ terms: sanitizeJargonTerms(terms), at: Date.now() }),
+      ContentType: "application/json",
+    });
+    await s3Client.send(command);
+  } catch (err: any) {
+    console.warn(`[JARGON] store write failed: ${(err?.message || "").slice(0, 60)}`);
+  }
+};
+
+app.post("/api/explain-jargon", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+
+  try {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const textCandidate = typeof body.text === "string" ? body.text.trim().slice(0, JARGON_MAX_TEXT_LEN) : "";
+    let pathType: "text" | "image" | null = null;
+    let basis = "";
+    let prompt = "";
+    let imageBase64 = "";
+
+    if (textCandidate.length >= JARGON_MIN_TEXT_LEN) {
+      pathType = "text";
+      basis = textCandidate;
+      prompt = `你是一場財經簡報的即時助理。請從下方的頁面文字中，找出最多 4 個完全沒有金融背景的客戶可能不懂的金融專業術語（jargon）。
+每個術語請用繁體中文寫一段解說：
+- 用完全沒有金融背景的人一看就懂的日常語言，絕不能用術語解釋術語，也不能只是換句話說
+- 在適當情況下，用一個具體數字、比較或生活化比喻讓概念落地（例如「1 個基點 = 0.01%，50 個基點就是半個百分點」）
+- 最多 50 個中文字
+術語本身保留頁面上的原文寫法，最重要的術語放最前面。
+只挑真正的專業術語（如 存續期、基點、EBITDA 利潤率）——跳過常見詞彙、公司名稱和數字。
+如果沒有術語，回傳空清單。
+頁面文字：
+${textCandidate}
+只輸出 JSON：{ "terms": [ { "term": "...", "explanation": "..." } ] }`;
+    } else if (isValidJargonImageBase64(body.imageBase64)) {
+      if (!hasJpegMagic(body.imageBase64)) {
+        return res.status(400).json({ success: false, error: "Missing text or image" });
+      }
+      pathType = "image";
+      imageBase64 = body.imageBase64;
+      basis = imageBase64;
+      prompt = `你是一場財經簡報的即時助理。請先閱讀這張頁面圖片中所有可見文字，再從中找出最多 4 個完全沒有金融背景的客戶可能不懂的金融專業術語（jargon）。
+每個術語請用繁體中文寫一段解說：
+- 用完全沒有金融背景的人一看就懂的日常語言，絕不能用術語解釋術語，也不能只是換句話說
+- 在適當情況下，用一個具體數字、比較或生活化比喻讓概念落地（例如「1 個基點 = 0.01%，50 個基點就是半個百分點」）
+- 最多 50 個中文字
+術語本身保留頁面上的原文寫法，最重要的術語放最前面。
+只挑真正的專業術語（如 存續期、基點、EBITDA 利潤率）——跳過常見詞彙、公司名稱和數字。
+如果沒有術語，回傳空清單。
+查找位置：術語通常藏在較長的詞組裡——基金名稱、標題、欄位、註腳。
+例如基金名稱「美元貨幣市場基金 A類別（累積）」就包含術語 貨幣市場基金、A類別、累積。
+絕對不要挑：基金/代號代碼（如 B12、X03#）、頁面行數、百分比或日期。
+只輸出 JSON：{ "terms": [ { "term": "...", "explanation": "..." } ] }`;
+    }
+
+    if (!pathType) {
+      return res.status(400).json({ success: false, error: "Missing text or image" });
+    }
+
+    if (apiKeys.length === 0) {
+      return res.status(503).json({ success: false, error: "AI 未設定" });
+    }
+
+    const fileId = typeof body.fileId === "string" ? body.fileId.trim().slice(0, 200) : "";
+    const page = Number.isInteger(body.page) && body.page >= 1 ? body.page : 0;
+    const contentHash = sha256Hex(basis);
+    const cacheKey = `jg:${fileId || "-"}#${page || 0}#${pathType}#${contentHash}`;
+    const storeKey = fileId && page
+      ? `jargon/${sha256Hex(`${fileId}#${page}#${pathType}#${contentHash}`)}.json`
+      : "";
+    const cached = jargonCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < JARGON_CACHE_TTL_MS) {
+      return res.json({ success: true, terms: cached.terms, source: "cache" });
+    }
+    if (cached) jargonCache.delete(cacheKey);
+
+    if (storeKey) {
+      const stored = await readJargonStore(storeKey);
+      if (stored) {
+        setJargonCache(cacheKey, stored);
+        return res.json({ success: true, terms: stored, source: "store" });
+      }
+    }
+
+    const ip = clientIp(req);
+    if (!allow(`jg:ip:${ip}`, 40, 3_600_000, false) || !allow("jg:global", 200, 3_600_000, false)) {
+      return res.status(429).json({ success: false, error: "Rate limited" });
+    }
+    allow(`jg:ip:${ip}`, 40, 3_600_000);
+    allow("jg:global", 200, 3_600_000);
+
+    const startIndex = Math.floor(Date.now() / 60_000) % apiKeys.length;
+    for (let i = 0; i < apiKeys.length; i++) {
+      const key = apiKeys[(startIndex + i) % apiKeys.length];
+      for (const modelName of STANDARD_MODELS) {
+        try {
+          const genAI = new GoogleGenerativeAI(key);
+          const model = genAI.getGenerativeModel({
+            model: modelName,
+            ...(modelName.startsWith("gemma")
+              ? {}
+              : { generationConfig: { responseMimeType: "application/json" } as any }),
+          });
+          const parts = pathType === "image"
+            ? [prompt, { inlineData: { mimeType: "image/jpeg", data: imageBase64 } }]
+            : prompt;
+          // No-op handler: if the 20s race times out first, a later rejection
+          // from the still-running call must not become an unhandled promise
+          // rejection (fatal on Node 15+, would kill the serverless instance).
+          const apiCall = model.generateContent(parts);
+          apiCall.catch(() => {});
+          const result = (await Promise.race([
+            apiCall,
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 20000)),
+          ])) as any;
+          const raw = result.response.text().replace(/^```json|```$/gm, "").trim();
+          const parsed = JSON.parse(raw);
+          const terms = sanitizeJargonTerms(parsed?.terms);
+          console.log(`[JARGON] Success | ${modelName}`);
+          if (terms.length > 0) {
+            setJargonCache(cacheKey, terms);
+            if (storeKey) await writeJargonStore(storeKey, terms);
+          }
+          return res.json({ success: true, terms });
+        } catch (err: any) {
+          console.warn(`[JARGON WARN] ${modelName}: ${(err.message || "").slice(0, 60)}`);
+        }
+      }
+    }
+
+    return res.status(502).json({ success: false, error: "AI processing failed" });
+  } catch (err: any) {
+    console.error(`[JARGON] Failed: ${(err?.message || "").slice(0, 120)}`);
+    if (!res.headersSent) return res.status(500).json({ success: false, error: "Failed to process" });
+  }
 });
 
 

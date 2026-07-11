@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Document, Page } from 'react-pdf';
+import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { AlertCircle } from 'lucide-react';
+import { extractJargonImageBase64, jargonImageDims, JARGON_MIN_TEXT_LEN } from '../jargon';
 
 interface PdfStageProps {
   pdfUrl: string;
@@ -14,15 +16,17 @@ interface PdfStageProps {
   loadError: string | null;
   onLoadSuccess: (numPages: number) => void;
   onLoadError: (error: Error) => void;
+  onPageText?: (page: number, text: string, imageDataUrl?: string) => void;
 }
 
 /** The PDF render surface: Document/Page, honest loading + error states, the
  *  per-page turn animation, and a GPU-cheap tiled watermark. */
 export function PdfStage({
   pdfUrl, pageNumber, scale, containerWidth, availableHeight, isDarkMode, clientName,
-  loadError, onLoadSuccess, onLoadError,
+  loadError, onLoadSuccess, onLoadError, onPageText,
 }: PdfStageProps) {
   const reduceMotion = useReducedMotion();
+  const docRef = useRef<PDFDocumentProxy | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   // Page aspect ratio (width / height), learned from the first rendered page.
   const [aspectRatio, setAspectRatio] = useState<number | null>(null);
@@ -51,12 +55,74 @@ export function PdfStage({
         transition: { duration: 0.18, ease: 'easeOut' as const },
       };
 
+  useEffect(() => {
+    const doc = docRef.current;
+    if (!doc || !onPageText) return;
+    let cancelled = false;
+    let renderTask: RenderTask | null = null;
+
+    const captureImage = (text: string) => {
+      doc.getPage(pageNumber)
+        .then(async page => {
+          if (cancelled) return;
+          const sourceViewport = page.getViewport({ scale: 1 });
+          const target = jargonImageDims(sourceViewport.width, sourceViewport.height);
+          const renderScale = sourceViewport.width > 0 ? target.width / sourceViewport.width : 1;
+          const viewport = page.getViewport({ scale: renderScale });
+          const canvas = document.createElement('canvas');
+          canvas.width = target.width;
+          canvas.height = target.height;
+          const context = canvas.getContext('2d');
+          if (!context) return;
+          renderTask = page.render({ canvasContext: context, canvas, viewport });
+          await renderTask.promise;
+          renderTask = null;
+          if (cancelled) return;
+
+          let imageDataUrl = canvas.toDataURL('image/jpeg', 0.7);
+          if (!extractJargonImageBase64(imageDataUrl)) {
+            imageDataUrl = canvas.toDataURL('image/jpeg', 0.5);
+          }
+          const valid = extractJargonImageBase64(imageDataUrl);
+          if (!cancelled && valid) {
+            onPageText(pageNumber, text, imageDataUrl);
+          }
+        })
+        .catch((err) => {
+          if (err?.name === 'RenderingCancelledException') return;
+          console.warn('Failed to capture PDF page image', err);
+        });
+    };
+
+    doc.getPage(pageNumber)
+      .then(page => page.getTextContent())
+      .then(tc => {
+        if (cancelled) return;
+        const text = tc.items.map((it: any) => (typeof it.str === 'string' ? it.str : '')).join(' ');
+        onPageText(pageNumber, text);
+        if (text.trim().length >= JARGON_MIN_TEXT_LEN) return;
+        captureImage(text);
+      })
+      .catch((err) => {
+        console.warn('Failed to extract PDF page text', err);
+        if (cancelled) return;
+        onPageText(pageNumber, '');
+        captureImage('');
+      });
+
+    return () => {
+      cancelled = true;
+      renderTask?.cancel();
+    };
+  }, [numPages, pageNumber, onPageText]);
+
   return (
     <Document
       file={pdfUrl}
-      onLoadSuccess={({ numPages: loadedNumPages }) => {
-        setNumPages(loadedNumPages);
-        onLoadSuccess(loadedNumPages);
+      onLoadSuccess={(pdf) => {
+        docRef.current = pdf;
+        setNumPages(pdf.numPages);
+        onLoadSuccess(pdf.numPages);
       }}
       onLoadProgress={({ loaded, total }) => {
         if (total) setProgress(Math.min(100, Math.round((loaded / total) * 100)));
