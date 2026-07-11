@@ -20,6 +20,17 @@ function genSessionId() {
   return crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
 }
 
+/** LocalStorage reads that never throw. Sandboxed iframes, private-mode Safari,
+ *  and storage-blocked in-app browsers (WhatsApp/Line webviews) raise a
+ *  SecurityError on any localStorage access; unguarded, that would crash the
+ *  entire viewer mount. Writes elsewhere in this hook are already try/wrapped. */
+function safeGetItem(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function safeRemoveItem(key: string) {
+  try { localStorage.removeItem(key); } catch { /* storage blocked — ignore */ }
+}
+
 /**
  * The reader's full tracking engine. Owns session identity, activity monitoring,
  * per-page dwell/scroll/zoom accumulation, LocalStorage persistence + recovery,
@@ -80,7 +91,7 @@ export function useTelemetry({
   // Advanced behavior tracking
   const sessionDataRef = useRef<SessionDataMap>({});
   const navigationPathRef = useRef<number[]>([]);
-  const currentPageRef = useRef(1);
+  const currentPageRef = useRef(pageNumber);
   const pageEnterTimeRef = useRef(Date.now());
   const hasSentSessionEndRef = useRef(false);
   const hasSentEngaged60Ref = useRef(false);
@@ -112,7 +123,7 @@ export function useTelemetry({
 
   const tabSwitchKey = `ag_tabswitch_${fileId}_${clientName}`;
   const tabSwitchCountRef = useRef<number>(
-    parseInt(localStorage.getItem(tabSwitchKey) || '0', 10) || 0
+    parseInt(safeGetItem(tabSwitchKey) || '0', 10) || 0
   );
 
   const handleExitRef = useRef<(() => void) | null>(null);
@@ -201,6 +212,9 @@ export function useTelemetry({
       return;
     }
 
+    // Container can be zero-sized mid-layout; dividing then would yield
+    // NaN/Infinity coordinates that serialize to null in the payload.
+    if (rect.width === 0 || rect.height === 0) return;
     const normX = parseFloat(((clientX - rect.left) / rect.width).toFixed(3));
     const normY = parseFloat(((clientY - rect.top) / rect.height).toFixed(3));
 
@@ -315,7 +329,9 @@ export function useTelemetry({
       if (hasSentSessionEndRef.current) return;
 
       const now = Date.now();
-      const durationMs = now - pageEnterTimeRef.current;
+      // Clamp: a backward system-clock adjustment mid-session would otherwise
+      // produce negative dwell times in the telemetry payload.
+      const durationMs = Math.max(0, now - pageEnterTimeRef.current);
 
       updateSessionData(currentPageRef.current, durationMs, scaleRef.current, isActiveRef.current);
 
@@ -365,7 +381,7 @@ export function useTelemetry({
         payload.nav_history = payload.nav_history.filter((_, index) => index % 2 === 0);
       }
 
-      localStorage.removeItem(storageKey);
+      safeRemoveItem(storageKey);
 
       // Mirror a FLAT session summary to GA4 — GA is the long-term analytics
       // store, but its event params must stay scalar, so the arrays live only
@@ -457,7 +473,7 @@ export function useTelemetry({
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     // Initial check for recovery
-    const saved = localStorage.getItem(storageKey);
+    const saved = safeGetItem(storageKey);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -483,7 +499,7 @@ export function useTelemetry({
   // Track Page Dwell & Zoom Changes
   useEffect(() => {
     const now = Date.now();
-    const durationMs = now - pageEnterTimeRef.current;
+    const durationMs = Math.max(0, now - pageEnterTimeRef.current);
 
     updateSessionData(currentPageRef.current, durationMs, scaleRef.current, isActiveRef.current);
 
