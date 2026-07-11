@@ -75,6 +75,12 @@ const isPublicHttpUrl = (raw: string): boolean => {
   const host = u.hostname.toLowerCase();
   if (host === 'localhost' || host === '0.0.0.0' || host.endsWith('.local')) return false;
   if (host === '::1' || host === '[::1]') return false;
+  // Reject ALL IPv6 literals (ULA fc00::/7, link-local fe80::/10, loopback,
+  // IPv4-mapped, unspecified). Legit public images use hostnames, not IPv6
+  // literals, so this is safe hardening. DNS names that resolve to private
+  // IPv6 remain a residual handled by network egress policy, not here.
+  const stripped = host.replace(/^\[/, '').replace(/\]$/, '');
+  if (stripped.includes(':')) return false;
   // IPv4 literal private / link-local / loopback ranges.
   const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (m) {
@@ -187,9 +193,10 @@ const getHkTimeOfDay = (): { name: 'morning' | 'afternoon' | 'evening' | 'late n
     new Date().toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong', hour: '2-digit', hour12: false }).slice(0, 2),
     10
   );
-  if (h >= 5 && h < 12) return { name: 'morning', label: '☀️ Morning' };
-  if (h >= 12 && h < 18) return { name: 'afternoon', label: '🌤 Afternoon' };
-  if (h >= 18 && h < 23) return { name: 'evening', label: '🌆 Evening' };
+  const hour = h === 24 ? 0 : h;
+  if (hour >= 5 && hour < 12) return { name: 'morning', label: '☀️ Morning' };
+  if (hour >= 12 && hour < 18) return { name: 'afternoon', label: '🌤 Afternoon' };
+  if (hour >= 18 && hour < 23) return { name: 'evening', label: '🌆 Evening' };
   return { name: 'late night', label: '🌙 Late Night' };
 };
 
@@ -657,8 +664,24 @@ app.post("/api/create-link", async (req, res) => {
 
   // 建立連結的 origin：優先環境變數，其次用請求 host（與 App.tsx 的 customDomain 邏輯一致）
   const envOrigin = process.env.VITE_APP_URL || process.env.APP_URL;
-  const rawOrigin = (originInput && String(originInput)) || envOrigin || `${req.protocol}://${req.get("host")}`;
-  const baseOrigin = rawOrigin.endsWith("/") ? rawOrigin.slice(0, -1) : rawOrigin;
+  // req.protocol is 'http' behind Vercel's proxy (no app-level trust proxy —
+  // deliberate, see clientIp above), so derive the scheme from x-forwarded-proto
+  // only when running behind the trusted platform proxy.
+  const proto = TRUST_PROXY_HEADERS
+    ? String(req.headers["x-forwarded-proto"] || req.protocol).split(",")[0].trim()
+    : req.protocol;
+  const requestOrigin = `${proto}://${req.get("host")}`;
+  const normalize = (s: string) => (s.endsWith("/") ? s.slice(0, -1) : s);
+  // Only honor a client-supplied origin if it matches a trusted origin
+  // (the configured app URL or the request host). Otherwise ignore it so a
+  // misused advisor key cannot mint short links under an arbitrary domain.
+  const candidate = originInput ? normalize(String(originInput)) : "";
+  const trusted = new Set(
+    [envOrigin, requestOrigin].filter(Boolean).map((s) => normalize(String(s)))
+  );
+  const baseOrigin = trusted.has(candidate)
+    ? candidate
+    : normalize(String(envOrigin || requestOrigin));
 
   // 30 天後過期（Firestore Timestamp，供 TTL 政策使用）
   const expireAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
@@ -784,6 +807,9 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       console.log(`[PDF_PROXY] vblob_ ID: ${file_id.slice(0, 15)}... | Resolved URL: ${blobUrl.split('?')[0]}...`);
     } else if (file_id.startsWith('r2_')) {
       const r2Key = fromUrlSafeBase64(file_id.slice(3));
+      if (!r2Key.startsWith('reports/')) {
+        return res.status(400).send("Invalid file ID format.");
+      }
       
       const bucket = process.env.R2_BUCKET_NAME || "reports";
       console.log(`[PDF_PROXY] R2 ID. Key: ${r2Key} | Bucket: ${bucket}`);
@@ -836,6 +862,7 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       res.send(Buffer.from(buffer));
     }
   } catch (error: any) {
+    if (res.headersSent) { res.destroy(error); return; }
     console.error("[PDF_PROXY_CRITICAL] Exception:", error.message);
     res.status(500).send("A critical error occurred while retrieving the document.");
   }
@@ -856,6 +883,9 @@ app.get("/api/img/:file_id", async (req, res) => {
 
   try {
     const r2Key = fromUrlSafeBase64(file_id.slice(3));
+    if (!r2Key.startsWith('images/')) {
+      return res.status(400).send("Invalid image ID format.");
+    }
     const bucket = process.env.R2_BUCKET_NAME || "reports";
 
     const command = new GetObjectCommand({ Bucket: bucket, Key: r2Key });
@@ -880,6 +910,7 @@ app.get("/api/img/:file_id", async (req, res) => {
       res.send(Buffer.from(await response.arrayBuffer()));
     }
   } catch (error: any) {
+    if (res.headersSent) { res.destroy(error); return; }
     console.error("[IMG_PROXY_CRITICAL] Exception:", error.message);
     res.status(500).send("Failed to retrieve image.");
   }
