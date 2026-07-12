@@ -34,7 +34,7 @@ export function JargonCard({ terms, isDarkMode, visible }: Props) {
             <div key={index}>
                 <div className="flex items-center justify-between gap-4 mb-1">
                     <span className={`text-[9px] font-mono uppercase tracking-widest ${isDarkMode ? 'text-[#C6A867]' : 'text-[#B8964F]'}`}>
-                        術語解說
+                        關鍵詞解釋
                     </span>
                     {terms.length > 1 && (
                         <span className={`text-[9px] font-mono ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>
