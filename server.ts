@@ -18,6 +18,7 @@ import {
   JARGON_MIN_TEXT_LEN,
   type JargonTerm,
 } from "./src/viewer/jargon.js";
+import { applyJargonGlossary } from "./src/viewer/jargonGlossary.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1094,8 +1095,10 @@ app.post("/api/generate-meta", async (req, res) => {
 });
 
 const JARGON_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const JARGON_ROUTE_DEADLINE_MS = 45_000;
 const JARGON_CACHE_MAX = 500;
 const jargonCache = new Map<string, { terms: JargonTerm[]; at: number }>();
+const jargonInFlight = new Map<string, Promise<JargonTerm[] | null>>();
 
 const sha256Hex = (value: string): string => crypto.createHash("sha256").update(value).digest("hex");
 
@@ -1130,7 +1133,6 @@ const sanitizeJargonTerms = (terms: unknown): JargonTerm[] => {
 };
 
 const setJargonCache = (key: string, terms: JargonTerm[]): void => {
-  if (terms.length === 0) return;
   if (!jargonCache.has(key) && jargonCache.size >= JARGON_CACHE_MAX) {
     let oldestKey: string | null = null;
     let oldestAt = Infinity;
@@ -1153,7 +1155,7 @@ const readJargonStore = async (key: string): Promise<JargonTerm[] | null> => {
     const raw = body?.transformToString ? await body.transformToString() : "";
     const parsed = JSON.parse(raw);
     const terms = sanitizeJargonTerms(parsed?.terms);
-    return terms.length > 0 ? terms : null;
+    return Array.isArray(parsed?.terms) ? terms : null;
   } catch (err: any) {
     console.warn(`[JARGON] store read failed: ${(err?.message || "").slice(0, 60)}`);
     return null;
@@ -1228,6 +1230,11 @@ ${textCandidate}
       return res.status(503).json({ success: false, error: "AI 未設定" });
     }
 
+    const ip = clientIp(req);
+    if (!allow(`jg:store:${ip}`, 600, 3_600_000)) {
+      return res.status(429).json({ success: false, error: "Rate limited" });
+    }
+
     const fileId = typeof body.fileId === "string" ? body.fileId.trim().slice(0, 200) : "";
     const page = Number.isInteger(body.page) && body.page >= 1 ? body.page : 0;
     const contentHash = sha256Hex(basis);
@@ -1235,64 +1242,95 @@ ${textCandidate}
     const storeKey = fileId && page
       ? `jargon/${sha256Hex(`${fileId}#${page}#${pathType}#${contentHash}`)}.json`
       : "";
+    // Glossary override is applied at SERVE time (not before storing), so the
+    // R2/L1 copy stays the raw model output and editing the glossary takes
+    // effect immediately for already-cached pages.
     const cached = jargonCache.get(cacheKey);
     if (cached && Date.now() - cached.at < JARGON_CACHE_TTL_MS) {
-      return res.json({ success: true, terms: cached.terms, source: "cache" });
+      return res.json({ success: true, terms: applyJargonGlossary(cached.terms), source: "cache" });
     }
     if (cached) jargonCache.delete(cacheKey);
 
     if (storeKey) {
       const stored = await readJargonStore(storeKey);
-      if (stored) {
+      if (stored !== null) {
         setJargonCache(cacheKey, stored);
-        return res.json({ success: true, terms: stored, source: "store" });
+        return res.json({ success: true, terms: applyJargonGlossary(stored), source: "store" });
       }
     }
 
-    const ip = clientIp(req);
+    const inFlight = jargonInFlight.get(cacheKey);
+    if (inFlight) {
+      const terms = await inFlight.catch(() => null);
+      if (terms === null) {
+        return res.status(502).json({ success: false, error: "AI processing failed" });
+      }
+      return res.json({ success: true, terms: applyJargonGlossary(terms) });
+    }
+
     if (!allow(`jg:ip:${ip}`, 40, 3_600_000, false) || !allow("jg:global", 200, 3_600_000, false)) {
       return res.status(429).json({ success: false, error: "Rate limited" });
     }
     allow(`jg:ip:${ip}`, 40, 3_600_000);
     allow("jg:global", 200, 3_600_000);
 
-    const startIndex = Math.floor(Date.now() / 60_000) % apiKeys.length;
-    for (let i = 0; i < apiKeys.length; i++) {
-      const key = apiKeys[(startIndex + i) % apiKeys.length];
-      for (const modelName of STANDARD_MODELS) {
-        try {
-          const genAI = new GoogleGenerativeAI(key);
-          const model = genAI.getGenerativeModel({
-            model: modelName,
-            ...(modelName.startsWith("gemma")
-              ? {}
-              : { generationConfig: { responseMimeType: "application/json" } as any }),
-          });
-          const parts = pathType === "image"
-            ? [prompt, { inlineData: { mimeType: "image/jpeg", data: imageBase64 } }]
-            : prompt;
-          // No-op handler: if the 20s race times out first, a later rejection
-          // from the still-running call must not become an unhandled promise
-          // rejection (fatal on Node 15+, would kill the serverless instance).
-          const apiCall = model.generateContent(parts);
-          apiCall.catch(() => {});
-          const result = (await Promise.race([
-            apiCall,
-            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 20000)),
-          ])) as any;
-          const raw = result.response.text().replace(/^```json|```$/gm, "").trim();
-          const parsed = JSON.parse(raw);
-          const terms = sanitizeJargonTerms(parsed?.terms);
-          console.log(`[JARGON] Success | ${modelName}`);
-          if (terms.length > 0) {
+    const run = (async (): Promise<JargonTerm[] | null> => {
+      const routeStart = Date.now();
+      const startIndex = Math.floor(Date.now() / 60_000) % apiKeys.length;
+      for (let i = 0; i < apiKeys.length; i++) {
+        const key = apiKeys[(startIndex + i) % apiKeys.length];
+        for (const modelName of STANDARD_MODELS) {
+          const remainingMs = JARGON_ROUTE_DEADLINE_MS - (Date.now() - routeStart);
+          if (remainingMs <= 0) return null;
+          try {
+            const genAI = new GoogleGenerativeAI(key);
+            const model = genAI.getGenerativeModel({
+              model: modelName,
+              ...(modelName.startsWith("gemma")
+                ? {}
+                : { generationConfig: { responseMimeType: "application/json" } as any }),
+            });
+            const parts = pathType === "image"
+              ? [prompt, { inlineData: { mimeType: "image/jpeg", data: imageBase64 } }]
+              : prompt;
+            // No-op handler: if the timeout race wins first, a later rejection
+            // from the still-running call must not become an unhandled promise
+            // rejection (fatal on Node 15+, would kill the serverless instance).
+            const apiCall = model.generateContent(parts);
+            apiCall.catch(() => {});
+            const result = (await Promise.race([
+              apiCall,
+              new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), Math.min(20_000, remainingMs))),
+            ])) as any;
+            const raw = result.response.text().replace(/^```json|```$/gm, "").trim();
+            const parsed = JSON.parse(raw);
+            // A JSON reply WITHOUT a terms array is schema drift, not "no jargon
+            // found" — it must not persist an empty sentinel for this page.
+            if (!Array.isArray(parsed?.terms)) throw new Error("Missing terms array");
+            const terms = sanitizeJargonTerms(parsed.terms);
+            console.log(`[JARGON] Success | ${modelName}`);
             setJargonCache(cacheKey, terms);
             if (storeKey) await writeJargonStore(storeKey, terms);
+            return terms;
+          } catch (err: any) {
+            console.warn(`[JARGON WARN] ${modelName}: ${(err.message || "").slice(0, 60)}`);
           }
-          return res.json({ success: true, terms });
-        } catch (err: any) {
-          console.warn(`[JARGON WARN] ${modelName}: ${(err.message || "").slice(0, 60)}`);
         }
       }
+
+      return null;
+    })();
+
+    jargonInFlight.set(cacheKey, run);
+    let result: JargonTerm[] | null;
+    try {
+      result = await run;
+    } finally {
+      jargonInFlight.delete(cacheKey);
+    }
+
+    if (result !== null) {
+      return res.json({ success: true, terms: applyJargonGlossary(result) });
     }
 
     return res.status(502).json({ success: false, error: "AI processing failed" });
