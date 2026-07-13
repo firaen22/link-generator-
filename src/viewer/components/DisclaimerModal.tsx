@@ -73,7 +73,7 @@ export function DisclaimerModal({ isDarkMode, onDismiss }: { isDarkMode: boolean
               私隱與免責詳情
               <ChevronDown className="w-4 h-4 transition-transform group-open:rotate-180" />
             </summary>
-            <div className={`px-3.5 pb-3.5 pt-1 text-[13px] leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+            <div className={`px-3.5 pb-3.5 pt-1 text-[14px] sm:text-[13px] leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
               本系統僅供香港境內人士閱讀。本人在此聲明並確認，本人目前位於香港境內。本系統會以匿名方式記錄系統互動以提升服務質素。所有市場分析與數據僅供資訊參考，不構成任何形式的投資建議、邀約或指導。閣下在作出任何投資決定前，應獨立評估相關風險，並考慮尋求專業意見。投資涉及風險，證券價格可升可跌。
             </div>
           </details>
