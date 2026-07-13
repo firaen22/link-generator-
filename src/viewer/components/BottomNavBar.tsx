@@ -86,7 +86,7 @@ export function BottomNavBar({
               }}
               aria-label="跳至頁碼"
               placeholder={String(pageNumber)}
-              className={`w-12 min-h-9 text-center text-[13px] font-medium rounded-lg border outline-none ${isDarkMode
+              className={`w-12 min-h-9 text-center text-base sm:text-[13px] font-medium rounded-lg border outline-none ${isDarkMode
                 ? 'bg-white/5 border-white/15 text-slate-200 placeholder:text-slate-500'
                 : 'bg-white border-slate-300 text-slate-700 placeholder:text-slate-400'
                 }`}
