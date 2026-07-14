@@ -486,7 +486,7 @@ export function useTelemetry({
           engaged60PageRef.current = parsed.engaged60Page;
         }
         console.log(`[TRACK] Recovered session ${sessionIdRef.current.slice(0, 8)} from LocalStorage`);
-      } catch (e) { }
+      } catch (e) { if (import.meta.env.DEV) console.warn('[telemetry] session recovery failed:', e); }
     }
 
     return () => {
