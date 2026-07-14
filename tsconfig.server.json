@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": false,
+    "noEmit": true
+  },
+  "include": ["server.ts", "api/**/*.ts", "src/viewer/**/*.ts"],
+  "exclude": ["src/viewer/*.test.ts", "src/viewer/hooks/**/*.ts", "src/viewer/utils/**/*.ts"]
+}

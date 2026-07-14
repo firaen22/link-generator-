@@ -6,10 +6,12 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
-    "start": "node server.ts",
+    "start": "tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "node --import tsx src/viewer/jargon.test.ts && node --import tsx src/viewer/jargonGlossary.test.ts",
+    "check:serverless": "bash scripts/check-serverless.sh && tsc -p tsconfig.server.json"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1023.0",

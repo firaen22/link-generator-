@@ -25,6 +25,12 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
+      - name: Serverless import guard
+        run: npm run check:serverless
+
+      - name: Run tests
+        run: npm test
+
       - name: Build Application
         run: npm run build
 
@@ -34,26 +40,3 @@ jobs:
           name: dist
           path: dist/
           retention-days: 1
-
-  # uncomment and configure this job to deploy to a server via SSH
-  # deploy:
-  #   name: Deploy to Server
-  #   needs: build
-  #   runs-on: ubuntu-latest
-  #   if: github.ref == 'refs/heads/main'
-  #   steps:
-  #     - name: Checkout Code
-  #       uses: actions/checkout@v4
-  #
-  #     - name: Deploy via SSH
-  #       uses: appleboy/ssh-action@v1.0.3
-  #       with:
-  #         host: ${{ secrets.SERVER_HOST }}
-  #         username: ${{ secrets.SERVER_USER }}
-  #         key: ${{ secrets.SERVER_SSH_KEY }}
-  #         script: |
-  #           cd /path/to/your/app
-  #           git pull origin main
-  #           npm ci
-  #           npm run build
-  #           pm2 restart link-generator || pm2 start npm --name "link-generator" -- run start
