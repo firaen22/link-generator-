@@ -24,6 +24,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const apiKeys = (process.env.GEMINI_API_KEY || "").split(',').map(k => k.trim()).filter(Boolean);
 const aiEnabled = apiKeys.length > 0;
+const rotatedKeys = (startIndex: number): string[] => apiKeys.map((_, i) => apiKeys[(startIndex + i) % apiKeys.length]);
+const timeRotatedKeys = (): string[] => rotatedKeys(apiKeys.length ? Math.floor(Date.now() / 60_000) % apiKeys.length : 0);
 
 const escapeHTML = (text: unknown) =>
   String(text ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -1055,9 +1057,7 @@ app.post("/api/generate-meta", async (req, res) => {
   // Rotate keys over time; lite/high-quota models lead since this is a simple,
   // frequent task. JSON is requested via mime-type + prompt and parsed defensively
   // (no responseSchema — keeps the whole fallback list compatible).
-  const startIndex = Math.floor(Date.now() / 60_000) % apiKeys.length;
-  for (let i = 0; i < apiKeys.length; i++) {
-    const key = apiKeys[(startIndex + i) % apiKeys.length];
+  for (const key of timeRotatedKeys()) {
     for (const modelName of STANDARD_MODELS) {
       try {
         const genAI = new GoogleGenerativeAI(key);
@@ -1276,9 +1276,7 @@ ${textCandidate}
 
     const run = (async (): Promise<JargonTerm[] | null> => {
       const routeStart = Date.now();
-      const startIndex = Math.floor(Date.now() / 60_000) % apiKeys.length;
-      for (let i = 0; i < apiKeys.length; i++) {
-        const key = apiKeys[(startIndex + i) % apiKeys.length];
+      for (const key of timeRotatedKeys()) {
         for (const modelName of STANDARD_MODELS) {
           const remainingMs = JARGON_ROUTE_DEADLINE_MS - (Date.now() - routeStart);
           if (remainingMs <= 0) return null;
@@ -1768,12 +1766,12 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
       let lastError: any = null;
       let isThinkingModel = false;
 
-      const startIndex = Math.floor(Math.random() * apiKeys.length);
+      const randomStartIndex = apiKeys.length ? Math.floor(Math.random() * apiKeys.length) : 0;
+      const rotationOrder = rotatedKeys(randomStartIndex);
 
       // ── Try thinking-capable models first ────────────────────────────────
-      outer: for (let i = 0; i < apiKeys.length; i++) {
-        const keyIndex = (startIndex + i) % apiKeys.length;
-        const currentKey = apiKeys[keyIndex];
+      outer: for (const [i, currentKey] of rotationOrder.entries()) {
+        const keyIndex = (randomStartIndex + i) % apiKeys.length;
 
         for (const modelName of THINKING_MODELS) {
           try {
@@ -1811,9 +1809,8 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
       // ── Fallback: standard models, simplified prompt, regex JSON extraction ─
       if (!success) {
         console.log('[GEMINI] Thinking models exhausted. Falling back to standard models...');
-        outer2: for (let i = 0; i < apiKeys.length; i++) {
-          const keyIndex = (startIndex + i) % apiKeys.length;
-          const currentKey = apiKeys[keyIndex];
+        outer2: for (const [i, currentKey] of rotationOrder.entries()) {
+          const keyIndex = (randomStartIndex + i) % apiKeys.length;
 
           for (const modelName of STANDARD_MODELS) {
             try {
