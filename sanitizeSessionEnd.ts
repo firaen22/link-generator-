@@ -2,10 +2,12 @@ export type SanitizeResult = {
   total_duration_sec: number;
   total_pages: number | null;
   cta_click_page: number | null;
+  mins_since_last_visit: number | null;
   tab_switch_count: number;
   return_visit_count: number;
   peak_scroll_velocity: number;
   engaged_60s_page: number | null;
+  device_id: string | null;
   device_type: 'mobile' | 'desktop' | 'unknown';
   navigation_path: number[];
   nav_history: Array<{ page: number; t: number }>;
@@ -29,16 +31,25 @@ function intClamp<F>(v: any, min: number, max: number, fallback: F): number | F 
   return n;
 }
 
+function nullableIntFloor(v: any, min: number, max: number): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  const n = Math.floor(v);
+  if (n < min || n > max) return null;
+  return n;
+}
+
 export function sanitizeSessionEnd(body: any): SanitizeResult {
   if (!body || typeof body !== 'object') {
     return {
       total_duration_sec: 0,
       total_pages: null,
       cta_click_page: null,
+      mins_since_last_visit: null,
       tab_switch_count: 0,
       return_visit_count: 0,
       peak_scroll_velocity: 0,
       engaged_60s_page: null,
+      device_id: null,
       device_type: 'unknown',
       navigation_path: [],
       nav_history: [],
@@ -51,10 +62,15 @@ export function sanitizeSessionEnd(body: any): SanitizeResult {
   const total_duration_sec = num(body.total_duration_sec, 0, 86400, 0);
   const total_pages = intClamp(body.total_pages, 1, 10000, null);
   const cta_click_page = intClamp(body.cta_click_page, 1, 10000, null);
+  const mins_since_last_visit = nullableIntFloor(body.mins_since_last_visit, 0, 525600);
   const tab_switch_count = num(body.tab_switch_count, 0, 10000, 0);
   const return_visit_count = num(body.return_visit_count, 0, 10000, 0);
   const peak_scroll_velocity = num(body.peak_scroll_velocity, 0, 1000, 0);
   const engaged_60s_page = intClamp(body.engaged_60s_page, 1, 10000, null);
+  const device_id =
+    typeof body.device_id === 'string' && /^[a-f0-9]{16,64}$/.test(body.device_id)
+      ? body.device_id
+      : null;
 
   const device_type =
     body.device_type === 'mobile' || body.device_type === 'desktop'
@@ -144,10 +160,12 @@ export function sanitizeSessionEnd(body: any): SanitizeResult {
     total_duration_sec,
     total_pages,
     cta_click_page,
+    mins_since_last_visit,
     tab_switch_count,
     return_visit_count,
     peak_scroll_velocity,
     engaged_60s_page,
+    device_id,
     device_type,
     navigation_path,
     nav_history,

@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import express from "express";
-import crypto from "crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -129,6 +129,109 @@ const decodeLzPayload = (q: string): Record<string, any> | null => {
   } catch {
     return null;
   }
+};
+
+const pinHashFor = (shortId: string, pin: string): string =>
+  createHash("sha256").update(`${shortId}:${pin}`).digest("hex");
+
+const sameHash = (a: string, b: string): boolean => {
+  const left = Buffer.from(a, "hex");
+  const right = Buffer.from(b, "hex");
+  return left.length === right.length && timingSafeEqual(left, right);
+};
+
+const linkMissingJson = { error: "not_found" };
+
+const lifecycleErrorHtml = (message: string): string => `<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHTMLAttr(message)}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
+    .container { text-align: center; padding: 24px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <p>${escapeHTML(message)}</p>
+  </div>
+</body>
+</html>`;
+
+const pinEntryHtml = (shortId: string): string => {
+  const safeShortId = escapeHTMLAttr(shortId);
+  const safeShortIdJs = JSON.stringify(shortId).replace(/</g, '\\u003c');
+  return `<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>請輸入存取密碼</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
+    .container { width: min(100% - 40px, 360px); text-align: center; padding: 24px; }
+    h1 { margin: 0 0 16px; font-size: 22px; line-height: 1.3; }
+    input { box-sizing: border-box; width: 100%; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 18px; text-align: center; letter-spacing: 0; outline: none; }
+    input:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.16); }
+    button { width: 100%; margin-top: 12px; padding: 12px 14px; border: 0; border-radius: 10px; background: #4f46e5; color: #ffffff; font-size: 15px; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: 0.7; cursor: not-allowed; }
+    .error { min-height: 20px; margin-top: 12px; color: #e11d48; font-size: 14px; font-weight: 600; }
+    .hint { margin: 0 0 14px; color: #64748b; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <h1>請輸入存取密碼</h1>
+    <p class="hint">連結 ID：${safeShortId}</p>
+    <form id="pinForm">
+      <input id="pin" name="pin" type="password" inputmode="numeric" pattern="\\d{4,8}" autocomplete="one-time-code" maxlength="8" required autofocus />
+      <button id="submitBtn" type="submit">開啟報告</button>
+      <div id="error" class="error" role="alert"></div>
+    </form>
+  </main>
+  <script>
+    const shortId = ${safeShortIdJs};
+    const form = document.getElementById('pinForm');
+    const input = document.getElementById('pin');
+    const button = document.getElementById('submitBtn');
+    const errorEl = document.getElementById('error');
+    form.addEventListener('submit', async function(event) {
+      event.preventDefault();
+      errorEl.textContent = '';
+      button.disabled = true;
+      try {
+        const res = await fetch('/api/unlock-link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ shortId, pin: input.value })
+        });
+        const body = await res.json().catch(function() { return {}; });
+        if (res.ok && body.url) {
+          window.location.replace(body.url);
+          return;
+        }
+        if (res.status === 403) {
+          errorEl.textContent = '密碼錯誤，請再試';
+          input.value = '';
+          input.focus();
+          return;
+        }
+        if (res.status === 429) {
+          errorEl.textContent = '嘗試次數過多，請稍後再試';
+          return;
+        }
+        errorEl.textContent = '無法開啟連結，請稍後再試';
+      } catch {
+        errorEl.textContent = '無法開啟連結，請稍後再試';
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>`;
 };
 
 const resolveOgImage = (imageParam: string): string => {
@@ -318,6 +421,29 @@ function requireApiKey(req: express.Request, res: express.Response): string | nu
   res.status(401).json({ error: "未授權：缺少或無效的存取金鑰 (x-pwp-key)" });
   return null;
 }
+
+const sendShortLinkOpenNotification = async (
+  req: express.Request,
+  data: any,
+  shortId: string,
+  cName: string,
+  rName: string,
+  marker = ""
+) => {
+  const advisor = data.fields?.adv?.stringValue || "";
+  const advisorLine = advisor ? `\n👨‍💼 <b>顧問：</b> ${escapeHTML(advisor)}` : "";
+  const markerLine = marker ? `\n${marker}` : "";
+  const notif = `🔔 <b>閱讀通知 (短連結)</b>${markerLine}\n\n👤 <b>客戶：</b> ${escapeHTML(cName)}\n📄 <b>報告：</b> ${escapeHTML(rName)}${advisorLine}\n🔗 <b>ID：</b> ${shortId}\n⏰ <b>時間：</b> 剛剛`;
+  // Route to the advisor who created it (if mapped) AND the owner master log.
+  // Awaited: on serverless the function is frozen after the response, so a
+  // fire-and-forget fetch would be killed before Telegram receives it.
+  // Rate-limited per client IP like /api/track — the route is unauthenticated.
+  if (allow(`tg:${clientIp(req)}`, 12, 60_000)) {
+    await sendTelegramTo(notif, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
+  } else {
+    console.warn(`[SHORT_LINK] Telegram rate-limited for ${clientIp(req)}`);
+  }
+};
 
 // Startup status check
 console.log('--- Server Status ---');
@@ -527,6 +653,18 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     }
 
     const data = await response.json();
+    const expireAtRaw = data.fields?.expireAt?.timestampValue;
+    const expireAtDate = expireAtRaw ? new Date(expireAtRaw) : null;
+
+    if (data.fields?.revoked?.booleanValue === true) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(410).send(lifecycleErrorHtml("此連結已由顧問停用"));
+    }
+    if (expireAtDate && Number.isFinite(expireAtDate.getTime()) && expireAtDate < new Date()) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(410).send(lifecycleErrorHtml("此連結已過期"));
+    }
+
     const q = data.fields?.q?.stringValue;
 
     if (!q) {
@@ -578,20 +716,18 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     // JS-string-safe form for the redirect <script> below (defense in depth —
     // viewerUrl here is already encodeURIComponent'd, but keep both routes uniform).
     const safeViewerJs = JSON.stringify(viewerUrl).replace(/</g, '\\u003c');
+    const pinProtected = Boolean(data.fields?.pinHash?.stringValue);
 
-    if (!isCrawler) {
-      const advisor = data.fields?.adv?.stringValue || "";
-      const advisorLine = advisor ? `\n👨‍💼 <b>顧問：</b> ${escapeHTML(advisor)}` : "";
-      const notif = `🔔 <b>閱讀通知 (短連結)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(cName)}\n📄 <b>報告：</b> ${escapeHTML(rName)}${advisorLine}\n🔗 <b>ID：</b> ${shortId}\n⏰ <b>時間：</b> 剛剛`;
-      // Route to the advisor who created it (if mapped) AND the owner master log.
-      // Awaited: on serverless the function is frozen after the response, so a
-      // fire-and-forget fetch would be killed before Telegram receives it.
-      // Rate-limited per client IP like /api/track — the route is unauthenticated.
-      if (allow(`tg:${clientIp(req)}`, 12, 60_000)) {
-        await sendTelegramTo(notif, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
-      } else {
-        console.warn(`[SHORT_LINK] Telegram rate-limited for ${clientIp(req)}`);
-      }
+    // PIN gates link resolution: /l will not expose the q-bearing viewer URL
+    // until the server verifies the PIN. Once unlocked, /view?q=... is shareable;
+    // this deters forwarding and signals misuse, but is not encryption.
+    if (pinProtected && !isCrawler) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.send(pinEntryHtml(shortId));
+    }
+
+    if (!isCrawler && !pinProtected) {
+      await sendShortLinkOpenNotification(req, data, shortId, cName, rName);
     }
 
     const html = `<!DOCTYPE html>
@@ -647,12 +783,157 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
   }
 });
 
+app.post("/api/unlock-link", async (req, res) => {
+  const { shortId, pin } = req.body || {};
+  if (typeof shortId !== "string" || !/^[a-z0-9]{1,32}$/i.test(shortId) || typeof pin !== "string" || !/^\d{4,8}$/.test(pin)) {
+    return res.status(400).json({ error: "invalid_request" });
+  }
+
+  const ip = clientIp(req);
+  if (!allow(`pin:${ip}`, 10, 60_000, false) || !allow(`pin:id:${shortId}`, 30, 3_600_000, false)) {
+    return res.status(429).json({ error: "too_many_attempts" });
+  }
+  allow(`pin:${ip}`, 10, 60_000);
+  allow(`pin:id:${shortId}`, 30, 3_600_000);
+
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+  const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+  if (!projectId || !apiKey) {
+    return res.status(500).json({ error: "server_config_missing" });
+  }
+
+  const fsBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links`;
+
+  try {
+    const docRes = await fetch(`${fsBase}/${shortId}`);
+    if (!docRes.ok) {
+      if (docRes.status !== 404) {
+        const detail = await docRes.text().catch(() => "");
+        console.error(`[UNLOCK_LINK] Firestore read failed (${docRes.status}) for ${shortId}: ${detail}`);
+        return res.status(500).json({ error: "unlock_failed" });
+      }
+      return res.status(404).json(linkMissingJson);
+    }
+
+    const data = await docRes.json();
+    const fields = data.fields || {};
+    const storedHash = fields.pinHash?.stringValue || "";
+    if (!storedHash) {
+      return res.status(404).json(linkMissingJson);
+    }
+
+    const expireAtRaw = fields.expireAt?.timestampValue;
+    const expireAtDate = expireAtRaw ? new Date(expireAtRaw) : null;
+    if (fields.revoked?.booleanValue === true) {
+      return res.status(410).json({ error: "link_unavailable" });
+    }
+    if (expireAtDate && Number.isFinite(expireAtDate.getTime()) && expireAtDate < new Date()) {
+      return res.status(410).json({ error: "link_unavailable" });
+    }
+
+    const lockedUntilRaw = fields.pinLockedUntil?.timestampValue;
+    const lockedUntil = lockedUntilRaw ? new Date(lockedUntilRaw) : null;
+    if (lockedUntil && Number.isFinite(lockedUntil.getTime()) && lockedUntil > new Date()) {
+      return res.status(429).json({
+        error: "locked",
+        retry_after_min: Math.ceil((lockedUntil.getTime() - Date.now()) / 60_000),
+      });
+    }
+
+    const candidateHash = pinHashFor(shortId, pin);
+    const ok = storedHash.length === candidateHash.length && sameHash(storedHash, candidateHash);
+
+    if (!ok) {
+      const currentFailed = Number.parseInt(fields.failedPinCount?.integerValue || "0", 10);
+      const nextFailed = Number.isFinite(currentFailed) ? currentFailed + 1 : 1;
+      const lockout = nextFailed >= 20;
+      const patchFields: any = {
+        failedPinCount: { integerValue: lockout ? "0" : String(nextFailed) },
+      };
+      const masks = ["failedPinCount"];
+      if (lockout) {
+        patchFields.pinLockedUntil = { timestampValue: new Date(Date.now() + 3_600_000).toISOString() };
+        masks.push("pinLockedUntil");
+      }
+
+      // Durable lockout is read-modify-write; concurrent wrong attempts can
+      // undercount, but this still closes the serverless scale-out brute-force gap.
+      const patchRes = await fetch(
+        `${fsBase}/${shortId}?key=${apiKey}&${masks.map((m) => `updateMask.fieldPaths=${encodeURIComponent(m)}`).join("&")}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fields: patchFields }),
+        }
+      );
+      if (!patchRes.ok) {
+        const detail = await patchRes.text().catch(() => "");
+        console.error(`[UNLOCK_LINK] Failed to update PIN counters (${patchRes.status}) for ${shortId}: ${detail}`);
+        return res.status(500).json({ error: "unlock_failed" });
+      }
+
+      if ((nextFailed === 1 || nextFailed === 20) && allow(`tg:${ip}`, 12, 60_000)) {
+        const clientName = fields.clientName?.stringValue || "貴客";
+        const advisor = fields.adv?.stringValue || "";
+        const message = nextFailed === 20
+          ? `🔐 <b>密碼嘗試失敗</b>\n\n👤 客戶連結：${escapeHTML(clientName)}\n🔗 ID：${shortId}\n🚫 已連續錯誤 20 次，連結已鎖定 1 小時。`
+          : `🔐 <b>密碼嘗試失敗</b>\n\n👤 客戶連結：${escapeHTML(clientName)}\n🔗 ID：${shortId}\n⚠️ 有人輸入錯誤密碼 — 連結可能已被轉發。`;
+        await sendTelegramTo(message, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
+      }
+
+      return res.status(403).json({ error: "wrong_pin" });
+    }
+
+    const failedPinCount = Number.parseInt(fields.failedPinCount?.integerValue || "0", 10);
+    if (Number.isFinite(failedPinCount) && failedPinCount > 0) {
+      const resetRes = await fetch(
+        `${fsBase}/${shortId}?key=${apiKey}&updateMask.fieldPaths=failedPinCount`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fields: { failedPinCount: { integerValue: "0" } } }),
+        }
+      );
+      if (!resetRes.ok) {
+        const detail = await resetRes.text().catch(() => "");
+        console.error(`[UNLOCK_LINK] Failed to reset PIN counter (${resetRes.status}) for ${shortId}: ${detail}`);
+      }
+    }
+
+    const q = fields.q?.stringValue;
+    if (!q) {
+      return res.status(404).json(linkMissingJson);
+    }
+
+    let cName = fields.clientName?.stringValue || "貴客";
+    let rName = "Document";
+    const decoded = decodeLzPayload(q);
+    if (decoded) {
+      if (decoded.c) cName = decoded.c;
+      if (decoded.r) rName = decoded.r;
+      if (rName === "Document" && decoded.f) {
+        const extracted = extractFileName(decoded.f);
+        if (extracted && extracted !== "Document") {
+          rName = extracted;
+        }
+      }
+    }
+
+    const viewerUrl = `/view?q=${encodeURIComponent(q)}`;
+    await sendShortLinkOpenNotification(req, data, shortId, cName, rName, "🔐 已解鎖");
+    res.json({ url: viewerUrl });
+  } catch (error) {
+    console.error("[UNLOCK_LINK] Error:", error);
+    res.status(500).json({ error: "unlock_failed" });
+  }
+});
+
 // 新增：建立短連結（伺服器端單一真實來源，供網頁 UI 與 MCP 共用）
 // 接收已上傳檔案的參照 (f) + 中繼資料 + 客戶清單，逐一寫入 Firestore links/{shortId}
 app.post("/api/create-link", async (req, res) => {
   const advisor = requireApiKey(req, res);
   if (advisor === null) return;
-  const { clients, f, r, t, d, i, w, origin: originInput } = req.body || {};
+  const { clients, f, r, t, d, i, w, origin: originInput, expiryDays, pin: rawPin } = req.body || {};
 
   const names: string[] = Array.isArray(clients)
     ? clients.map((n: any) => String(n).trim()).filter(Boolean)
@@ -663,6 +944,10 @@ app.post("/api/create-link", async (req, res) => {
   }
   if (!f || typeof f !== "string") {
     return res.status(400).json({ error: "請提供已上傳檔案的參照 (f)，例如 r2:reports/...." });
+  }
+  const pin = rawPin === undefined || rawPin === null || rawPin === "" ? "" : rawPin;
+  if (pin !== "" && (typeof pin !== "string" || !/^\d{4,8}$/.test(pin))) {
+    return res.status(400).json({ error: "PIN 須為 4-8 位數字" });
   }
 
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
@@ -697,8 +982,10 @@ app.post("/api/create-link", async (req, res) => {
     ? candidate
     : normalize(String(envOrigin || requestOrigin));
 
-  // 30 天後過期（Firestore Timestamp，供 TTL 政策使用）
-  const expireAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const ttlDays = typeof expiryDays === "number" && Number.isFinite(expiryDays) && Number.isInteger(expiryDays) && expiryDays >= 1 && expiryDays <= 365
+    ? expiryDays
+    : 30;
+  const expireAt = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
   const createdAt = new Date().toISOString();
   const fsBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links`;
 
@@ -711,15 +998,6 @@ app.post("/api/create-link", async (req, res) => {
         if (cleanWhatsapp) payload.w = cleanWhatsapp;
 
         const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
-        const body = JSON.stringify({
-          fields: {
-            q: { stringValue: compressed },
-            clientName: { stringValue: name },
-            createdAt: { stringValue: createdAt },
-            expireAt: { timestampValue: expireAt },
-            adv: { stringValue: advisor }, // advisor who created it (for read-notification routing)
-          },
-        });
 
         // Create-only write: currentDocument.exists=false makes Firestore reject
         // (precondition failed) instead of silently overwriting an existing link.
@@ -727,6 +1005,17 @@ app.post("/api/create-link", async (req, res) => {
         let shortId = "";
         for (let attempt = 0; attempt < 5; attempt++) {
           const candidate = Math.random().toString(36).substring(2, 8);
+          const fields: any = {
+            q: { stringValue: compressed },
+            clientName: { stringValue: name },
+            createdAt: { stringValue: createdAt },
+            expireAt: { timestampValue: expireAt },
+            adv: { stringValue: advisor }, // advisor who created it (for read-notification routing)
+          };
+          if (pin) {
+            fields.pinHash = { stringValue: pinHashFor(candidate, pin) };
+          }
+          const body = JSON.stringify({ fields });
           const writeRes = await fetch(
             `${fsBase}/${candidate}?key=${apiKey}&currentDocument.exists=false`,
             { method: "PATCH", headers: { "Content-Type": "application/json" }, body }
@@ -748,7 +1037,7 @@ app.post("/api/create-link", async (req, res) => {
 
         if (!shortId) throw new Error(`短連結 ID 連續碰撞，請重試 (${name})`);
 
-        return { name, shortId, shortLink: `${baseOrigin}/l/${shortId}` };
+        return { name, shortId, shortLink: `${baseOrigin}/l/${shortId}`, pinProtected: Boolean(pin) };
       })
     );
 
@@ -756,6 +1045,126 @@ app.post("/api/create-link", async (req, res) => {
   } catch (error: any) {
     console.error("[CREATE_LINK] Error:", error.message);
     res.status(500).json({ error: "建立短連結失敗", detail: error.message });
+  }
+});
+
+app.get("/api/links", async (req, res) => {
+  const advisor = requireApiKey(req, res);
+  if (advisor === null) return;
+
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+  const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+  if (!projectId || !apiKey) {
+    return res.status(500).json({ error: "伺服器缺少 Firebase 設定 (Project ID / API Key)" });
+  }
+
+  try {
+    const queryRes = await fetch(
+      `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:runQuery?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          structuredQuery: {
+            from: [{ collectionId: "links" }],
+            where: {
+              fieldFilter: {
+                field: { fieldPath: "adv" },
+                op: "EQUAL",
+                value: { stringValue: advisor },
+              },
+            },
+            limit: 300,
+          },
+        }),
+      }
+    );
+
+    if (!queryRes.ok) {
+      const detail = await queryRes.text();
+      console.error(`[LIST_LINKS] Firestore query failed (${queryRes.status}): ${detail}`);
+      return res.status(500).json({ error: "讀取連結失敗" });
+    }
+
+    const rows = await queryRes.json();
+    const links = (Array.isArray(rows) ? rows : [])
+      .filter((row: any) => row.document)
+      .map((row: any) => {
+        const doc = row.document;
+        const fields = doc.fields || {};
+        const decoded = fields.q?.stringValue ? decodeLzPayload(fields.q.stringValue) : null;
+        const nameParts = String(doc.name || "").split("/");
+        return {
+          shortId: nameParts[nameParts.length - 1] || "",
+          clientName: fields.clientName?.stringValue || "",
+          reportName: decoded?.r ? String(decoded.r) : "",
+          createdAt: fields.createdAt?.stringValue || "",
+          expireAt: fields.expireAt?.timestampValue || null,
+          revoked: fields.revoked?.booleanValue === true,
+          pinProtected: Boolean(fields.pinHash),
+        };
+      })
+      .sort((a: any, b: any) => {
+        const aTime = Date.parse(a.createdAt);
+        const bTime = Date.parse(b.createdAt);
+        return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+      });
+
+    res.json({ links });
+  } catch (error: any) {
+    console.error("[LIST_LINKS] Error:", error.message);
+    res.status(500).json({ error: "讀取連結失敗" });
+  }
+});
+
+app.post("/api/revoke-link", async (req, res) => {
+  const advisor = requireApiKey(req, res);
+  if (advisor === null) return;
+
+  const { shortId } = req.body || {};
+  if (!shortId || typeof shortId !== "string" || !/^[a-z0-9]{1,32}$/i.test(shortId)) {
+    return res.status(400).json({ error: "無效的短連結 ID" });
+  }
+
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+  const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+  if (!projectId || !apiKey) {
+    return res.status(500).json({ error: "伺服器缺少 Firebase 設定 (Project ID / API Key)" });
+  }
+
+  const fsBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links`;
+  const nextRevoked = req.body?.revoked === false ? false : true;
+
+  try {
+    const docRes = await fetch(`${fsBase}/${shortId}?key=${apiKey}`);
+    if (!docRes.ok) {
+      return res.status(404).json({ error: "找不到此連結" });
+    }
+
+    const doc = await docRes.json();
+    if (doc.fields?.adv?.stringValue !== advisor) {
+      return res.status(403).json({ error: "沒有權限修改此連結" });
+    }
+
+    const patchRes = await fetch(
+      `${fsBase}/${shortId}?key=${apiKey}&updateMask.fieldPaths=revoked`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fields: { revoked: { booleanValue: nextRevoked } } }),
+      }
+    );
+
+    if (!patchRes.ok) {
+      const detail = await patchRes.text();
+      console.error(`[REVOKE_LINK] Firestore patch failed (${patchRes.status}) for ${shortId}: ${detail}`);
+      return res.status(500).json({ error: "更新連結狀態失敗" });
+    }
+
+    res.json({ ok: true });
+  } catch (error: any) {
+    console.error("[REVOKE_LINK] Error:", error.message);
+    res.status(500).json({ error: "更新連結狀態失敗" });
   }
 });
 
@@ -1111,7 +1520,7 @@ const JARGON_CACHE_MAX = 500;
 const jargonCache = new Map<string, { terms: JargonTerm[]; at: number }>();
 const jargonInFlight = new Map<string, Promise<JargonTerm[] | null>>();
 
-const sha256Hex = (value: string): string => crypto.createHash("sha256").update(value).digest("hex");
+const sha256Hex = (value: string): string => createHash("sha256").update(value).digest("hex");
 
 const isValidJargonImageBase64 = (value: unknown): value is string => {
   if (typeof value !== "string") return false;
@@ -1487,7 +1896,7 @@ const RESPONSE_SCHEMA = {
     },
     nba_whatsapp: {
       type: "string",
-      description: "A customised WhatsApp opening message in Hong Kong financial Cantonese (traditional characters). Must use language predicates matching the client's rep_system and embed one presupposition that assumes the next meeting.",
+      description: "A customised WhatsApp opening message in Hong Kong financial Cantonese (traditional characters). Must use language predicates matching the client's rep_system and embed one presupposition that assumes the next meeting. Must anchor to exactly ONE concrete observed behaviour explicitly present in SESSION DATA, chosen by priority: (1) CTA click page, (2) return-visit gap when 'Minutes since last visit' is a number, (3) highest-dwell page's content area, (4) zoom cluster — a zoom cluster only when the zoomed content/topic is named in the data. Never invent or infer a behaviour absent from the data; if no page-level detail is available, reference the report topic only, using the literal report title. Client-facing rules: never use analytics terms (dwell, zoom cluster, CTA, session, telemetry) — translate into natural phrases like 「你之前睇緊嘅⋯⋯部分」; frame it as shared interest, never as monitoring (「見到你對⋯⋯特別有興趣」, not 「我見到你停留咗幾耐」); express the return gap qualitatively (「咁快返嚟再睇」/「琴日再睇返」), never the literal minute count.",
     },
   },
   required: ["intent_archetype", "z_score", "friction_points", "psych_bias", "rep_system", "advisor_nlp_approach", "spin_question", "cialdini_lever", "voss_label", "nba_whatsapp"],
@@ -1553,6 +1962,12 @@ const buildBehaviorBlock = (
   return `\n\n📖 <b>閱讀行為（最專注頁面）：</b>\n${lines.join('\n')}${path}`;
 };
 
+const formatReturnVisitGap = (mins: number): string => {
+  if (mins >= 2880) return `${Math.round(mins / 1440)} 日`;
+  if (mins >= 60) return `${Math.round(mins / 60)} 小時`;
+  return `${mins} 分鐘`;
+};
+
 app.post("/api/session-end", async (req, res) => {
   const { event, session_id, client_name, report_name, file_id } = req.body;
   // Everything numeric/array below is unauthenticated client input. Coerce and
@@ -1563,7 +1978,7 @@ app.post("/api/session-end", async (req, res) => {
     // Phase 3 deep telemetry
     nav_history, zoom_clusters, scroll_samples, peak_scroll_velocity,
     // Phase 4 enrichment
-    cta_click_page, device_type, tab_switch_count, return_visit_count, engaged_60s_page
+    cta_click_page, mins_since_last_visit, device_id, device_type, tab_switch_count, return_visit_count, engaged_60s_page
   } = sanitizeSessionEnd(req.body);
 
   let rName = report_name || "Document";
@@ -1699,7 +2114,7 @@ BEHAVIOURAL FINANCE RULES:
 CONTEXT SIGNALS:
 - Device mobile: weight engagement signals 1.3× — mobile reading requires more intent than desktop. Keep advisor_nlp_approach and nba_whatsapp concise (mobile users have short attention windows).
 - Device desktop: assume seated reading context — more deliberate evaluation. Advisor can use longer, more detailed follow-up.
-- return_visit_count >= 1: RETURN VISIT — client came back to re-read after a completed session = strongest organic buying signal. Elevate intent_archetype toward Deep Diver or Momentum Buyer. cialdini_lever MUST be Consistency ("You've come back to this several times — this clearly matters to you") or Scarcity (cost of further delay).
+- return_visit_count >= 1: RETURN VISIT — client came back to re-read after a completed session = strongest organic buying signal. Elevate intent_archetype toward Deep Diver or Momentum Buyer. cialdini_lever MUST be Consistency ("You've come back to this several times — this clearly matters to you") or Scarcity (cost of further delay). When mins_since_last_visit is a number, reference the concrete gap in nba_whatsapp (for example, returned after N minutes/hours — treat a short gap under 24h as high urgency).
 - return_visit_count = 0: single-sitting read = casual evaluation, not yet a return-buyer pattern.
 - tab_switch_count: attention switches DURING reading (glances at other tabs/apps). High count on a single sitting = distracted context, not a buying signal — weigh dwell/scroll signals accordingly.
 - Time of day: morning/afternoon = work-context reading (often interrupted); evening = personal/family-context reading (higher emotional weight, better follow-up window); late night = high personal motivation but defer outreach until next morning.
@@ -1761,6 +2176,7 @@ SESSION DATA:
 - CTA click page (WhatsApp appointment button): ${cta_click_page != null ? `Page ${cta_click_page} — STRONGEST INTEREST SIGNAL` : 'not clicked'}
 - Device: ${device_type || 'unknown'}
 - Return visits (completed sessions re-opened): ${return_visit_count ?? 0}
+- Minutes since last visit: ${mins_since_last_visit ?? "n/a"}
 - Tab switch count (attention switches while reading): ${tab_switch_count ?? 0}
 - Time of day (HK): ${getHkTimeOfDay().name}
 - Per-page behaviour matrix:
@@ -1773,7 +2189,7 @@ STEP 4 — Write advisor_nlp_approach using the rep_system pace + one Milton Mod
 STEP 5 — Write spin_question: select the SPIN type from intent_archetype, then craft the exact question referencing the highest-friction content area.
 STEP 6 — Write cialdini_lever: map psych_bias to the correct Cialdini principle and write one concrete tactic sentence.
 STEP 7 — Write voss_label: identify the highest-friction page/behaviour, name its emotion with "It sounds like…", follow with one "What" or "How" calibrated question.
-STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sensory predicates and one embedded presupposition.`;
+STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sensory predicates and one embedded presupposition, anchored to ONE observed behaviour per the nba_whatsapp field rules (priority: CTA click > return gap > highest-dwell content > named zoom content; no analytics jargon; no exact minute counts; no fabricated behaviours).`;
 
       let aiResult: any = null;
       let usedModel = '';
@@ -1878,7 +2294,9 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
       const deviceIcon = device_type === 'mobile' ? '📱' : device_type === 'desktop' ? '💻' : '❓';
       const timeLabel = getHkTimeOfDay().label;
       const ctaLine = cta_click_page != null ? `\n🔥 <b>CTA Clicked on Page：</b> ${cta_click_page}` : '';
-      const returnVisitLine = isReturnVisit ? `\n🔄 <b>RETURN VISIT</b> — Client came back to re-read` : '';
+      const returnVisitLine = isReturnVisit
+        ? `\n🔄 <b>RETURN VISIT</b> — Client came back to re-read${mins_since_last_visit != null ? `（上次閱讀 ${formatReturnVisitGap(mins_since_last_visit)} 前）` : ''}`
+        : '';
 
       text = `🎯 <b>【Antigravity 銷售導航】</b>
 👤 <b>客戶：</b> ${escapeHTML(client_name)}  📄 <b>報告：</b> ${escapeHTML(rName)}
@@ -1928,6 +2346,91 @@ ${nba}${behaviorBlock}`;
     await sendTelegram(text);
   } else if (text) {
     console.warn(`[SESSION-END] Telegram rate-limited for ${ip}`);
+  }
+
+  try {
+    const validReaderInput =
+      device_id !== null &&
+      typeof file_id === "string" && file_id.trim() !== "" &&
+      typeof client_name === "string" && client_name.trim() !== "" &&
+      total_duration_sec >= 10;
+
+    if (validReaderInput) {
+      const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+      const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+      if (!projectId || !apiKey) {
+        console.error("[SESSION-END] Missing Firebase config for second-reader detection");
+      } else {
+        const readerKey = createHash('sha256').update(`${file_id}|${client_name}`).digest('hex').slice(0, 40);
+        const docBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
+        const docUrl = `${docBase}/readers/${readerKey}`;
+        const nowIso = new Date().toISOString();
+        const readRes = await fetch(docUrl);
+
+        if (readRes.status === 404) {
+          await fetch(`${docUrl}?key=${apiKey}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              fields: {
+                deviceIds: { arrayValue: { values: [{ stringValue: device_id }] } },
+                updatedAt: { timestampValue: nowIso },
+              },
+            }),
+          }).then(async (writeRes) => {
+            if (!writeRes.ok) {
+              const detail = await writeRes.text().catch(() => "");
+              console.error(`[SESSION-END] Reader create failed (${writeRes.status}): ${detail.slice(0, 200)}`);
+            }
+          });
+        } else if (!readRes.ok) {
+          const detail = await readRes.text().catch(() => "");
+          console.error(`[SESSION-END] Reader GET failed (${readRes.status}): ${detail.slice(0, 200)}`);
+        } else {
+          const readerDoc = await readRes.json().catch(() => ({}));
+          const rawDevices = readerDoc.fields?.deviceIds?.arrayValue?.values;
+          const deviceIds = Array.isArray(rawDevices)
+            ? rawDevices.map((v: any) => v?.stringValue).filter((v: any): v is string => typeof v === "string")
+            : [];
+
+          if (!deviceIds.includes(device_id)) {
+            const nextDeviceIds = [...deviceIds, device_id].slice(-10);
+            // Plain GET+PATCH read-modify-write; no transaction. Concurrent
+            // sessions may double-alert, acceptable at this volume.
+            const updateUrl = `${docUrl}?key=${apiKey}&updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt`;
+            const updateRes = await fetch(updateUrl, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                fields: {
+                  deviceIds: { arrayValue: { values: nextDeviceIds.map((id) => ({ stringValue: id })) } },
+                  updatedAt: { timestampValue: nowIso },
+                },
+              }),
+            });
+
+            if (!updateRes.ok) {
+              const detail = await updateRes.text().catch(() => "");
+              console.error(`[SESSION-END] Reader update failed (${updateRes.status}): ${detail.slice(0, 200)}`);
+            } else if (deviceIds.length >= 1) {
+              const secondReaderText =
+                `👥 <b>偵測到第二位讀者</b>\n\n` +
+                `👤 <b>客戶：</b> ${escapeHTML(client_name)}\n` +
+                `📄 <b>報告：</b> ${escapeHTML(rName)}\n` +
+                `📱 裝置：${escapeHTML(device_type)}（第 ${nextDeviceIds.length} 部裝置）\n` +
+                `💡 連結可能已被轉發給其他決策者（配偶／家人）。`;
+              if (allow(`tg:${ip}`, 12, 60_000)) {
+                await sendTelegram(secondReaderText);
+              } else {
+                console.warn(`[SESSION-END] Second-reader Telegram rate-limited for ${ip}`);
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[SESSION-END] Second-reader detection failed:", err);
   }
 
   res.json({ status: "ok" });
