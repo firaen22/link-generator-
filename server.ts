@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import express from "express";
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -131,6 +131,17 @@ const decodeLzPayload = (q: string): Record<string, any> | null => {
   }
 };
 
+const pinHashFor = (shortId: string, pin: string): string =>
+  createHash("sha256").update(`${shortId}:${pin}`).digest("hex");
+
+const sameHash = (a: string, b: string): boolean => {
+  const left = Buffer.from(a, "hex");
+  const right = Buffer.from(b, "hex");
+  return left.length === right.length && timingSafeEqual(left, right);
+};
+
+const linkMissingJson = { error: "not_found" };
+
 const lifecycleErrorHtml = (message: string): string => `<!DOCTYPE html>
 <html lang="zh-HK">
 <head>
@@ -148,6 +159,80 @@ const lifecycleErrorHtml = (message: string): string => `<!DOCTYPE html>
   </div>
 </body>
 </html>`;
+
+const pinEntryHtml = (shortId: string): string => {
+  const safeShortId = escapeHTMLAttr(shortId);
+  const safeShortIdJs = JSON.stringify(shortId).replace(/</g, '\\u003c');
+  return `<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>請輸入存取密碼</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
+    .container { width: min(100% - 40px, 360px); text-align: center; padding: 24px; }
+    h1 { margin: 0 0 16px; font-size: 22px; line-height: 1.3; }
+    input { box-sizing: border-box; width: 100%; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 18px; text-align: center; letter-spacing: 0; outline: none; }
+    input:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.16); }
+    button { width: 100%; margin-top: 12px; padding: 12px 14px; border: 0; border-radius: 10px; background: #4f46e5; color: #ffffff; font-size: 15px; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: 0.7; cursor: not-allowed; }
+    .error { min-height: 20px; margin-top: 12px; color: #e11d48; font-size: 14px; font-weight: 600; }
+    .hint { margin: 0 0 14px; color: #64748b; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <h1>請輸入存取密碼</h1>
+    <p class="hint">連結 ID：${safeShortId}</p>
+    <form id="pinForm">
+      <input id="pin" name="pin" type="password" inputmode="numeric" pattern="\\d{4,8}" autocomplete="one-time-code" maxlength="8" required autofocus />
+      <button id="submitBtn" type="submit">開啟報告</button>
+      <div id="error" class="error" role="alert"></div>
+    </form>
+  </main>
+  <script>
+    const shortId = ${safeShortIdJs};
+    const form = document.getElementById('pinForm');
+    const input = document.getElementById('pin');
+    const button = document.getElementById('submitBtn');
+    const errorEl = document.getElementById('error');
+    form.addEventListener('submit', async function(event) {
+      event.preventDefault();
+      errorEl.textContent = '';
+      button.disabled = true;
+      try {
+        const res = await fetch('/api/unlock-link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ shortId, pin: input.value })
+        });
+        const body = await res.json().catch(function() { return {}; });
+        if (res.ok && body.url) {
+          window.location.replace(body.url);
+          return;
+        }
+        if (res.status === 403) {
+          errorEl.textContent = '密碼錯誤，請再試';
+          input.value = '';
+          input.focus();
+          return;
+        }
+        if (res.status === 429) {
+          errorEl.textContent = '嘗試次數過多，請稍後再試';
+          return;
+        }
+        errorEl.textContent = '無法開啟連結，請稍後再試';
+      } catch {
+        errorEl.textContent = '無法開啟連結，請稍後再試';
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>`;
+};
 
 const resolveOgImage = (imageParam: string): string => {
   const fallback = 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1200&auto=format&fit=crop&.jpg';
@@ -336,6 +421,29 @@ function requireApiKey(req: express.Request, res: express.Response): string | nu
   res.status(401).json({ error: "未授權：缺少或無效的存取金鑰 (x-pwp-key)" });
   return null;
 }
+
+const sendShortLinkOpenNotification = async (
+  req: express.Request,
+  data: any,
+  shortId: string,
+  cName: string,
+  rName: string,
+  marker = ""
+) => {
+  const advisor = data.fields?.adv?.stringValue || "";
+  const advisorLine = advisor ? `\n👨‍💼 <b>顧問：</b> ${escapeHTML(advisor)}` : "";
+  const markerLine = marker ? `\n${marker}` : "";
+  const notif = `🔔 <b>閱讀通知 (短連結)</b>${markerLine}\n\n👤 <b>客戶：</b> ${escapeHTML(cName)}\n📄 <b>報告：</b> ${escapeHTML(rName)}${advisorLine}\n🔗 <b>ID：</b> ${shortId}\n⏰ <b>時間：</b> 剛剛`;
+  // Route to the advisor who created it (if mapped) AND the owner master log.
+  // Awaited: on serverless the function is frozen after the response, so a
+  // fire-and-forget fetch would be killed before Telegram receives it.
+  // Rate-limited per client IP like /api/track — the route is unauthenticated.
+  if (allow(`tg:${clientIp(req)}`, 12, 60_000)) {
+    await sendTelegramTo(notif, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
+  } else {
+    console.warn(`[SHORT_LINK] Telegram rate-limited for ${clientIp(req)}`);
+  }
+};
 
 // Startup status check
 console.log('--- Server Status ---');
@@ -608,20 +716,18 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     // JS-string-safe form for the redirect <script> below (defense in depth —
     // viewerUrl here is already encodeURIComponent'd, but keep both routes uniform).
     const safeViewerJs = JSON.stringify(viewerUrl).replace(/</g, '\\u003c');
+    const pinProtected = Boolean(data.fields?.pinHash?.stringValue);
 
-    if (!isCrawler) {
-      const advisor = data.fields?.adv?.stringValue || "";
-      const advisorLine = advisor ? `\n👨‍💼 <b>顧問：</b> ${escapeHTML(advisor)}` : "";
-      const notif = `🔔 <b>閱讀通知 (短連結)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(cName)}\n📄 <b>報告：</b> ${escapeHTML(rName)}${advisorLine}\n🔗 <b>ID：</b> ${shortId}\n⏰ <b>時間：</b> 剛剛`;
-      // Route to the advisor who created it (if mapped) AND the owner master log.
-      // Awaited: on serverless the function is frozen after the response, so a
-      // fire-and-forget fetch would be killed before Telegram receives it.
-      // Rate-limited per client IP like /api/track — the route is unauthenticated.
-      if (allow(`tg:${clientIp(req)}`, 12, 60_000)) {
-        await sendTelegramTo(notif, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
-      } else {
-        console.warn(`[SHORT_LINK] Telegram rate-limited for ${clientIp(req)}`);
-      }
+    // PIN gates link resolution: /l will not expose the q-bearing viewer URL
+    // until the server verifies the PIN. Once unlocked, /view?q=... is shareable;
+    // this deters forwarding and signals misuse, but is not encryption.
+    if (pinProtected && !isCrawler) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.send(pinEntryHtml(shortId));
+    }
+
+    if (!isCrawler && !pinProtected) {
+      await sendShortLinkOpenNotification(req, data, shortId, cName, rName);
     }
 
     const html = `<!DOCTYPE html>
@@ -677,12 +783,157 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
   }
 });
 
+app.post("/api/unlock-link", async (req, res) => {
+  const { shortId, pin } = req.body || {};
+  if (typeof shortId !== "string" || !/^[a-z0-9]{1,32}$/i.test(shortId) || typeof pin !== "string" || !/^\d{4,8}$/.test(pin)) {
+    return res.status(400).json({ error: "invalid_request" });
+  }
+
+  const ip = clientIp(req);
+  if (!allow(`pin:${ip}`, 10, 60_000, false) || !allow(`pin:id:${shortId}`, 30, 3_600_000, false)) {
+    return res.status(429).json({ error: "too_many_attempts" });
+  }
+  allow(`pin:${ip}`, 10, 60_000);
+  allow(`pin:id:${shortId}`, 30, 3_600_000);
+
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+  const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+  if (!projectId || !apiKey) {
+    return res.status(500).json({ error: "server_config_missing" });
+  }
+
+  const fsBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links`;
+
+  try {
+    const docRes = await fetch(`${fsBase}/${shortId}`);
+    if (!docRes.ok) {
+      if (docRes.status !== 404) {
+        const detail = await docRes.text().catch(() => "");
+        console.error(`[UNLOCK_LINK] Firestore read failed (${docRes.status}) for ${shortId}: ${detail}`);
+        return res.status(500).json({ error: "unlock_failed" });
+      }
+      return res.status(404).json(linkMissingJson);
+    }
+
+    const data = await docRes.json();
+    const fields = data.fields || {};
+    const storedHash = fields.pinHash?.stringValue || "";
+    if (!storedHash) {
+      return res.status(404).json(linkMissingJson);
+    }
+
+    const expireAtRaw = fields.expireAt?.timestampValue;
+    const expireAtDate = expireAtRaw ? new Date(expireAtRaw) : null;
+    if (fields.revoked?.booleanValue === true) {
+      return res.status(410).json({ error: "link_unavailable" });
+    }
+    if (expireAtDate && Number.isFinite(expireAtDate.getTime()) && expireAtDate < new Date()) {
+      return res.status(410).json({ error: "link_unavailable" });
+    }
+
+    const lockedUntilRaw = fields.pinLockedUntil?.timestampValue;
+    const lockedUntil = lockedUntilRaw ? new Date(lockedUntilRaw) : null;
+    if (lockedUntil && Number.isFinite(lockedUntil.getTime()) && lockedUntil > new Date()) {
+      return res.status(429).json({
+        error: "locked",
+        retry_after_min: Math.ceil((lockedUntil.getTime() - Date.now()) / 60_000),
+      });
+    }
+
+    const candidateHash = pinHashFor(shortId, pin);
+    const ok = storedHash.length === candidateHash.length && sameHash(storedHash, candidateHash);
+
+    if (!ok) {
+      const currentFailed = Number.parseInt(fields.failedPinCount?.integerValue || "0", 10);
+      const nextFailed = Number.isFinite(currentFailed) ? currentFailed + 1 : 1;
+      const lockout = nextFailed >= 20;
+      const patchFields: any = {
+        failedPinCount: { integerValue: lockout ? "0" : String(nextFailed) },
+      };
+      const masks = ["failedPinCount"];
+      if (lockout) {
+        patchFields.pinLockedUntil = { timestampValue: new Date(Date.now() + 3_600_000).toISOString() };
+        masks.push("pinLockedUntil");
+      }
+
+      // Durable lockout is read-modify-write; concurrent wrong attempts can
+      // undercount, but this still closes the serverless scale-out brute-force gap.
+      const patchRes = await fetch(
+        `${fsBase}/${shortId}?key=${apiKey}&${masks.map((m) => `updateMask.fieldPaths=${encodeURIComponent(m)}`).join("&")}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fields: patchFields }),
+        }
+      );
+      if (!patchRes.ok) {
+        const detail = await patchRes.text().catch(() => "");
+        console.error(`[UNLOCK_LINK] Failed to update PIN counters (${patchRes.status}) for ${shortId}: ${detail}`);
+        return res.status(500).json({ error: "unlock_failed" });
+      }
+
+      if ((nextFailed === 1 || nextFailed === 20) && allow(`tg:${ip}`, 12, 60_000)) {
+        const clientName = fields.clientName?.stringValue || "貴客";
+        const advisor = fields.adv?.stringValue || "";
+        const message = nextFailed === 20
+          ? `🔐 <b>密碼嘗試失敗</b>\n\n👤 客戶連結：${escapeHTML(clientName)}\n🔗 ID：${shortId}\n🚫 已連續錯誤 20 次，連結已鎖定 1 小時。`
+          : `🔐 <b>密碼嘗試失敗</b>\n\n👤 客戶連結：${escapeHTML(clientName)}\n🔗 ID：${shortId}\n⚠️ 有人輸入錯誤密碼 — 連結可能已被轉發。`;
+        await sendTelegramTo(message, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
+      }
+
+      return res.status(403).json({ error: "wrong_pin" });
+    }
+
+    const failedPinCount = Number.parseInt(fields.failedPinCount?.integerValue || "0", 10);
+    if (Number.isFinite(failedPinCount) && failedPinCount > 0) {
+      const resetRes = await fetch(
+        `${fsBase}/${shortId}?key=${apiKey}&updateMask.fieldPaths=failedPinCount`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fields: { failedPinCount: { integerValue: "0" } } }),
+        }
+      );
+      if (!resetRes.ok) {
+        const detail = await resetRes.text().catch(() => "");
+        console.error(`[UNLOCK_LINK] Failed to reset PIN counter (${resetRes.status}) for ${shortId}: ${detail}`);
+      }
+    }
+
+    const q = fields.q?.stringValue;
+    if (!q) {
+      return res.status(404).json(linkMissingJson);
+    }
+
+    let cName = fields.clientName?.stringValue || "貴客";
+    let rName = "Document";
+    const decoded = decodeLzPayload(q);
+    if (decoded) {
+      if (decoded.c) cName = decoded.c;
+      if (decoded.r) rName = decoded.r;
+      if (rName === "Document" && decoded.f) {
+        const extracted = extractFileName(decoded.f);
+        if (extracted && extracted !== "Document") {
+          rName = extracted;
+        }
+      }
+    }
+
+    const viewerUrl = `/view?q=${encodeURIComponent(q)}`;
+    await sendShortLinkOpenNotification(req, data, shortId, cName, rName, "🔐 已解鎖");
+    res.json({ url: viewerUrl });
+  } catch (error) {
+    console.error("[UNLOCK_LINK] Error:", error);
+    res.status(500).json({ error: "unlock_failed" });
+  }
+});
+
 // 新增：建立短連結（伺服器端單一真實來源，供網頁 UI 與 MCP 共用）
 // 接收已上傳檔案的參照 (f) + 中繼資料 + 客戶清單，逐一寫入 Firestore links/{shortId}
 app.post("/api/create-link", async (req, res) => {
   const advisor = requireApiKey(req, res);
   if (advisor === null) return;
-  const { clients, f, r, t, d, i, w, origin: originInput, expiryDays } = req.body || {};
+  const { clients, f, r, t, d, i, w, origin: originInput, expiryDays, pin: rawPin } = req.body || {};
 
   const names: string[] = Array.isArray(clients)
     ? clients.map((n: any) => String(n).trim()).filter(Boolean)
@@ -693,6 +944,10 @@ app.post("/api/create-link", async (req, res) => {
   }
   if (!f || typeof f !== "string") {
     return res.status(400).json({ error: "請提供已上傳檔案的參照 (f)，例如 r2:reports/...." });
+  }
+  const pin = rawPin === undefined || rawPin === null || rawPin === "" ? "" : rawPin;
+  if (pin !== "" && (typeof pin !== "string" || !/^\d{4,8}$/.test(pin))) {
+    return res.status(400).json({ error: "PIN 須為 4-8 位數字" });
   }
 
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
@@ -743,15 +998,6 @@ app.post("/api/create-link", async (req, res) => {
         if (cleanWhatsapp) payload.w = cleanWhatsapp;
 
         const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
-        const body = JSON.stringify({
-          fields: {
-            q: { stringValue: compressed },
-            clientName: { stringValue: name },
-            createdAt: { stringValue: createdAt },
-            expireAt: { timestampValue: expireAt },
-            adv: { stringValue: advisor }, // advisor who created it (for read-notification routing)
-          },
-        });
 
         // Create-only write: currentDocument.exists=false makes Firestore reject
         // (precondition failed) instead of silently overwriting an existing link.
@@ -759,6 +1005,17 @@ app.post("/api/create-link", async (req, res) => {
         let shortId = "";
         for (let attempt = 0; attempt < 5; attempt++) {
           const candidate = Math.random().toString(36).substring(2, 8);
+          const fields: any = {
+            q: { stringValue: compressed },
+            clientName: { stringValue: name },
+            createdAt: { stringValue: createdAt },
+            expireAt: { timestampValue: expireAt },
+            adv: { stringValue: advisor }, // advisor who created it (for read-notification routing)
+          };
+          if (pin) {
+            fields.pinHash = { stringValue: pinHashFor(candidate, pin) };
+          }
+          const body = JSON.stringify({ fields });
           const writeRes = await fetch(
             `${fsBase}/${candidate}?key=${apiKey}&currentDocument.exists=false`,
             { method: "PATCH", headers: { "Content-Type": "application/json" }, body }
@@ -780,7 +1037,7 @@ app.post("/api/create-link", async (req, res) => {
 
         if (!shortId) throw new Error(`短連結 ID 連續碰撞，請重試 (${name})`);
 
-        return { name, shortId, shortLink: `${baseOrigin}/l/${shortId}` };
+        return { name, shortId, shortLink: `${baseOrigin}/l/${shortId}`, pinProtected: Boolean(pin) };
       })
     );
 

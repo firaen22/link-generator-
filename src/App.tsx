@@ -12,6 +12,7 @@ interface GeneratedClient {
   name: string;
   shortId: string;
   shortLink: string;
+  pinProtected: boolean;
   copied: boolean;
 }
 
@@ -95,6 +96,7 @@ export default function App() {
   const [description, setDescription] = useState('');
   const [whatsappNumber, setWhatsappNumber] = useState('');
   const [expiryDays, setExpiryDays] = useState(30);
+  const [linkPin, setLinkPin] = useState('');
   // Per-user access key (sent as x-pwp-key). Persisted so it's entered once.
   const [accessKey, setAccessKey] = useState(() => localStorage.getItem('pwp_api_key') || '');
   const [isUploading, setIsUploading] = useState(false);
@@ -232,6 +234,9 @@ export default function App() {
       .filter(Boolean);
 
     if (names.length === 0) return alert("請輸入至少一個客戶名稱");
+    if (linkPin !== '' && !/^\d{4,8}$/.test(linkPin)) {
+      return alert("PIN 須為 4-8 位數字");
+    }
 
     setIsUploading(true);
     setGeneratedClients([]);
@@ -250,21 +255,23 @@ export default function App() {
         : window.location.origin;
 
       const fallbackReportName = file ? file.name.replace(/\.[^/.]+$/, "") : "Document";
+      const createBody: Record<string, unknown> = {
+        clients: names,
+        f: cleanFileURL,
+        r: reportName || fallbackReportName,
+        t: linkTitle || fallbackReportName,
+        d: description,
+        i: previewImage,
+        w: whatsappNumber, // server strips to digits for the "預約顧問" CTA
+        origin,
+        expiryDays,
+      };
+      if (linkPin) createBody.pin = linkPin;
 
       const createRes = await fetch('/api/create-link', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-pwp-key': accessKey },
-        body: JSON.stringify({
-          clients: names,
-          f: cleanFileURL,
-          r: reportName || fallbackReportName,
-          t: linkTitle || fallbackReportName,
-          d: description,
-          i: previewImage,
-          w: whatsappNumber, // server strips to digits for the "預約顧問" CTA
-          origin,
-          expiryDays,
-        }),
+        body: JSON.stringify(createBody),
       });
 
       if (!createRes.ok) {
@@ -274,7 +281,7 @@ export default function App() {
 
       const { links } = await createRes.json();
       const results: GeneratedClient[] = (links || []).map(
-        (l: { name: string; shortId: string; shortLink: string }) => ({ ...l, copied: false })
+        (l: { name: string; shortId: string; shortLink: string; pinProtected?: boolean }) => ({ ...l, pinProtected: Boolean(l.pinProtected), copied: false })
       );
       setGeneratedClients(results);
 
@@ -575,6 +582,26 @@ export default function App() {
           </div>
 
           <div>
+            <label htmlFor="linkPin" className="block text-sm font-semibold text-slate-700 mb-1.5">
+              存取 PIN <span className="text-slate-400 font-normal">(Optional)</span>
+            </label>
+            <input
+              type="text"
+              id="linkPin"
+              value={linkPin}
+              onChange={(e) => setLinkPin(e.target.value)}
+              inputMode="numeric"
+              pattern="[0-9]{4,8}"
+              maxLength={8}
+              placeholder="例如 628419"
+              className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white"
+            />
+            <p className="text-xs text-slate-400 mt-1.5 ml-1">
+              選填：讀者開啟連結時須輸入（建議 6 位以上）
+            </p>
+          </div>
+
+          <div>
             <label className="block text-sm font-semibold text-slate-700 mb-1.5">
               Upload Document (PDF)
             </label>
@@ -718,6 +745,7 @@ export default function App() {
                     <span className="text-sm font-semibold text-slate-700 w-24 shrink-0 truncate">
                       {client.name}
                     </span>
+                    {client.pinProtected && <span title="PIN protected" className="text-xs shrink-0">🔒</span>}
 
                     {/* Short link */}
                     <code className="flex-1 text-xs font-mono text-indigo-600 truncate">
