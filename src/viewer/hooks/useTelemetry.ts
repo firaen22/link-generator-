@@ -17,7 +17,7 @@ interface UseTelemetryParams {
 
 /** Fresh per-session identifier; crypto.randomUUID with a non-secure fallback. */
 function genSessionId() {
-  return crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+  return globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
 }
 
 /** LocalStorage reads that never throw. Sandboxed iframes, private-mode Safari,
@@ -27,8 +27,24 @@ function genSessionId() {
 function safeGetItem(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
 }
+function safeSetItem(key: string, value: string) {
+  try { localStorage.setItem(key, value); } catch { /* storage blocked — ignore */ }
+}
 function safeRemoveItem(key: string) {
   try { localStorage.removeItem(key); } catch { /* storage blocked — ignore */ }
+}
+
+function genDeviceId() {
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+    return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  }
+  let out = '';
+  for (let i = 0; i < 16; i += 1) {
+    out += Math.floor(Math.random() * 256).toString(16).padStart(2, '0');
+  }
+  return out;
 }
 
 /**
@@ -53,6 +69,15 @@ export function useTelemetry({
 }: UseTelemetryParams) {
   // 0. Session Identity
   const sessionIdRef = useRef(genSessionId());
+  const deviceIdRef = useRef<string>(
+    (() => {
+      const stored = safeGetItem('ag_device_id');
+      if (stored && /^[a-f0-9]{16,64}$/.test(stored)) return stored;
+      const generated = genDeviceId();
+      safeSetItem('ag_device_id', generated);
+      return generated;
+    })()
+  );
 
   // Tracking refs
   const startTimeRef = useRef(Date.now());
@@ -139,12 +164,16 @@ export function useTelemetry({
   const returnVisitCountRef = useRef<number>(
     parseInt(safeGetItem(returnVisitKey) || '0', 10) || 0
   );
+  const minsSinceLastVisitRef = useRef<number | null>(null);
   const maybeRecordReturnVisit = () => {
+    minsSinceLastVisitRef.current = null;
     const endedAt = Number(safeGetItem(sessionEndedKey));
     if (!Number.isFinite(endedAt) || endedAt <= 0) return;
     // Too-recent gap = transient backgrounding, not a return. Leave the flag:
     // the next handleExit overwrites its timestamp anyway.
     if (Date.now() - endedAt < RETURN_VISIT_MIN_GAP_MS) return;
+    const mins = Math.round((Date.now() - endedAt) / 60000);
+    minsSinceLastVisitRef.current = mins >= 0 ? mins : null;
     returnVisitCountRef.current += 1;
     try { localStorage.setItem(returnVisitKey, String(returnVisitCountRef.current)); } catch (e) { /* quota */ }
     safeRemoveItem(sessionEndedKey);
@@ -375,6 +404,7 @@ export function useTelemetry({
       const payload = {
         event: 'session_end',
         session_id: sessionIdRef.current,
+        device_id: deviceIdRef.current,
         file_id: fileId,
         client_name: clientName,
         report_name: reportName,
@@ -391,6 +421,7 @@ export function useTelemetry({
         device_type: deviceTypeRef.current,
         tab_switch_count: tabSwitchCountRef.current,
         return_visit_count: returnVisitCountRef.current,
+        mins_since_last_visit: minsSinceLastVisitRef.current,
         engaged_60s_page: engaged60PageRef.current,
       };
 
@@ -421,7 +452,7 @@ export function useTelemetry({
         const dwellTotalMs = perPage.reduce((sum, p) => sum + (Number.isFinite(p.dwellMs) ? p.dwellMs : 0), 0);
         const activeTotalMs = perPage.reduce((sum, p) => sum + (Number.isFinite(p.activeDwellMs) ? p.activeDwellMs : 0), 0);
         const totalPages = numPagesRef.current;
-        window.gtag('event', 'report_session_end', {
+        const gaPayload: Record<string, any> = {
           session_id: sessionIdRef.current,
           file_id: fileId,
           client_name: clientName,
@@ -439,7 +470,11 @@ export function useTelemetry({
           peak_scroll_velocity: peakScrollVelocity,
           // Fires during pagehide/visibilitychange — ask gtag for beacon transport.
           transport_type: 'beacon',
-        });
+        };
+        if (minsSinceLastVisitRef.current != null) {
+          gaPayload.mins_since_last_visit = minsSinceLastVisitRef.current;
+        }
+        window.gtag('event', 'report_session_end', gaPayload);
       }
 
       const sendViaFetch = () => {

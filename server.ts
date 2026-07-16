@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import express from "express";
-import crypto from "crypto";
+import { createHash } from "node:crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -1111,7 +1111,7 @@ const JARGON_CACHE_MAX = 500;
 const jargonCache = new Map<string, { terms: JargonTerm[]; at: number }>();
 const jargonInFlight = new Map<string, Promise<JargonTerm[] | null>>();
 
-const sha256Hex = (value: string): string => crypto.createHash("sha256").update(value).digest("hex");
+const sha256Hex = (value: string): string => createHash("sha256").update(value).digest("hex");
 
 const isValidJargonImageBase64 = (value: unknown): value is string => {
   if (typeof value !== "string") return false;
@@ -1553,6 +1553,12 @@ const buildBehaviorBlock = (
   return `\n\n📖 <b>閱讀行為（最專注頁面）：</b>\n${lines.join('\n')}${path}`;
 };
 
+const formatReturnVisitGap = (mins: number): string => {
+  if (mins >= 2880) return `${Math.round(mins / 1440)} 日`;
+  if (mins >= 60) return `${Math.round(mins / 60)} 小時`;
+  return `${mins} 分鐘`;
+};
+
 app.post("/api/session-end", async (req, res) => {
   const { event, session_id, client_name, report_name, file_id } = req.body;
   // Everything numeric/array below is unauthenticated client input. Coerce and
@@ -1563,7 +1569,7 @@ app.post("/api/session-end", async (req, res) => {
     // Phase 3 deep telemetry
     nav_history, zoom_clusters, scroll_samples, peak_scroll_velocity,
     // Phase 4 enrichment
-    cta_click_page, device_type, tab_switch_count, return_visit_count, engaged_60s_page
+    cta_click_page, mins_since_last_visit, device_id, device_type, tab_switch_count, return_visit_count, engaged_60s_page
   } = sanitizeSessionEnd(req.body);
 
   let rName = report_name || "Document";
@@ -1699,7 +1705,7 @@ BEHAVIOURAL FINANCE RULES:
 CONTEXT SIGNALS:
 - Device mobile: weight engagement signals 1.3× — mobile reading requires more intent than desktop. Keep advisor_nlp_approach and nba_whatsapp concise (mobile users have short attention windows).
 - Device desktop: assume seated reading context — more deliberate evaluation. Advisor can use longer, more detailed follow-up.
-- return_visit_count >= 1: RETURN VISIT — client came back to re-read after a completed session = strongest organic buying signal. Elevate intent_archetype toward Deep Diver or Momentum Buyer. cialdini_lever MUST be Consistency ("You've come back to this several times — this clearly matters to you") or Scarcity (cost of further delay).
+- return_visit_count >= 1: RETURN VISIT — client came back to re-read after a completed session = strongest organic buying signal. Elevate intent_archetype toward Deep Diver or Momentum Buyer. cialdini_lever MUST be Consistency ("You've come back to this several times — this clearly matters to you") or Scarcity (cost of further delay). When mins_since_last_visit is a number, reference the concrete gap in nba_whatsapp (for example, returned after N minutes/hours — treat a short gap under 24h as high urgency).
 - return_visit_count = 0: single-sitting read = casual evaluation, not yet a return-buyer pattern.
 - tab_switch_count: attention switches DURING reading (glances at other tabs/apps). High count on a single sitting = distracted context, not a buying signal — weigh dwell/scroll signals accordingly.
 - Time of day: morning/afternoon = work-context reading (often interrupted); evening = personal/family-context reading (higher emotional weight, better follow-up window); late night = high personal motivation but defer outreach until next morning.
@@ -1761,6 +1767,7 @@ SESSION DATA:
 - CTA click page (WhatsApp appointment button): ${cta_click_page != null ? `Page ${cta_click_page} — STRONGEST INTEREST SIGNAL` : 'not clicked'}
 - Device: ${device_type || 'unknown'}
 - Return visits (completed sessions re-opened): ${return_visit_count ?? 0}
+- Minutes since last visit: ${mins_since_last_visit ?? "n/a"}
 - Tab switch count (attention switches while reading): ${tab_switch_count ?? 0}
 - Time of day (HK): ${getHkTimeOfDay().name}
 - Per-page behaviour matrix:
@@ -1878,7 +1885,9 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
       const deviceIcon = device_type === 'mobile' ? '📱' : device_type === 'desktop' ? '💻' : '❓';
       const timeLabel = getHkTimeOfDay().label;
       const ctaLine = cta_click_page != null ? `\n🔥 <b>CTA Clicked on Page：</b> ${cta_click_page}` : '';
-      const returnVisitLine = isReturnVisit ? `\n🔄 <b>RETURN VISIT</b> — Client came back to re-read` : '';
+      const returnVisitLine = isReturnVisit
+        ? `\n🔄 <b>RETURN VISIT</b> — Client came back to re-read${mins_since_last_visit != null ? `（上次閱讀 ${formatReturnVisitGap(mins_since_last_visit)} 前）` : ''}`
+        : '';
 
       text = `🎯 <b>【Antigravity 銷售導航】</b>
 👤 <b>客戶：</b> ${escapeHTML(client_name)}  📄 <b>報告：</b> ${escapeHTML(rName)}
@@ -1928,6 +1937,91 @@ ${nba}${behaviorBlock}`;
     await sendTelegram(text);
   } else if (text) {
     console.warn(`[SESSION-END] Telegram rate-limited for ${ip}`);
+  }
+
+  try {
+    const validReaderInput =
+      device_id !== null &&
+      typeof file_id === "string" && file_id.trim() !== "" &&
+      typeof client_name === "string" && client_name.trim() !== "" &&
+      total_duration_sec >= 10;
+
+    if (validReaderInput) {
+      const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+      const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+      if (!projectId || !apiKey) {
+        console.error("[SESSION-END] Missing Firebase config for second-reader detection");
+      } else {
+        const readerKey = createHash('sha256').update(`${file_id}|${client_name}`).digest('hex').slice(0, 40);
+        const docBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
+        const docUrl = `${docBase}/readers/${readerKey}`;
+        const nowIso = new Date().toISOString();
+        const readRes = await fetch(docUrl);
+
+        if (readRes.status === 404) {
+          await fetch(`${docUrl}?key=${apiKey}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              fields: {
+                deviceIds: { arrayValue: { values: [{ stringValue: device_id }] } },
+                updatedAt: { timestampValue: nowIso },
+              },
+            }),
+          }).then(async (writeRes) => {
+            if (!writeRes.ok) {
+              const detail = await writeRes.text().catch(() => "");
+              console.error(`[SESSION-END] Reader create failed (${writeRes.status}): ${detail.slice(0, 200)}`);
+            }
+          });
+        } else if (!readRes.ok) {
+          const detail = await readRes.text().catch(() => "");
+          console.error(`[SESSION-END] Reader GET failed (${readRes.status}): ${detail.slice(0, 200)}`);
+        } else {
+          const readerDoc = await readRes.json().catch(() => ({}));
+          const rawDevices = readerDoc.fields?.deviceIds?.arrayValue?.values;
+          const deviceIds = Array.isArray(rawDevices)
+            ? rawDevices.map((v: any) => v?.stringValue).filter((v: any): v is string => typeof v === "string")
+            : [];
+
+          if (!deviceIds.includes(device_id)) {
+            const nextDeviceIds = [...deviceIds, device_id].slice(-10);
+            // Plain GET+PATCH read-modify-write; no transaction. Concurrent
+            // sessions may double-alert, acceptable at this volume.
+            const updateUrl = `${docUrl}?key=${apiKey}&updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt`;
+            const updateRes = await fetch(updateUrl, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                fields: {
+                  deviceIds: { arrayValue: { values: nextDeviceIds.map((id) => ({ stringValue: id })) } },
+                  updatedAt: { timestampValue: nowIso },
+                },
+              }),
+            });
+
+            if (!updateRes.ok) {
+              const detail = await updateRes.text().catch(() => "");
+              console.error(`[SESSION-END] Reader update failed (${updateRes.status}): ${detail.slice(0, 200)}`);
+            } else if (deviceIds.length >= 1) {
+              const secondReaderText =
+                `👥 <b>偵測到第二位讀者</b>\n\n` +
+                `👤 <b>客戶：</b> ${escapeHTML(client_name)}\n` +
+                `📄 <b>報告：</b> ${escapeHTML(rName)}\n` +
+                `📱 裝置：${escapeHTML(device_type)}（第 ${nextDeviceIds.length} 部裝置）\n` +
+                `💡 連結可能已被轉發給其他決策者（配偶／家人）。`;
+              if (allow(`tg:${ip}`, 12, 60_000)) {
+                await sendTelegram(secondReaderText);
+              } else {
+                console.warn(`[SESSION-END] Second-reader Telegram rate-limited for ${ip}`);
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[SESSION-END] Second-reader detection failed:", err);
   }
 
   res.json({ status: "ok" });
