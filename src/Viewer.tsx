@@ -209,7 +209,6 @@ export default function Viewer() {
             availableHeight={availableHeight}
             isDarkMode={isDarkMode}
             clientName={clientName}
-            loadError={loadError}
             onLoadSuccess={onDocumentLoadSuccess}
             onLoadError={(error) => {
               console.error('Error loading PDF:', error);
