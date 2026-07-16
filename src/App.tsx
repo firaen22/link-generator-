@@ -321,7 +321,7 @@ export default function App() {
   };
 
   const copyClientLink = (index: number) => {
-    navigator.clipboard.writeText(generatedClients[index].shortLink);
+    navigator.clipboard.writeText(generatedClients[index].shortLink).catch(err => console.error('複製失敗:', err));
     setGeneratedClients(prev =>
       prev.map((c, i) => ({ ...c, copied: i === index }))
     );
@@ -333,7 +333,7 @@ export default function App() {
   };
 
   const copyToClipboard = () => {
-    navigator.clipboard.writeText(generatedLink);
+    navigator.clipboard.writeText(generatedLink).catch(err => console.error('複製失敗:', err));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

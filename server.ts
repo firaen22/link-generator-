@@ -434,12 +434,18 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], async (req, res) => {
   if (!isCrawler) {
     // cName/rName/file_id are attacker-controllable (raw query params / route
     // param) and sent with parse_mode:'HTML' — escape them like /api/session-end.
-    await sendTelegram(
-      `🔔 <b>閱讀通知</b>\n\n` +
-      `👤 <b>客戶：</b> ${escapeHTML(String(cName))}\n` +
-      `📄 <b>報告：</b> ${escapeHTML(String(rName))} (${escapeHTML(String(file_id ?? ''))})\n` +
-      `⏰ <b>時間：</b> 剛剛`
-    );
+    // Rate-limited per client IP like /api/track: this route is unauthenticated,
+    // so an un-gated send lets a GET loop spam the advisor's Telegram.
+    if (allow(`tg:${clientIp(req)}`, 12, 60_000)) {
+      await sendTelegram(
+        `🔔 <b>閱讀通知</b>\n\n` +
+        `👤 <b>客戶：</b> ${escapeHTML(String(cName))}\n` +
+        `📄 <b>報告：</b> ${escapeHTML(String(rName))} (${escapeHTML(String(file_id ?? ''))})\n` +
+        `⏰ <b>時間：</b> 剛剛`
+      );
+    } else {
+      console.warn(`[SHARE] Telegram rate-limited for ${clientIp(req)}`);
+    }
   }
 
   const html = `
@@ -580,7 +586,12 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
       // Route to the advisor who created it (if mapped) AND the owner master log.
       // Awaited: on serverless the function is frozen after the response, so a
       // fire-and-forget fetch would be killed before Telegram receives it.
-      await sendTelegramTo(notif, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
+      // Rate-limited per client IP like /api/track — the route is unauthenticated.
+      if (allow(`tg:${clientIp(req)}`, 12, 60_000)) {
+        await sendTelegramTo(notif, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
+      } else {
+        console.warn(`[SHORT_LINK] Telegram rate-limited for ${clientIp(req)}`);
+      }
     }
 
     const html = `<!DOCTYPE html>
@@ -1552,7 +1563,7 @@ app.post("/api/session-end", async (req, res) => {
     // Phase 3 deep telemetry
     nav_history, zoom_clusters, scroll_samples, peak_scroll_velocity,
     // Phase 4 enrichment
-    cta_click_page, device_type, tab_switch_count, engaged_60s_page
+    cta_click_page, device_type, tab_switch_count, return_visit_count, engaged_60s_page
   } = sanitizeSessionEnd(req.body);
 
   let rName = report_name || "Document";
@@ -1597,7 +1608,9 @@ app.post("/api/session-end", async (req, res) => {
   const isDeepRead = progressPercent >= 30;
   // Return visit = at least the second session for this file+client combo. Strong buying signal —
   // always trigger AI analysis even if this individual session was short.
-  const isReturnVisit = (tab_switch_count ?? 0) >= 2;
+  // return_visit_count only increments on genuine re-opens after a completed
+  // session (unlike tab_switch_count, which counts every tab-hide/glance-away).
+  const isReturnVisit = (return_visit_count ?? 0) >= 1;
   const wantsAnalysis = aiEnabled && (isDeepRead || isReturnVisit);
 
   // Gate the paid Gemini loop with three checks (short-circuit && — a slot is only
@@ -1686,8 +1699,9 @@ BEHAVIOURAL FINANCE RULES:
 CONTEXT SIGNALS:
 - Device mobile: weight engagement signals 1.3× — mobile reading requires more intent than desktop. Keep advisor_nlp_approach and nba_whatsapp concise (mobile users have short attention windows).
 - Device desktop: assume seated reading context — more deliberate evaluation. Advisor can use longer, more detailed follow-up.
-- tab_switch_count >= 2: RETURN VISIT — client came back to re-read = strongest organic buying signal. Elevate intent_archetype toward Deep Diver or Momentum Buyer. cialdini_lever MUST be Consistency ("You've come back to this several times — this clearly matters to you") or Scarcity (cost of further delay).
-- tab_switch_count = 0 or 1: single-sitting read = casual evaluation, not yet a return-buyer pattern.
+- return_visit_count >= 1: RETURN VISIT — client came back to re-read after a completed session = strongest organic buying signal. Elevate intent_archetype toward Deep Diver or Momentum Buyer. cialdini_lever MUST be Consistency ("You've come back to this several times — this clearly matters to you") or Scarcity (cost of further delay).
+- return_visit_count = 0: single-sitting read = casual evaluation, not yet a return-buyer pattern.
+- tab_switch_count: attention switches DURING reading (glances at other tabs/apps). High count on a single sitting = distracted context, not a buying signal — weigh dwell/scroll signals accordingly.
 - Time of day: morning/afternoon = work-context reading (often interrupted); evening = personal/family-context reading (higher emotional weight, better follow-up window); late night = high personal motivation but defer outreach until next morning.
 
 NLP REPRESENTATIONAL SYSTEM INFERENCE (from telemetry):
@@ -1746,7 +1760,8 @@ SESSION DATA:
 - 60s engagement milestone: ${engaged_60s_page != null ? `crossed while on page ${engaged_60s_page} — sustained early engagement there` : 'not reached (session under 60s or milestone page unknown)'}
 - CTA click page (WhatsApp appointment button): ${cta_click_page != null ? `Page ${cta_click_page} — STRONGEST INTEREST SIGNAL` : 'not clicked'}
 - Device: ${device_type || 'unknown'}
-- Tab switch count (cumulative returns to this report): ${tab_switch_count ?? 0}
+- Return visits (completed sessions re-opened): ${return_visit_count ?? 0}
+- Tab switch count (attention switches while reading): ${tab_switch_count ?? 0}
 - Time of day (HK): ${getHkTimeOfDay().name}
 - Per-page behaviour matrix:
 ${behaviorSummary}
@@ -1868,7 +1883,7 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
       text = `🎯 <b>【Antigravity 銷售導航】</b>
 👤 <b>客戶：</b> ${escapeHTML(client_name)}  📄 <b>報告：</b> ${escapeHTML(rName)}
 🆔 <b>會話：</b> <code>${session_id?.slice(0, 8)}</code>  ${modelTag} (<code>${usedModel}</code>)
-${deviceIcon} ${escapeHTML(device_type || 'unknown')}  ${timeLabel}  🔁 Returns: ${tab_switch_count ?? 0}${returnVisitLine}${ctaLine}
+${deviceIcon} ${escapeHTML(device_type || 'unknown')}  ${timeLabel}  🔁 Returns: ${return_visit_count ?? 0}${returnVisitLine}${ctaLine}
 
 🧠 <b>Intent Archetype：</b> ${archetype}
 📊 <b>Z-Score：</b> ${aiResult.z_score ?? zScore}

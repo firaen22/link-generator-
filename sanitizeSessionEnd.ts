@@ -3,6 +3,7 @@ export type SanitizeResult = {
   total_pages: number | null;
   cta_click_page: number | null;
   tab_switch_count: number;
+  return_visit_count: number;
   peak_scroll_velocity: number;
   engaged_60s_page: number | null;
   device_type: 'mobile' | 'desktop' | 'unknown';
@@ -35,6 +36,7 @@ export function sanitizeSessionEnd(body: any): SanitizeResult {
       total_pages: null,
       cta_click_page: null,
       tab_switch_count: 0,
+      return_visit_count: 0,
       peak_scroll_velocity: 0,
       engaged_60s_page: null,
       device_type: 'unknown',
@@ -50,6 +52,7 @@ export function sanitizeSessionEnd(body: any): SanitizeResult {
   const total_pages = intClamp(body.total_pages, 1, 10000, null);
   const cta_click_page = intClamp(body.cta_click_page, 1, 10000, null);
   const tab_switch_count = num(body.tab_switch_count, 0, 10000, 0);
+  const return_visit_count = num(body.return_visit_count, 0, 10000, 0);
   const peak_scroll_velocity = num(body.peak_scroll_velocity, 0, 1000, 0);
   const engaged_60s_page = intClamp(body.engaged_60s_page, 1, 10000, null);
 
@@ -132,7 +135,9 @@ export function sanitizeSessionEnd(body: any): SanitizeResult {
     if (activeDwellMs > dwellMs) activeDwellMs = dwellMs;
     const maxScale = num(entry.maxScale, 0, 100, 0);
     const maxScrollDepthPct = num(entry.maxScrollDepthPct, 0, 100, 0);
-    pages_data[k] = { dwellMs, activeDwellMs, maxScale, maxScrollDepthPct };
+    // Key by the normalized integer, not the raw key: "1" and "1.0" both parse
+    // to page 1 and would otherwise produce two entries for the same page.
+    pages_data[String(numKey)] = { dwellMs, activeDwellMs, maxScale, maxScrollDepthPct };
   }
 
   return {
@@ -140,6 +145,7 @@ export function sanitizeSessionEnd(body: any): SanitizeResult {
     total_pages,
     cta_click_page,
     tab_switch_count,
+    return_visit_count,
     peak_scroll_velocity,
     engaged_60s_page,
     device_type,
