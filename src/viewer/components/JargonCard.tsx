@@ -71,13 +71,13 @@ export function JargonCard({ terms, isDarkMode, visible }: Props) {
             <button
                 onClick={show}
                 aria-label="顯示關鍵詞解釋"
-                className={`fixed left-4 z-20 flex items-center gap-1.5 rounded-full border px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.12)] backdrop-blur text-[11px] font-mono uppercase tracking-widest transition-colors ${isDarkMode
+                className={`fixed left-4 z-20 flex items-center gap-1.5 rounded-full border px-3.5 py-2.5 shadow-[0_8px_24px_rgba(0,0,0,0.12)] backdrop-blur text-[11px] font-mono uppercase tracking-widest transition-colors ${isDarkMode
                     ? 'bg-[#1E2026]/95 border-white/10 text-[#C6A867] hover:bg-white/5'
                     : 'bg-white/95 border-slate-200 text-[#B8964F] hover:bg-slate-50'
                     }`}
                 style={anchor}
             >
-                <Lightbulb className="w-3.5 h-3.5" />
+                <Lightbulb className="w-4 h-4" />
                 關鍵詞
             </button>
         );
@@ -110,9 +110,9 @@ export function JargonCard({ terms, isDarkMode, visible }: Props) {
                                 <button
                                     onClick={() => go(-1)}
                                     aria-label="上一個關鍵詞"
-                                    className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors ${ctrlBtn}`}
+                                    className={`flex items-center justify-center w-9 h-9 rounded-md transition-colors ${ctrlBtn}`}
                                 >
-                                    <ChevronLeft className="w-3.5 h-3.5" />
+                                    <ChevronLeft className="w-4 h-4" />
                                 </button>
                                 <span className={`text-[11px] sm:text-[10px] font-mono tabular-nums select-none ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>
                                     {index + 1}/{terms.length}
@@ -120,18 +120,18 @@ export function JargonCard({ terms, isDarkMode, visible }: Props) {
                                 <button
                                     onClick={() => go(1)}
                                     aria-label="下一個關鍵詞"
-                                    className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors ${ctrlBtn}`}
+                                    className={`flex items-center justify-center w-9 h-9 rounded-md transition-colors ${ctrlBtn}`}
                                 >
-                                    <ChevronRight className="w-3.5 h-3.5" />
+                                    <ChevronRight className="w-4 h-4" />
                                 </button>
                             </>
                         )}
                         <button
                             onClick={hide}
                             aria-label="隱藏關鍵詞解釋"
-                            className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors ${ctrlBtn}`}
+                            className={`flex items-center justify-center w-9 h-9 rounded-md transition-colors ${ctrlBtn}`}
                         >
-                            <X className="w-3.5 h-3.5" />
+                            <X className="w-4 h-4" />
                         </button>
                     </div>
                 </div>

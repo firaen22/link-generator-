@@ -170,37 +170,91 @@ const pinEntryHtml = (shortId: string): string => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>請輸入存取密碼</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
-    .container { width: min(100% - 40px, 360px); text-align: center; padding: 24px; }
-    h1 { margin: 0 0 16px; font-size: 22px; line-height: 1.3; }
-    input { box-sizing: border-box; width: 100%; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 18px; text-align: center; letter-spacing: 0; outline: none; }
-    input:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.16); }
-    button { width: 100%; margin-top: 12px; padding: 12px 14px; border: 0; border-radius: 10px; background: #4f46e5; color: #ffffff; font-size: 15px; font-weight: 700; cursor: pointer; }
-    button:disabled { opacity: 0.7; cursor: not-allowed; }
-    .error { min-height: 20px; margin-top: 12px; color: #e11d48; font-size: 14px; font-weight: 600; }
-    .hint { margin: 0 0 14px; color: #64748b; font-size: 14px; }
+    :root { color-scheme: light dark; --bg: #F7F5F1; --surface: #ffffff; --text: #1C2A3A; --muted: #64748b; --accent: #B8964F; --border: #e2e8f0; --badge-bg: rgba(184,150,79,0.12); --focus: rgba(184,150,79,0.2); --button-bg: #1C2A3A; --button-text: #ffffff; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px 20px; background: var(--bg); color: var(--text); }
+    .container { width: min(100%, 380px); text-align: center; padding: 30px 22px 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); }
+    .icon-badge { display: inline-flex; width: 48px; height: 48px; align-items: center; justify-content: center; margin-bottom: 18px; border-radius: 999px; color: var(--accent); background: var(--badge-bg); }
+    .icon-badge svg { width: 23px; height: 23px; }
+    h1 { margin: 0 0 10px; font-size: 24px; line-height: 1.25; color: var(--text); }
+    .hint { margin: 0 0 10px; color: var(--muted); font-size: 15px; line-height: 1.5; }
+    .link-id { margin: 0 0 20px; color: var(--muted); font-size: 13px; line-height: 1.4; }
+    .input-row { position: relative; }
+    input { width: 100%; min-height: 54px; padding: 12px 58px 12px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); font-size: 24px; letter-spacing: 0.35em; text-align: center; font-variant-numeric: tabular-nums; outline: none; }
+    input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+    input.shake { animation: shake 300ms ease-in-out; }
+    .pin-toggle { position: absolute; top: 50%; right: 6px; display: inline-flex; width: 44px; height: 44px; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 10px; background: transparent; color: var(--muted); cursor: pointer; transform: translateY(-50%); }
+    .pin-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .pin-toggle svg { width: 20px; height: 20px; }
+    .pin-toggle .eye-off-icon { display: none; }
+    .pin-toggle[aria-pressed="true"] .eye-icon { display: none; }
+    .pin-toggle[aria-pressed="true"] .eye-off-icon { display: block; }
+    .submit-button { width: 100%; min-height: 48px; margin-top: 14px; padding: 12px 16px; border: 0; border-radius: 12px; background: var(--button-bg); color: var(--button-text); font-size: 16px; font-weight: 700; cursor: pointer; }
+    .submit-button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .error { min-height: 20px; margin-top: 12px; color: #e11d48; font-size: 14px; font-weight: 600; line-height: 1.4; }
+    .help { margin: 14px 0 0; color: var(--muted); font-size: 13px; line-height: 1.4; }
+    @keyframes shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-8px); } 40% { transform: translateX(7px); } 60% { transform: translateX(-5px); } 80% { transform: translateX(4px); } }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #15171C; --surface: #1E2026; --text: #F1F5F9; --muted: #94A3B8; --accent: #C6A867; --border: rgba(255,255,255,0.1); --badge-bg: rgba(198,168,103,0.16); --focus: rgba(198,168,103,0.25); --button-bg: #C6A867; --button-text: #15171C; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      input.shake { animation: none; }
+    }
   </style>
 </head>
 <body>
   <main class="container">
+    <div class="icon-badge" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="11" width="16" height="9" rx="2"></rect>
+        <path d="M8 11V7a4 4 0 0 1 8 0v4"></path>
+      </svg>
+    </div>
     <h1>請輸入存取密碼</h1>
-    <p class="hint">連結 ID：${safeShortId}</p>
+    <p class="hint">此報告受密碼保護，密碼由您的顧問提供</p>
+    <p class="link-id">連結 ID：${safeShortId}</p>
     <form id="pinForm">
-      <input id="pin" name="pin" type="password" inputmode="numeric" pattern="\\d{4,8}" autocomplete="one-time-code" maxlength="8" required autofocus />
-      <button id="submitBtn" type="submit">開啟報告</button>
+      <div class="input-row">
+        <input id="pin" name="pin" type="password" inputmode="numeric" pattern="\\d{4,8}" autocomplete="one-time-code" maxlength="8" required autofocus />
+        <button class="pin-toggle" id="pinToggle" type="button" aria-controls="pin" aria-pressed="false" aria-label="顯示密碼">
+          <svg class="eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+          <svg class="eye-off-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"></path>
+            <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c6.5 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"></path>
+            <path d="M6.61 6.61C3.73 8.57 2 12 2 12s3.5 7 10 7a9.74 9.74 0 0 0 5.39-1.61"></path>
+            <path d="M2 2l20 20"></path>
+          </svg>
+        </button>
+      </div>
+      <button class="submit-button" id="submitBtn" type="submit">開啟報告</button>
       <div id="error" class="error" role="alert"></div>
     </form>
+    <p class="help">沒有密碼？請聯絡您的顧問索取</p>
   </main>
   <script>
     const shortId = ${safeShortIdJs};
     const form = document.getElementById('pinForm');
     const input = document.getElementById('pin');
     const button = document.getElementById('submitBtn');
+    const toggle = document.getElementById('pinToggle');
     const errorEl = document.getElementById('error');
+    const submitText = button.textContent;
+    let shakeTimer;
+    toggle.addEventListener('click', function() {
+      const visible = input.type === 'text';
+      input.type = visible ? 'password' : 'text';
+      toggle.setAttribute('aria-pressed', visible ? 'false' : 'true');
+      toggle.setAttribute('aria-label', visible ? '顯示密碼' : '隱藏密碼');
+      input.focus();
+    });
     form.addEventListener('submit', async function(event) {
       event.preventDefault();
       errorEl.textContent = '';
       button.disabled = true;
+      button.textContent = '正在確認…';
       try {
         const res = await fetch('/api/unlock-link', {
           method: 'POST',
@@ -213,20 +267,28 @@ const pinEntryHtml = (shortId: string): string => {
           return;
         }
         if (res.status === 403) {
-          errorEl.textContent = '密碼錯誤，請再試';
+          errorEl.textContent = '密碼不正確，請重新輸入';
+          input.classList.remove('shake');
+          void input.offsetWidth;
+          input.classList.add('shake');
+          clearTimeout(shakeTimer);
+          shakeTimer = setTimeout(function() {
+            input.classList.remove('shake');
+          }, 350);
           input.value = '';
           input.focus();
           return;
         }
         if (res.status === 429) {
-          errorEl.textContent = '嘗試次數過多，請稍後再試';
+          errorEl.textContent = '嘗試次數過多，此連結已暫時鎖定，請稍後再試';
           return;
         }
-        errorEl.textContent = '無法開啟連結，請稍後再試';
+        errorEl.textContent = '暫時無法開啟連結，請稍後再試';
       } catch {
-        errorEl.textContent = '無法開啟連結，請稍後再試';
+        errorEl.textContent = '暫時無法開啟連結，請稍後再試';
       } finally {
         button.disabled = false;
+        button.textContent = submitText;
       }
     });
   </script>
@@ -763,7 +825,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
             console.log('[SHORT_LINK] Redirection Target:', targetUrl);
             setTimeout(function() { 
                 window.location.replace(targetUrl); 
-            }, 500);
+            }, 120);
         </script>
         ` : ''}
     </head>

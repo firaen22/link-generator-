@@ -13,7 +13,6 @@ interface PdfStageProps {
   availableHeight: number;
   isDarkMode: boolean;
   clientName: string;
-  loadError: string | null;
   onLoadSuccess: (numPages: number) => void;
   onLoadError: (error: Error) => void;
   onPageText?: (page: number, text: string, imageDataUrl?: string) => void;
@@ -23,11 +22,14 @@ interface PdfStageProps {
  *  per-page turn animation, and a GPU-cheap tiled watermark. */
 export function PdfStage({
   pdfUrl, pageNumber, scale, containerWidth, availableHeight, isDarkMode, clientName,
-  loadError, onLoadSuccess, onLoadError, onPageText,
+  onLoadSuccess, onLoadError, onPageText,
 }: PdfStageProps) {
   const reduceMotion = useReducedMotion();
   const docRef = useRef<PDFDocumentProxy | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
+  // True when loading has made no progress for a while — the spinner alone
+  // reads as "broken" on a stalled connection, so we add a hint + retry.
+  const [stalled, setStalled] = useState(false);
   // Page aspect ratio (width / height), learned from the first rendered page.
   const [aspectRatio, setAspectRatio] = useState<number | null>(null);
   // Local copy of the page count, needed to bound the next-page prefetch.
@@ -54,6 +56,15 @@ export function PdfStage({
         exit: { opacity: 0, y: -8 },
         transition: { duration: 0.18, ease: 'easeOut' as const },
       };
+
+  // Arm a 20s no-progress watchdog: reset whenever bytes arrive, disarm once
+  // the document is loaded (numPages set).
+  useEffect(() => {
+    if (numPages !== null) return;
+    setStalled(false);
+    const timer = window.setTimeout(() => setStalled(true), 20000);
+    return () => window.clearTimeout(timer);
+  }, [progress, numPages]);
 
   useEffect(() => {
     const doc = docRef.current;
@@ -137,6 +148,19 @@ export function PdfStage({
               <div className="h-full bg-[#B8964F] transition-[width] duration-200" style={{ width: `${progress}%` }} />
             </div>
           )}
+          {stalled && (
+            <>
+              <p className={`text-xs max-w-xs text-center ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                載入時間較長，請稍作等候，或重新整理頁面
+              </p>
+              <button
+                onClick={() => window.location.reload()}
+                className={`min-h-11 px-4 py-2 rounded-xl text-sm font-medium ${isDarkMode ? 'bg-white/5 hover:bg-white/10 text-slate-300' : 'bg-slate-100 hover:bg-slate-200 text-slate-600'}`}
+              >
+                重新載入
+              </button>
+            </>
+          )}
         </div>
       }
       error={
@@ -146,13 +170,8 @@ export function PdfStage({
           </div>
           <h3 className={`text-lg font-medium mb-2 ${isDarkMode ? 'text-slate-100' : 'text-[#1C2A3A]'}`}>暫時無法載入此報告</h3>
           <p className={`text-sm max-w-md mx-auto mb-4 ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
-            請稍後再試，或直接聯絡您的顧問。
+            請重新整理頁面，或直接聯絡您的顧問。
           </p>
-          {loadError && (
-            <div className={`text-xs text-red-500 font-mono px-3 py-2 rounded-lg border max-w-sm mb-4 ${isDarkMode ? 'bg-red-500/10 border-red-500/20' : 'bg-red-50/50 border-red-100'}`}>
-              <b>載入錯誤：</b> {loadError}
-            </div>
-          )}
           <button
             onClick={() => window.location.reload()}
             className={`min-h-11 px-4 py-2 rounded-xl text-sm font-medium ${isDarkMode ? 'bg-white/5 hover:bg-white/10 text-slate-300' : 'bg-slate-100 hover:bg-slate-200 text-slate-600'}`}
