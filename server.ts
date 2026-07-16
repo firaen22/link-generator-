@@ -1487,7 +1487,7 @@ const RESPONSE_SCHEMA = {
     },
     nba_whatsapp: {
       type: "string",
-      description: "A customised WhatsApp opening message in Hong Kong financial Cantonese (traditional characters). Must use language predicates matching the client's rep_system and embed one presupposition that assumes the next meeting.",
+      description: "A customised WhatsApp opening message in Hong Kong financial Cantonese (traditional characters). Must use language predicates matching the client's rep_system and embed one presupposition that assumes the next meeting. Must anchor to exactly ONE concrete observed behaviour explicitly present in SESSION DATA, chosen by priority: (1) CTA click page, (2) return-visit gap when 'Minutes since last visit' is a number, (3) highest-dwell page's content area, (4) zoom cluster — a zoom cluster only when the zoomed content/topic is named in the data. Never invent or infer a behaviour absent from the data; if no page-level detail is available, reference the report topic only, using the literal report title. Client-facing rules: never use analytics terms (dwell, zoom cluster, CTA, session, telemetry) — translate into natural phrases like 「你之前睇緊嘅⋯⋯部分」; frame it as shared interest, never as monitoring (「見到你對⋯⋯特別有興趣」, not 「我見到你停留咗幾耐」); express the return gap qualitatively (「咁快返嚟再睇」/「琴日再睇返」), never the literal minute count.",
     },
   },
   required: ["intent_archetype", "z_score", "friction_points", "psych_bias", "rep_system", "advisor_nlp_approach", "spin_question", "cialdini_lever", "voss_label", "nba_whatsapp"],
@@ -1780,7 +1780,7 @@ STEP 4 — Write advisor_nlp_approach using the rep_system pace + one Milton Mod
 STEP 5 — Write spin_question: select the SPIN type from intent_archetype, then craft the exact question referencing the highest-friction content area.
 STEP 6 — Write cialdini_lever: map psych_bias to the correct Cialdini principle and write one concrete tactic sentence.
 STEP 7 — Write voss_label: identify the highest-friction page/behaviour, name its emotion with "It sounds like…", follow with one "What" or "How" calibrated question.
-STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sensory predicates and one embedded presupposition.`;
+STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sensory predicates and one embedded presupposition, anchored to ONE observed behaviour per the nba_whatsapp field rules (priority: CTA click > return gap > highest-dwell content > named zoom content; no analytics jargon; no exact minute counts; no fabricated behaviours).`;
 
       let aiResult: any = null;
       let usedModel = '';
