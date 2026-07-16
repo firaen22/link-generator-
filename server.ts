@@ -131,6 +131,24 @@ const decodeLzPayload = (q: string): Record<string, any> | null => {
   }
 };
 
+const lifecycleErrorHtml = (message: string): string => `<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHTMLAttr(message)}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #ffffff; color: #1e293b; }
+    .container { text-align: center; padding: 24px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <p>${escapeHTML(message)}</p>
+  </div>
+</body>
+</html>`;
+
 const resolveOgImage = (imageParam: string): string => {
   const fallback = 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1200&auto=format&fit=crop&.jpg';
   if (!imageParam?.startsWith('http')) return fallback;
@@ -527,6 +545,18 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     }
 
     const data = await response.json();
+    const expireAtRaw = data.fields?.expireAt?.timestampValue;
+    const expireAtDate = expireAtRaw ? new Date(expireAtRaw) : null;
+
+    if (data.fields?.revoked?.booleanValue === true) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(410).send(lifecycleErrorHtml("此連結已由顧問停用"));
+    }
+    if (expireAtDate && Number.isFinite(expireAtDate.getTime()) && expireAtDate < new Date()) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(410).send(lifecycleErrorHtml("此連結已過期"));
+    }
+
     const q = data.fields?.q?.stringValue;
 
     if (!q) {
@@ -652,7 +682,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
 app.post("/api/create-link", async (req, res) => {
   const advisor = requireApiKey(req, res);
   if (advisor === null) return;
-  const { clients, f, r, t, d, i, w, origin: originInput } = req.body || {};
+  const { clients, f, r, t, d, i, w, origin: originInput, expiryDays } = req.body || {};
 
   const names: string[] = Array.isArray(clients)
     ? clients.map((n: any) => String(n).trim()).filter(Boolean)
@@ -697,8 +727,10 @@ app.post("/api/create-link", async (req, res) => {
     ? candidate
     : normalize(String(envOrigin || requestOrigin));
 
-  // 30 天後過期（Firestore Timestamp，供 TTL 政策使用）
-  const expireAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const ttlDays = typeof expiryDays === "number" && Number.isFinite(expiryDays) && Number.isInteger(expiryDays) && expiryDays >= 1 && expiryDays <= 365
+    ? expiryDays
+    : 30;
+  const expireAt = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
   const createdAt = new Date().toISOString();
   const fsBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links`;
 
@@ -756,6 +788,126 @@ app.post("/api/create-link", async (req, res) => {
   } catch (error: any) {
     console.error("[CREATE_LINK] Error:", error.message);
     res.status(500).json({ error: "建立短連結失敗", detail: error.message });
+  }
+});
+
+app.get("/api/links", async (req, res) => {
+  const advisor = requireApiKey(req, res);
+  if (advisor === null) return;
+
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+  const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+  if (!projectId || !apiKey) {
+    return res.status(500).json({ error: "伺服器缺少 Firebase 設定 (Project ID / API Key)" });
+  }
+
+  try {
+    const queryRes = await fetch(
+      `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:runQuery?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          structuredQuery: {
+            from: [{ collectionId: "links" }],
+            where: {
+              fieldFilter: {
+                field: { fieldPath: "adv" },
+                op: "EQUAL",
+                value: { stringValue: advisor },
+              },
+            },
+            limit: 300,
+          },
+        }),
+      }
+    );
+
+    if (!queryRes.ok) {
+      const detail = await queryRes.text();
+      console.error(`[LIST_LINKS] Firestore query failed (${queryRes.status}): ${detail}`);
+      return res.status(500).json({ error: "讀取連結失敗" });
+    }
+
+    const rows = await queryRes.json();
+    const links = (Array.isArray(rows) ? rows : [])
+      .filter((row: any) => row.document)
+      .map((row: any) => {
+        const doc = row.document;
+        const fields = doc.fields || {};
+        const decoded = fields.q?.stringValue ? decodeLzPayload(fields.q.stringValue) : null;
+        const nameParts = String(doc.name || "").split("/");
+        return {
+          shortId: nameParts[nameParts.length - 1] || "",
+          clientName: fields.clientName?.stringValue || "",
+          reportName: decoded?.r ? String(decoded.r) : "",
+          createdAt: fields.createdAt?.stringValue || "",
+          expireAt: fields.expireAt?.timestampValue || null,
+          revoked: fields.revoked?.booleanValue === true,
+          pinProtected: Boolean(fields.pinHash),
+        };
+      })
+      .sort((a: any, b: any) => {
+        const aTime = Date.parse(a.createdAt);
+        const bTime = Date.parse(b.createdAt);
+        return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+      });
+
+    res.json({ links });
+  } catch (error: any) {
+    console.error("[LIST_LINKS] Error:", error.message);
+    res.status(500).json({ error: "讀取連結失敗" });
+  }
+});
+
+app.post("/api/revoke-link", async (req, res) => {
+  const advisor = requireApiKey(req, res);
+  if (advisor === null) return;
+
+  const { shortId } = req.body || {};
+  if (!shortId || typeof shortId !== "string" || !/^[a-z0-9]{1,32}$/i.test(shortId)) {
+    return res.status(400).json({ error: "無效的短連結 ID" });
+  }
+
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+  const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+  if (!projectId || !apiKey) {
+    return res.status(500).json({ error: "伺服器缺少 Firebase 設定 (Project ID / API Key)" });
+  }
+
+  const fsBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links`;
+  const nextRevoked = req.body?.revoked === false ? false : true;
+
+  try {
+    const docRes = await fetch(`${fsBase}/${shortId}?key=${apiKey}`);
+    if (!docRes.ok) {
+      return res.status(404).json({ error: "找不到此連結" });
+    }
+
+    const doc = await docRes.json();
+    if (doc.fields?.adv?.stringValue !== advisor) {
+      return res.status(403).json({ error: "沒有權限修改此連結" });
+    }
+
+    const patchRes = await fetch(
+      `${fsBase}/${shortId}?key=${apiKey}&updateMask.fieldPaths=revoked`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fields: { revoked: { booleanValue: nextRevoked } } }),
+      }
+    );
+
+    if (!patchRes.ok) {
+      const detail = await patchRes.text();
+      console.error(`[REVOKE_LINK] Firestore patch failed (${patchRes.status}) for ${shortId}: ${detail}`);
+      return res.status(500).json({ error: "更新連結狀態失敗" });
+    }
+
+    res.json({ ok: true });
+  } catch (error: any) {
+    console.error("[REVOKE_LINK] Error:", error.message);
+    res.status(500).json({ error: "更新連結狀態失敗" });
   }
 });
 

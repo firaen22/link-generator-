@@ -15,6 +15,17 @@ interface GeneratedClient {
   copied: boolean;
 }
 
+interface AdvisorLink {
+  shortId: string;
+  clientName: string;
+  reportName: string;
+  createdAt: string;
+  expireAt: string | null;
+  revoked: boolean;
+  pinProtected: boolean;
+  copied: boolean;
+}
+
 // ── Client-side image compression ──────────────────────────────────────────────
 // WhatsApp/Telegram drop preview images over ~300KB, so compress to JPEG in the
 // browser before upload. Scales down to a sensible OG width, then steps quality
@@ -83,12 +94,18 @@ export default function App() {
   const [linkTitle, setLinkTitle] = useState('');
   const [description, setDescription] = useState('');
   const [whatsappNumber, setWhatsappNumber] = useState('');
+  const [expiryDays, setExpiryDays] = useState(30);
   // Per-user access key (sent as x-pwp-key). Persisted so it's entered once.
   const [accessKey, setAccessKey] = useState(() => localStorage.getItem('pwp_api_key') || '');
   const [isUploading, setIsUploading] = useState(false);
   const [isBulkGenerating, setIsBulkGenerating] = useState(false);
   const [isImageUploading, setIsImageUploading] = useState(false);
   const [isGeneratingMeta, setIsGeneratingMeta] = useState(false);
+  const [showMyLinks, setShowMyLinks] = useState(false);
+  const [advisorLinks, setAdvisorLinks] = useState<AdvisorLink[]>([]);
+  const [isLoadingLinks, setIsLoadingLinks] = useState(false);
+  const [linksError, setLinksError] = useState('');
+  const [updatingLinkId, setUpdatingLinkId] = useState('');
 
   // Bulk results — one entry per client name
   const [generatedClients, setGeneratedClients] = useState<GeneratedClient[]>([]);
@@ -246,6 +263,7 @@ export default function App() {
           i: previewImage,
           w: whatsappNumber, // server strips to digits for the "預約顧問" CTA
           origin,
+          expiryDays,
         }),
       });
 
@@ -338,6 +356,69 @@ export default function App() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const loadAdvisorLinks = async () => {
+    if (!accessKey) return;
+    setIsLoadingLinks(true);
+    setLinksError('');
+    try {
+      const res = await fetch('/api/links', {
+        headers: { 'x-pwp-key': accessKey },
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || '載入連結失敗');
+      }
+      const { links } = await res.json();
+      setAdvisorLinks((links || []).map((link: Omit<AdvisorLink, 'copied'>) => ({ ...link, copied: false })));
+    } catch (error) {
+      console.error('載入連結失敗:', error);
+      setLinksError(error instanceof Error ? error.message : '載入連結失敗');
+    } finally {
+      setIsLoadingLinks(false);
+    }
+  };
+
+  const copyAdvisorLink = (shortId: string) => {
+    const link = `${window.location.origin}/l/${shortId}`;
+    navigator.clipboard.writeText(link).catch(err => console.error('複製失敗:', err));
+    setAdvisorLinks(prev =>
+      prev.map(item => ({ ...item, copied: item.shortId === shortId }))
+    );
+    setTimeout(() => {
+      setAdvisorLinks(prev =>
+        prev.map(item => ({ ...item, copied: item.shortId === shortId ? false : item.copied }))
+      );
+    }, 2000);
+  };
+
+  const toggleAdvisorLink = async (shortId: string, revoked: boolean) => {
+    const nextRevoked = !revoked;
+    setUpdatingLinkId(shortId);
+    setLinksError('');
+    setAdvisorLinks(prev =>
+      prev.map(item => item.shortId === shortId ? { ...item, revoked: nextRevoked } : item)
+    );
+    try {
+      const res = await fetch('/api/revoke-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-pwp-key': accessKey },
+        body: JSON.stringify({ shortId, revoked: nextRevoked }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || '更新連結狀態失敗');
+      }
+    } catch (error) {
+      console.error('更新連結狀態失敗:', error);
+      setAdvisorLinks(prev =>
+        prev.map(item => item.shortId === shortId ? { ...item, revoked } : item)
+      );
+      setLinksError(error instanceof Error ? error.message : '更新連結狀態失敗');
+    } finally {
+      setUpdatingLinkId('');
+    }
+  };
+
   // Preview Data logic aligned with server.ts
   const firstClient = clientList.split('\n').map(n => n.trim()).filter(Boolean)[0];
   const previewCName = firstClient || "貴客";
@@ -353,6 +434,18 @@ export default function App() {
     const replaced = previewImageActual.replace('meee.com.tw', 'i.meee.com.tw');
     previewImageActual = /\.(png|jpe?g|gif|webp)$/i.test(replaced) ? replaced : replaced + '.png';
   }
+
+  const formatDateOnly = (value: string | null) => {
+    if (!value) return '—';
+    const d = new Date(value);
+    return Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : '—';
+  };
+
+  const isExpired = (value: string | null) => {
+    if (!value) return false;
+    const d = new Date(value);
+    return Number.isFinite(d.getTime()) && d < new Date();
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row font-sans text-slate-900">
@@ -462,6 +555,23 @@ export default function App() {
             <p className="text-xs text-slate-400 mt-1.5 ml-1">
               客戶點擊「預約顧問」按鈕時打開的 WhatsApp 號碼（含國家碼，留空則用預設 85265387638）。
             </p>
+          </div>
+
+          <div>
+            <label htmlFor="expiryDays" className="block text-sm font-semibold text-slate-700 mb-1.5">
+              Link Expiry
+            </label>
+            <select
+              id="expiryDays"
+              value={expiryDays}
+              onChange={(e) => setExpiryDays(Number(e.target.value))}
+              className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white"
+            >
+              <option value={7}>7 days</option>
+              <option value={30}>30 days</option>
+              <option value={90}>90 days</option>
+              <option value={180}>180 days</option>
+            </select>
           </div>
 
           <div>
@@ -591,7 +701,7 @@ export default function App() {
                   {generatedClients.length} Link{generatedClients.length !== 1 ? 's' : ''} Generated
                 </label>
                 <span className="text-xs text-green-600 font-semibold bg-green-50 px-2 py-0.5 rounded-full">
-                  30-day TTL set
+                  {expiryDays}-day TTL set
                 </span>
               </div>
 
@@ -641,6 +751,106 @@ export default function App() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* ── My Links Panel ─────────────────────────────────────── */}
+        <div className="mt-5 bg-slate-50 rounded-2xl p-5 border border-slate-200">
+          <button
+            type="button"
+            onClick={() => setShowMyLinks(prev => !prev)}
+            className="w-full flex items-center justify-between text-left cursor-pointer"
+          >
+            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">我的連結</span>
+            <span className="text-sm font-semibold text-indigo-600">{showMyLinks ? '收起' : '展開'}</span>
+          </button>
+
+          {showMyLinks && (
+            <div className="mt-4 space-y-3">
+              <button
+                type="button"
+                onClick={loadAdvisorLinks}
+                disabled={!accessKey || isLoadingLinks}
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 border border-indigo-200 rounded-xl text-sm font-semibold text-indigo-600 bg-white hover:bg-indigo-50 transition-all disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {isLoadingLinks ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> 載入中...</>
+                ) : (
+                  '載入我的連結'
+                )}
+              </button>
+              {!accessKey && (
+                <p className="text-xs text-slate-400 ml-1">請先輸入存取金鑰，才可載入連結。</p>
+              )}
+              {linksError && (
+                <p className="text-xs text-rose-600 font-semibold bg-rose-50 border border-rose-100 rounded-xl p-3">
+                  {linksError}
+                </p>
+              )}
+              {!isLoadingLinks && advisorLinks.length === 0 && !linksError && (
+                <p className="text-sm text-slate-500 bg-white border border-slate-200 rounded-xl px-3 py-3">
+                  尚無連結
+                </p>
+              )}
+              {advisorLinks.length > 0 && (
+                <div className="flex flex-col gap-2 max-h-96 overflow-y-auto pr-1">
+                  {advisorLinks.map((link) => {
+                    const expired = isExpired(link.expireAt);
+                    const statusText = link.revoked ? '已停用' : expired ? '已過期' : '有效';
+                    const statusClass = link.revoked
+                      ? 'bg-slate-100 text-slate-600'
+                      : expired
+                        ? 'bg-amber-50 text-amber-700'
+                        : 'bg-green-50 text-green-600';
+                    return (
+                      <div
+                        key={link.shortId}
+                        className="bg-white border border-slate-200 rounded-xl px-3 py-3 shadow-sm"
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="text-sm font-semibold text-slate-700 truncate">
+                                {link.clientName || '未命名客戶'}
+                              </span>
+                              {link.pinProtected && <span title="PIN protected" className="text-xs shrink-0">🔒</span>}
+                            </div>
+                            <p className="text-xs text-slate-500 truncate">{link.reportName || '未命名報告'}</p>
+                            <p className="text-xs text-slate-400 mt-1">{formatDateOnly(link.createdAt)}</p>
+                          </div>
+                          <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full ${statusClass}`}>
+                            {statusText}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex items-center gap-2">
+                          <code className="flex-1 text-xs font-mono text-indigo-600 truncate">
+                            /l/{link.shortId}
+                          </code>
+                          <button
+                            type="button"
+                            onClick={() => copyAdvisorLink(link.shortId)}
+                            className="shrink-0 p-1.5 rounded-lg hover:bg-indigo-50 transition-colors cursor-pointer"
+                            title="Copy link"
+                          >
+                            {link.copied
+                              ? <Check className="w-4 h-4 text-green-500" />
+                              : <Copy className="w-4 h-4 text-slate-400 hover:text-indigo-500" />}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => toggleAdvisorLink(link.shortId, link.revoked)}
+                            disabled={updatingLinkId === link.shortId}
+                            className="shrink-0 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+                          >
+                            {updatingLinkId === link.shortId ? '更新中' : link.revoked ? '啟用' : '停用'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Right Panel: WhatsApp Preview */}
@@ -716,4 +926,3 @@ export default function App() {
     </div >
   );
 }
-
