@@ -126,6 +126,30 @@ export function useTelemetry({
     parseInt(safeGetItem(tabSwitchKey) || '0', 10) || 0
   );
 
+  // Genuine return visits: sessions started AFTER a previous session for this
+  // file+client completed. Unlike tab_switch_count (which increments on every
+  // tab-hide, i.e. mere glances away), this only counts real re-opens — the
+  // ended-flag stores WHEN a session_end was dispatched, and is consumed on the
+  // next session start (same-tab resume or fresh mount) only if the reader was
+  // away long enough that it reads as "came back to re-read", not a WhatsApp
+  // glance or an instant reload.
+  const RETURN_VISIT_MIN_GAP_MS = 5 * 60_000;
+  const returnVisitKey = `ag_returnvisit_${fileId}_${clientName}`;
+  const sessionEndedKey = `ag_sessionended_${fileId}_${clientName}`;
+  const returnVisitCountRef = useRef<number>(
+    parseInt(safeGetItem(returnVisitKey) || '0', 10) || 0
+  );
+  const maybeRecordReturnVisit = () => {
+    const endedAt = Number(safeGetItem(sessionEndedKey));
+    if (!Number.isFinite(endedAt) || endedAt <= 0) return;
+    // Too-recent gap = transient backgrounding, not a return. Leave the flag:
+    // the next handleExit overwrites its timestamp anyway.
+    if (Date.now() - endedAt < RETURN_VISIT_MIN_GAP_MS) return;
+    returnVisitCountRef.current += 1;
+    try { localStorage.setItem(returnVisitKey, String(returnVisitCountRef.current)); } catch (e) { /* quota */ }
+    safeRemoveItem(sessionEndedKey);
+  };
+
   const handleExitRef = useRef<(() => void) | null>(null);
 
   // Register page transitions into navHistoryRef
@@ -274,6 +298,7 @@ export function useTelemetry({
         sessionId: sessionIdRef.current,
         engaged60: hasSentEngaged60Ref.current,
         engaged60Page: engaged60PageRef.current,
+        lastActiveAt: Date.now(),
       }));
     } catch (e) { /* ignore quota issues */ }
   };
@@ -365,6 +390,7 @@ export function useTelemetry({
         cta_click_page: ctaClickPageRef.current,
         device_type: deviceTypeRef.current,
         tab_switch_count: tabSwitchCountRef.current,
+        return_visit_count: returnVisitCountRef.current,
         engaged_60s_page: engaged60PageRef.current,
       };
 
@@ -407,6 +433,7 @@ export function useTelemetry({
           active_ratio_pct: dwellTotalMs > 0 ? Math.min(100, Math.max(0, Math.round((activeTotalMs / dwellTotalMs) * 100))) : 0,
           pages_viewed: pagesViewed.length,
           tab_switch_count: tabSwitchCountRef.current,
+          return_visit_count: returnVisitCountRef.current,
           cta_click_page: ctaClickPageRef.current ?? 0,
           device_type: deviceTypeRef.current,
           peak_scroll_velocity: peakScrollVelocity,
@@ -435,6 +462,11 @@ export function useTelemetry({
       } catch (err) {
         sendViaFetch();
       }
+
+      // Record WHEN this session completed: a later session start for this
+      // file+client (same-tab resume or fresh open, after a real gap) is a
+      // genuine return visit.
+      try { localStorage.setItem(sessionEndedKey, String(Date.now())); } catch (e) { /* quota */ }
     };
 
     const handleVisibilityChange = () => {
@@ -446,6 +478,7 @@ export function useTelemetry({
       } else if (document.visibilityState === 'visible') {
         if (hasSentSessionEndRef.current) {
           console.log('用戶重返報告，開啟全新會話 tracking...');
+          maybeRecordReturnVisit();
           // Fresh session: new id + clear every per-session accumulator, so the
           // next session_end isn't polluted with the previous visit's path,
           // zoom/scroll samples, or CTA page.
@@ -472,20 +505,36 @@ export function useTelemetry({
     window.addEventListener('pagehide', handleExit);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
+    // A previous session for this file+client completed and this is a fresh
+    // mount after a real gap — count it as a genuine return visit. (Same-tab
+    // resumes are counted in the visibilitychange handler above; the min-gap
+    // check plus flag removal keeps effect re-runs from double-counting.)
+    maybeRecordReturnVisit();
+
     // Initial check for recovery
     const saved = safeGetItem(storageKey);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        sessionDataRef.current = parsed.pages_data || {};
-        navigationPathRef.current = parsed.path || [];
-        if (parsed.startTime) startTimeRef.current = parsed.startTime;
-        if (parsed.sessionId) sessionIdRef.current = parsed.sessionId;
-        if (parsed.engaged60) hasSentEngaged60Ref.current = true;
-        if (Number.isInteger(parsed.engaged60Page) && parsed.engaged60Page >= 1) {
-          engaged60PageRef.current = parsed.engaged60Page;
+        // Recovery is for a killed tab of the SAME sitting. A stale snapshot
+        // (reopened minutes-to-days later) would restore the old startTime, so
+        // the heartbeat's first tick sees a huge sessionDuration and fires a
+        // false engaged_60s the instant the reader returns — and session_end
+        // reports the gap as reading time. Discard instead of restoring.
+        const staleMs = Date.now() - Number(parsed.lastActiveAt);
+        if (!Number.isFinite(staleMs) || staleMs > 5 * 60_000) {
+          safeRemoveItem(storageKey);
+        } else {
+          sessionDataRef.current = parsed.pages_data || {};
+          navigationPathRef.current = parsed.path || [];
+          if (parsed.startTime) startTimeRef.current = parsed.startTime;
+          if (parsed.sessionId) sessionIdRef.current = parsed.sessionId;
+          if (parsed.engaged60) hasSentEngaged60Ref.current = true;
+          if (Number.isInteger(parsed.engaged60Page) && parsed.engaged60Page >= 1) {
+            engaged60PageRef.current = parsed.engaged60Page;
+          }
+          console.log(`[TRACK] Recovered session ${sessionIdRef.current.slice(0, 8)} from LocalStorage`);
         }
-        console.log(`[TRACK] Recovered session ${sessionIdRef.current.slice(0, 8)} from LocalStorage`);
       } catch (e) { if (import.meta.env.DEV) console.warn('[telemetry] session recovery failed:', e); }
     }
 
@@ -536,6 +585,10 @@ export function useTelemetry({
       }
 
       if (now - lastPingRef.current > 30000) {
+        // Refresh the snapshot's lastActiveAt: a reader parked on one page
+        // never triggers updateSessionData, and without this their snapshot
+        // would go "stale" (>5min) and lose legitimate crash recovery.
+        persistSessionSnapshot();
         sendTrackingEvent('heartbeat', {
           duration_seconds: sessionDuration,
           // Server /api/track reads `page` (not current_page) for the heartbeat
