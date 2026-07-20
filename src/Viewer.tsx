@@ -190,7 +190,7 @@ export default function Viewer() {
       />
 
       <main
-        className={`cs-mask flex-1 flex justify-center overflow-y-auto overscroll-contain scroll-smooth select-none transition-all duration-500 ease-in-out relative ${isFullscreen
+        className={`cs-mask flex-1 overflow-x-auto overflow-y-auto overscroll-contain scroll-smooth select-none transition-all duration-500 ease-in-out relative ${isFullscreen
           ? `pt-4 sm:pt-6 ${isDarkMode ? 'bg-[#0e0f12]' : 'bg-[#1C2A3A]'}`
           : `pt-16 sm:pt-20 ${isDarkMode ? 'bg-[#15161A]' : 'bg-[#F5F4F1]'}`
           } ${(isWindowFocused || isFullscreen)
@@ -200,7 +200,9 @@ export default function Viewer() {
         ref={containerRef}
         onContextMenu={(e) => e.preventDefault()}
       >
-        <div ref={contentRef} className="w-full max-w-6xl flex flex-col items-center" style={{ paddingBottom: 'calc(7rem + env(safe-area-inset-bottom))' }}>
+        {/* w-max + min-w-full: sized to the (possibly zoomed) page so main can
+            scroll to both edges; flex/justify-center would clip the left side. */}
+        <div ref={contentRef} className="w-max min-w-full mx-auto flex flex-col items-center" style={{ paddingBottom: 'calc(7rem + env(safe-area-inset-bottom))' }}>
           <PdfStage
             pdfUrl={pdfUrl}
             pageNumber={pageNumber}
