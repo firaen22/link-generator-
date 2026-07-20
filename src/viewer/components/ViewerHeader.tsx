@@ -1,21 +1,23 @@
-import { ZoomIn, ZoomOut, Moon, Sun, X } from 'lucide-react';
+import { ZoomIn, ZoomOut, Moon, Sun, X, Type } from 'lucide-react';
 
 interface ViewerHeaderProps {
   reportName: string;
   clientName: string;
   isFullscreen: boolean;
   isDarkMode: boolean;
+  isTextMode: boolean;
   scale: number;
   onClose: () => void;
   onToggleDark: () => void;
+  onToggleTextMode: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
 }
 
 /** Quiet glass header. Slides up in fullscreen (behavioral — preserved). */
 export function ViewerHeader({
-  reportName, clientName, isFullscreen, isDarkMode, scale,
-  onClose, onToggleDark, onZoomIn, onZoomOut,
+  reportName, clientName, isFullscreen, isDarkMode, isTextMode, scale,
+  onClose, onToggleDark, onToggleTextMode, onZoomIn, onZoomOut,
 }: ViewerHeaderProps) {
   return (
     <header
@@ -47,6 +49,18 @@ export function ViewerHeader({
 
       {/* Right: Actions */}
       <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+        <button
+          onClick={onToggleTextMode}
+          aria-label={isTextMode ? '切換回原文模式' : '切換至文字模式'}
+          aria-pressed={isTextMode}
+          title={isTextMode ? '切換回原文模式' : '切換至文字模式'}
+          className={`min-h-11 min-w-11 flex items-center justify-center rounded-xl transition-all ${isTextMode
+            ? (isDarkMode ? 'text-[#C6A867] bg-white/10' : 'text-[#B8964F] bg-slate-100')
+            : (isDarkMode ? 'text-slate-400 hover:bg-white/10' : 'text-slate-500 hover:text-[#B8964F] hover:bg-slate-100')}`}
+        >
+          <Type className="w-5 h-5" />
+        </button>
+
         <button
           onClick={onToggleDark}
           aria-label={isDarkMode ? '切換至淺色模式' : '切換至深色模式'}

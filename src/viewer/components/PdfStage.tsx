@@ -198,7 +198,7 @@ export function PdfStage({
               onLoadSuccess={(page) => setAspectRatio(page.originalWidth / page.originalHeight)}
               renderTextLayer={true}
               renderAnnotationLayer={true}
-              className={`rounded-md bg-white border ${isDarkMode ? 'border-white/10 ring-1 ring-black/5 brightness-[0.87] contrast-[1.02]' : 'border-slate-200'} shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_rgba(0,0,0,0.08)]`}
+              className={`rounded-md bg-white border ${isDarkMode ? 'border-white/10 ring-1 ring-black/5 [filter:invert(0.93)_hue-rotate(180deg)]' : 'border-slate-200'} shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_rgba(0,0,0,0.08)]`}
               loading={null}
             />
           </motion.div>
