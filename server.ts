@@ -1901,11 +1901,11 @@ app.post("/api/track", async (req, res) => {
 // THINKING_MODELS support thinkingLevel + native JSON schema (response_schema).
 // STANDARD_MODELS are fallbacks that cannot honour those config options.
 const THINKING_MODELS = [
-  "gemini-3-flash-preview",           // RPD: 20, RPM: 5
+  "gemini-3.6-flash",                 // RPM: 5, TPM: 250K (verified Jul 2026) — replaced 3-flash-preview, which ran 18-25s vs our 25s timeout
   "gemini-2.5-flash",                 // RPD: 20, RPM: 5
 ];
 const STANDARD_MODELS = [
-  "gemini-3.1-flash-lite",            // RPD: 500, RPM: 15 (Highest Quota) — GA May 2026
+  "gemini-3.5-flash-lite",            // RPD: 500, RPM: 15 (Highest Quota) — same free-tier quota as 3.1-lite (verified Jul 2026)
   "gemini-2.5-flash-lite",            // RPD: 20, RPM: 10
   "gemini-2.0-flash",                 // Formal release
   "gemma-3-27b-it",                   // High-quota fallback (RPD: 14.4K)

@@ -6,10 +6,10 @@ description: Load when touching any Gemini call site, the THINKING_MODELS/STANDA
 # Gemini call contract (2026-07-13, commit d125074)
 
 ## The two tiers (server.ts:1420-1433) — placement is a correctness decision
-- `THINKING_MODELS` = ["gemini-3-flash-preview", "gemini-2.5-flash"] —
+- `THINKING_MODELS` = ["gemini-3.6-flash", "gemini-2.5-flash"] —
   support `thinkingConfig` + native `responseSchema`. Used ONLY by
   /api/session-end (first pass, server.ts:1778).
-- `STANDARD_MODELS` = ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite",
+- `STANDARD_MODELS` = ["gemini-3.5-flash-lite", "gemini-2.5-flash-lite",
   "gemini-2.0-flash", "gemma-3-27b-it", "gemini-1.5-flash-latest"] — no
   thinkingConfig; schema goes into the prompt text and output is
   fence-stripped + JSON.parsed. Used by generate-meta, explain-jargon, and
