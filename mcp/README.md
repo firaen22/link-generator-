@@ -19,6 +19,8 @@ server's allowlist. Without a valid key the endpoints return `401`.
 |------|--------------|
 | `create_share_link` | Uploads a local PDF and mints one personalised `/l/<id>` link per client name. Optional `title`, `description`, `previewImagePath` / `previewImage` (WhatsApp OG card), `advisorWhatsapp` (in-report CTA). |
 | `get_whatsapp_link` | Turns a share link into a `wa.me/?text=…` click-to-chat URL (opens WhatsApp with the message pre-filled; does not auto-send). |
+| `list_links` | Lists the links created with your key, newest first — client, report, created date, expiry, revoked / PIN status. Optional `client` / `report` substring filters, `includeRevoked`, `limit`. |
+| `revoke_link` | Revokes a link so it stops opening the report; pass `revoked: false` to restore it. Accepts a short id or a full `/l/<id>` URL. Only your own links can be changed. |
 
 > **Preview card image:** pass `previewImagePath` (a **local image file**) and it is
 > auto-compressed to **< 300 KB** JPEG, uploaded, and hosted for you — no manual
@@ -76,3 +78,5 @@ by removing theirs. Changes take effect on the next deploy.
 - "Generate share links for Peter and Mary using ~/reports/may.pdf, title 五月市場展望,
   preview image https://…/cover.jpg, advisor WhatsApp 85291234567."
 - "Make a WhatsApp send link for https://share.pmd-hk.com/l/abc123."
+- "What links have I sent Peter?" / "Show all links for the May report, including revoked ones."
+- "Revoke https://share.pmd-hk.com/l/abc123 — it went to the wrong client."
