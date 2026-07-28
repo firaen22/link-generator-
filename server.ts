@@ -1,12 +1,13 @@
 import 'dotenv/config';
 import express from "express";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual, randomBytes } from "node:crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import LZString from 'lz-string';
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { GoogleAuth } from "google-auth-library";
 // The .js extension is required: Vercel's Node runtime compiles each TS file
 // separately and keeps import specifiers as-is, so an extensionless relative
 // import crashes the whole function at load (ERR_MODULE_NOT_FOUND) even though
@@ -40,6 +41,30 @@ const escapeHTMLAttr = (text: unknown): string =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+
+// Telemetry/session ids are unauthenticated request input and may be any JSON type.
+// Coerce before any string method so a numeric id can't throw inside an async handler
+// (an uncaught throw there becomes an unhandled rejection and kills the worker).
+const shortSessionId = (v: unknown): string => String(v ?? '').slice(0, 8);
+
+// Strip CR/LF and control characters from untrusted values before they reach console
+// output, so an attacker can't forge extra log lines.
+const safeLogValue = (v: unknown): string =>
+  String(v ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 200);
+
+const randomShortId = (): string => {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let id = '';
+  while (id.length < 6) {
+    const bytes = randomBytes(12);
+    for (const byte of bytes) {
+      if (byte >= 252) continue;
+      id += alphabet[byte % 36];
+      if (id.length === 6) break;
+    }
+  }
+  return id;
+};
 
 // Allowlist of hosts the PDF proxy may fetch a user-supplied (vblob_) URL from.
 // Prevents SSRF: without this, an attacker could encode an internal URL
@@ -515,17 +540,6 @@ const sendShortLinkOpenNotification = async (
   }
 };
 
-// Startup status check
-console.log('--- Server Status ---');
-console.log(`Telegram Bot: ${process.env.TELEGRAM_BOT_TOKEN ? '✅ LOADED' : '❌ MISSING'}`);
-console.log(`Telegram Chat ID: ${process.env.TELEGRAM_CHAT_ID ? '✅ LOADED' : '❌ MISSING'}`);
-console.log(`Firebase Project ID: ${process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || '❌ MISSING'}`);
-console.log(`Firebase Bucket: ${process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || '❌ MISSING'}`);
-console.log(`Cloudflare R2: ${process.env.R2_ACCOUNT_ID ? '✅ LOADED' : '❌ MISSING'}`);
-console.log(`Access keys (PWP_API_KEYS): ${allowedKeys.size > 0 ? `✅ ${allowedKeys.size} configured` : '❌ NONE — creation endpoints will reject all requests'}`);
-console.log(`Advisor TG chats (PWP_TELEGRAM_CHATS): ${advisorChats.size > 0 ? `✅ ${advisorChats.size} mapped` : '— none (owner-only notifications)'}`);
-console.log('------------------------------');
-
 // Cloudflare R2 Client
 const s3Client = new S3Client({
   region: "auto",
@@ -535,6 +549,57 @@ const s3Client = new S3Client({
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || "",
   },
 });
+
+// ── Firestore access ──────────────────────────────────────────────────────────
+// A Firebase Web API key is NOT a credential: a REST call carrying only `?key=...`
+// is anonymous to the rules engine. The rules are closed (see firestore.rules), so
+// every Firestore call below authenticates with a service account instead.
+// FIREBASE_SERVICE_ACCOUNT holds the service-account JSON verbatim.
+const firestoreAuth = (() => {
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!raw) return null;
+  try {
+    return new GoogleAuth({
+      credentials: JSON.parse(raw),
+      scopes: ["https://www.googleapis.com/auth/datastore"],
+    });
+  } catch (err: any) {
+    console.error("[FIRESTORE_AUTH] FIREBASE_SERVICE_ACCOUNT is not valid JSON:", err?.message);
+    return null;
+  }
+})();
+
+// Authorization header for a Firestore REST call, or null when no usable service
+// account is configured. Callers MUST fail closed on null — never fall back to an
+// unauthenticated request, or the closed rules become the only thing standing
+// between a misconfigured deploy and a silent outage that looks like a 404.
+// GoogleAuth caches and refreshes the token internally, so calling this per
+// request is cheap.
+const firestoreHeaders = async (
+  extra: Record<string, string> = {}
+): Promise<Record<string, string> | null> => {
+  if (!firestoreAuth) return null;
+  try {
+    const token = await firestoreAuth.getAccessToken();
+    if (!token) return null;
+    return { ...extra, Authorization: `Bearer ${token}` };
+  } catch (err: any) {
+    console.error("[FIRESTORE_AUTH] Failed to mint access token:", err?.message);
+    return null;
+  }
+};
+
+// Startup status check
+console.log('--- Server Status ---');
+console.log(`Telegram Bot: ${process.env.TELEGRAM_BOT_TOKEN ? '✅ LOADED' : '❌ MISSING'}`);
+console.log(`Telegram Chat ID: ${process.env.TELEGRAM_CHAT_ID ? '✅ LOADED' : '❌ MISSING'}`);
+console.log(`Firebase Project ID: ${process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || '❌ MISSING'}`);
+console.log(`Firestore service account: ${firestoreAuth ? '✅ LOADED' : '❌ MISSING — all Firestore calls will fail'}`);
+console.log(`Firebase Bucket: ${process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || '❌ MISSING'}`);
+console.log(`Cloudflare R2: ${process.env.R2_ACCOUNT_ID ? '✅ LOADED' : '❌ MISSING'}`);
+console.log(`Access keys (PWP_API_KEYS): ${allowedKeys.size > 0 ? `✅ ${allowedKeys.size} configured` : '❌ NONE — creation endpoints will reject all requests'}`);
+console.log(`Advisor TG chats (PWP_TELEGRAM_CHATS): ${advisorChats.size > 0 ? `✅ ${advisorChats.size} mapped` : '— none (owner-only notifications)'}`);
+console.log('------------------------------');
 
 // API Route for the Link Preview (Supports both old and new shorter path)
 app.get(["/api/share/:file_id", "/s/:file_id", "/s"], async (req, res) => {
@@ -735,7 +800,12 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links/${shortId}`;
     console.log(`[SHORT_LINK] Resolving ID: ${shortId} via ${docUrl}`);
 
-    const response = await fetch(docUrl);
+    const fsHeaders = await firestoreHeaders();
+    if (!fsHeaders) {
+      console.error("[SHORT_LINK] Missing Firestore service account");
+      return res.status(500).send("系統發生錯誤，無法載入報告");
+    }
+    const response = await fetch(docUrl, { headers: fsHeaders });
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -888,15 +958,19 @@ app.post("/api/unlock-link", async (req, res) => {
   allow(`pin:id:${shortId}`, 30, 3_600_000);
 
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
-  const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
-  if (!projectId || !apiKey) {
+  if (!projectId) {
     return res.status(500).json({ error: "server_config_missing" });
   }
 
   const fsBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links`;
 
   try {
-    const docRes = await fetch(`${fsBase}/${shortId}`);
+    const fsHeaders = await firestoreHeaders();
+    if (!fsHeaders) {
+      console.error("[UNLOCK_LINK] Missing Firestore service account");
+      return res.status(500).json({ error: "server_config_missing" });
+    }
+    const docRes = await fetch(`${fsBase}/${shortId}`, { headers: fsHeaders });
     if (!docRes.ok) {
       if (docRes.status !== 404) {
         const detail = await docRes.text().catch(() => "");
@@ -949,11 +1023,16 @@ app.post("/api/unlock-link", async (req, res) => {
 
       // Durable lockout is read-modify-write; concurrent wrong attempts can
       // undercount, but this still closes the serverless scale-out brute-force gap.
+      const fsPatchHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
+      if (!fsPatchHeaders) {
+        console.error("[UNLOCK_LINK] Missing Firestore service account");
+        return res.status(500).json({ error: "unlock_failed" });
+      }
       const patchRes = await fetch(
-        `${fsBase}/${shortId}?key=${apiKey}&${masks.map((m) => `updateMask.fieldPaths=${encodeURIComponent(m)}`).join("&")}`,
+        `${fsBase}/${shortId}?${masks.map((m) => `updateMask.fieldPaths=${encodeURIComponent(m)}`).join("&")}`,
         {
           method: "PATCH",
-          headers: { "Content-Type": "application/json" },
+          headers: fsPatchHeaders,
           body: JSON.stringify({ fields: patchFields }),
         }
       );
@@ -977,17 +1056,22 @@ app.post("/api/unlock-link", async (req, res) => {
 
     const failedPinCount = Number.parseInt(fields.failedPinCount?.integerValue || "0", 10);
     if (Number.isFinite(failedPinCount) && failedPinCount > 0) {
-      const resetRes = await fetch(
-        `${fsBase}/${shortId}?key=${apiKey}&updateMask.fieldPaths=failedPinCount`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fields: { failedPinCount: { integerValue: "0" } } }),
+      const fsResetHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
+      if (!fsResetHeaders) {
+        console.error("[UNLOCK_LINK] Missing Firestore service account");
+      } else {
+        const resetRes = await fetch(
+          `${fsBase}/${shortId}?updateMask.fieldPaths=failedPinCount`,
+          {
+            method: "PATCH",
+            headers: fsResetHeaders,
+            body: JSON.stringify({ fields: { failedPinCount: { integerValue: "0" } } }),
+          }
+        );
+        if (!resetRes.ok) {
+          const detail = await resetRes.text().catch(() => "");
+          console.error(`[UNLOCK_LINK] Failed to reset PIN counter (${resetRes.status}) for ${shortId}: ${detail}`);
         }
-      );
-      if (!resetRes.ok) {
-        const detail = await resetRes.text().catch(() => "");
-        console.error(`[UNLOCK_LINK] Failed to reset PIN counter (${resetRes.status}) for ${shortId}: ${detail}`);
       }
     }
 
@@ -1042,8 +1126,7 @@ app.post("/api/create-link", async (req, res) => {
   }
 
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
-  const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
-  if (!projectId || !apiKey) {
+  if (!projectId) {
     return res.status(500).json({ error: "伺服器缺少 Firebase 設定 (Project ID / API Key)" });
   }
 
@@ -1081,6 +1164,10 @@ app.post("/api/create-link", async (req, res) => {
   const fsBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links`;
 
   try {
+    const fsWriteHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
+    if (!fsWriteHeaders) {
+      return res.status(500).json({ error: "伺服器缺少 Firebase 服務帳戶設定" });
+    }
     const results = await Promise.all(
       names.map(async (name) => {
         const payload: Record<string, string> = { c: name, r: reportName, t: title, f };
@@ -1095,7 +1182,7 @@ app.post("/api/create-link", async (req, res) => {
         // Retry with a fresh id on collision.
         let shortId = "";
         for (let attempt = 0; attempt < 5; attempt++) {
-          const candidate = Math.random().toString(36).substring(2, 8);
+          const candidate = randomShortId();
           const fields: any = {
             q: { stringValue: compressed },
             clientName: { stringValue: name },
@@ -1108,8 +1195,8 @@ app.post("/api/create-link", async (req, res) => {
           }
           const body = JSON.stringify({ fields });
           const writeRes = await fetch(
-            `${fsBase}/${candidate}?key=${apiKey}&currentDocument.exists=false`,
-            { method: "PATCH", headers: { "Content-Type": "application/json" }, body }
+            `${fsBase}/${candidate}?currentDocument.exists=false`,
+            { method: "PATCH", headers: fsWriteHeaders, body }
           );
 
           if (writeRes.ok) {
@@ -1144,17 +1231,20 @@ app.get("/api/links", async (req, res) => {
   if (advisor === null) return;
 
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
-  const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
-  if (!projectId || !apiKey) {
+  if (!projectId) {
     return res.status(500).json({ error: "伺服器缺少 Firebase 設定 (Project ID / API Key)" });
   }
 
   try {
+    const fsHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
+    if (!fsHeaders) {
+      return res.status(500).json({ error: "讀取連結失敗" });
+    }
     const queryRes = await fetch(
-      `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:runQuery?key=${apiKey}`,
+      `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:runQuery`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: fsHeaders,
         body: JSON.stringify({
           structuredQuery: {
             from: [{ collectionId: "links" }],
@@ -1218,8 +1308,7 @@ app.post("/api/revoke-link", async (req, res) => {
   }
 
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
-  const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
-  if (!projectId || !apiKey) {
+  if (!projectId) {
     return res.status(500).json({ error: "伺服器缺少 Firebase 設定 (Project ID / API Key)" });
   }
 
@@ -1227,7 +1316,11 @@ app.post("/api/revoke-link", async (req, res) => {
   const nextRevoked = req.body?.revoked === false ? false : true;
 
   try {
-    const docRes = await fetch(`${fsBase}/${shortId}?key=${apiKey}`);
+    const fsHeaders = await firestoreHeaders();
+    if (!fsHeaders) {
+      return res.status(500).json({ error: "更新連結狀態失敗" });
+    }
+    const docRes = await fetch(`${fsBase}/${shortId}`, { headers: fsHeaders });
     if (!docRes.ok) {
       return res.status(404).json({ error: "找不到此連結" });
     }
@@ -1238,10 +1331,10 @@ app.post("/api/revoke-link", async (req, res) => {
     }
 
     const patchRes = await fetch(
-      `${fsBase}/${shortId}?key=${apiKey}&updateMask.fieldPaths=revoked`,
+      `${fsBase}/${shortId}?updateMask.fieldPaths=revoked`,
       {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...fsHeaders, "Content-Type": "application/json" },
         body: JSON.stringify({ fields: { revoked: { booleanValue: nextRevoked } } }),
       }
     );
@@ -1876,7 +1969,7 @@ app.post("/api/track", async (req, res) => {
     }
   }
 
-  console.log(`[TRACK] ${event} | ${client_name} | ${rName}`);
+  console.log(`[TRACK] ${safeLogValue(event)} | ${safeLogValue(client_name)} | ${safeLogValue(rName)}`);
 
   // /api/track is unauthenticated and these values come from the request body;
   // they're sent with parse_mode:'HTML', so escape them — mirrors /api/session-end.
@@ -2094,7 +2187,7 @@ app.post("/api/session-end", async (req, res) => {
     }
   }
 
-  console.log(`🚀 [BACKEND] 分析請求: ${client_name} | 報告: ${rName} | Session: ${session_id?.slice(0, 8)}`);
+  console.log(`🚀 [BACKEND] 分析請求: ${safeLogValue(client_name)} | 報告: ${safeLogValue(rName)} | Session: ${shortSessionId(session_id)}`);
 
   if (event !== 'session_end') return res.json({ status: "ignored" });
 
@@ -2391,7 +2484,7 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
 
       text = `🎯 <b>【Antigravity 銷售導航】</b>
 👤 <b>客戶：</b> ${escapeHTML(client_name)}  📄 <b>報告：</b> ${escapeHTML(rName)}
-🆔 <b>會話：</b> <code>${session_id?.slice(0, 8)}</code>  ${modelTag} (<code>${usedModel}</code>)
+🆔 <b>會話：</b> <code>${escapeHTML(shortSessionId(session_id))}</code>  ${modelTag} (<code>${usedModel}</code>)
 ${deviceIcon} ${escapeHTML(device_type || 'unknown')}  ${timeLabel}  🔁 Returns: ${return_visit_count ?? 0}${returnVisitLine}${ctaLine}
 
 🧠 <b>Intent Archetype：</b> ${archetype}
@@ -2448,20 +2541,23 @@ ${nba}${behaviorBlock}`;
 
     if (validReaderInput) {
       const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
-      const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
-      if (!projectId || !apiKey) {
+      if (!projectId) {
         console.error("[SESSION-END] Missing Firebase config for second-reader detection");
       } else {
         const readerKey = createHash('sha256').update(`${file_id}|${client_name}`).digest('hex').slice(0, 40);
+        const fsReaderHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
+        if (!fsReaderHeaders) {
+          console.error("[SESSION-END] Missing Firestore service account for second-reader detection");
+        } else {
         const docBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
         const docUrl = `${docBase}/readers/${readerKey}`;
         const nowIso = new Date().toISOString();
-        const readRes = await fetch(docUrl);
+        const readRes = await fetch(docUrl, { headers: fsReaderHeaders });
 
         if (readRes.status === 404) {
-          await fetch(`${docUrl}?key=${apiKey}`, {
+          await fetch(docUrl, {
             method: "PATCH",
-            headers: { "Content-Type": "application/json" },
+            headers: fsReaderHeaders,
             body: JSON.stringify({
               fields: {
                 deviceIds: { arrayValue: { values: [{ stringValue: device_id }] } },
@@ -2488,10 +2584,10 @@ ${nba}${behaviorBlock}`;
             const nextDeviceIds = [...deviceIds, device_id].slice(-10);
             // Plain GET+PATCH read-modify-write; no transaction. Concurrent
             // sessions may double-alert, acceptable at this volume.
-            const updateUrl = `${docUrl}?key=${apiKey}&updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt`;
+            const updateUrl = `${docUrl}?updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt`;
             const updateRes = await fetch(updateUrl, {
               method: "PATCH",
-              headers: { "Content-Type": "application/json" },
+              headers: fsReaderHeaders,
               body: JSON.stringify({
                 fields: {
                   deviceIds: { arrayValue: { values: nextDeviceIds.map((id) => ({ stringValue: id })) } },
@@ -2517,6 +2613,7 @@ ${nba}${behaviorBlock}`;
               }
             }
           }
+        }
         }
       }
     }
