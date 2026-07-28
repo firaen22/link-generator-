@@ -1,6 +1,6 @@
 {
   "name": "pwp-links-mcp",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "private": true,
   "type": "module",
   "description": "MCP server for the Private Wealth Pack link generator (share.pmd-hk.com). Uses sharp to compress preview images.",

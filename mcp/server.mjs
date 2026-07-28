@@ -14,6 +14,8 @@
  * Tools:
  *   - create_share_link : upload a local PDF + mint one personalised link per client
  *   - get_whatsapp_link : turn a share link into a wa.me click-to-chat URL
+ *   - list_links        : list the links created with this access key
+ *   - revoke_link       : revoke (or restore) one of those links
  *
  * Config (env): PWP_BASE_URL — base URL of the deployed app.
  */
@@ -24,7 +26,7 @@ import sharp from "sharp";
 
 const BASE_URL = (process.env.PWP_BASE_URL || "https://share.pmd-hk.com").replace(/\/$/, "");
 const API_KEY = process.env.PWP_API_KEY || "";
-const SERVER_INFO = { name: "pwp-links", version: "1.3.0" };
+const SERVER_INFO = { name: "pwp-links", version: "1.4.0" };
 // Newest first; we echo the client's requested version when we support it.
 // Elicitation (server-initiated user forms) entered the spec in 2025-06-18.
 const SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -101,6 +103,55 @@ const TOOLS = [
       required: ["shortLink"],
     },
   },
+  {
+    name: "list_links",
+    description:
+      "List the share links created with this access key, newest first. Each entry gives the short id, " +
+      "client name, report name, creation time, expiry, and whether it is revoked or PIN-protected. " +
+      "Use it to answer 'what links did I send Peter?' or to find a shortId to pass to revoke_link.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        client: {
+          type: "string",
+          description: "Case-insensitive substring filter on the client name. Omit to list all clients.",
+        },
+        report: {
+          type: "string",
+          description: "Case-insensitive substring filter on the report name. Omit to list all reports.",
+        },
+        includeRevoked: {
+          type: "boolean",
+          description: "Include revoked links in the result. Defaults to false.",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum entries to return (1–300). Defaults to 50.",
+        },
+      },
+    },
+  },
+  {
+    name: "revoke_link",
+    description:
+      "Revoke a share link so it stops opening the report — use when a link was sent to the wrong person " +
+      "or a report is superseded. Pass revoked=false to restore a previously revoked link. Only links " +
+      "created with this access key can be changed. Get the shortId from list_links or the /l/<id> URL.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        shortId: {
+          type: "string",
+          description: "The link's short id — the <id> in https://<domain>/l/<id>. A full URL is also accepted.",
+        },
+        revoked: {
+          type: "boolean",
+          description: "true (default) revokes the link; false restores it.",
+        },
+      },
+      required: ["shortId"],
+    },
+  },
 ];
 
 // ── Tool implementations ──────────────────────────────────────────────────────
@@ -117,6 +168,25 @@ async function postJson(path, body) {
       ...(API_KEY ? { "x-pwp-key": API_KEY } : {}),
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  const text = await res.text();
+  if (res.status === 401) {
+    throw new Error(
+      "Unauthorised (401): missing or invalid access key. Set PWP_API_KEY in the MCP server's env."
+    );
+  }
+  if (!res.ok) throw new Error(`${path} failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`${path} returned non-JSON: ${text.slice(0, 300)}`);
+  }
+}
+
+async function getJson(path) {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: { ...(API_KEY ? { "x-pwp-key": API_KEY } : {}) },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   const text = await res.text();
@@ -339,6 +409,103 @@ function getWhatsappLink(args) {
   return { summary: `WhatsApp click-to-chat URL:\n${waUrl}`, waUrl };
 }
 
+// "abc123", "/l/abc123" and "https://host/l/abc123" all reduce to "abc123".
+// The server rejects anything that isn't ^[a-z0-9]{1,32}$, so validate here too
+// rather than sending a URL and getting an opaque 400 back. Match the id against
+// the /l/ segment specifically — taking the last path segment instead would turn
+// "https://host/l/abc123/extra" into "extra" and revoke the wrong link.
+const SHORT_ID_RE = /^[a-z0-9]{1,32}$/i;
+const PATH_ID_RE = /^\/l\/([a-z0-9]{1,32})\/?$/i;
+function parseShortId(input) {
+  if (!input || typeof input !== "string") throw new Error("shortId is required.");
+  const trimmed = input.trim();
+  let candidate;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    // Full URL: the pathname must be exactly /l/<id> — "/l/abc123/extra" is not
+    // a link this app mints, and an /l/ inside the query string is someone
+    // else's parameter, so reject rather than guess which id was meant.
+    let pathname;
+    try {
+      pathname = new URL(trimmed).pathname;
+    } catch {
+      pathname = "";
+    }
+    candidate = pathname.match(PATH_ID_RE)?.[1] ?? "";
+  } else {
+    const noQuery = trimmed.replace(/[?#].*$/, "");
+    // "/l/abc123" and "l/abc123" path forms, or a bare id.
+    candidate = noQuery.includes("/")
+      ? (("/" + noQuery.replace(/^\/+/, "")).match(PATH_ID_RE)?.[1] ?? "")
+      : noQuery;
+  }
+  if (!SHORT_ID_RE.test(candidate)) {
+    // Bound the echo: the caller controls this string and it lands in tool output.
+    const shown = trimmed.length > 80 ? `${trimmed.slice(0, 80)}…` : trimmed;
+    throw new Error(`"${shown}" is not a valid short link id (expected the <id> in /l/<id>).`);
+  }
+  return candidate;
+}
+
+const fmtDate = (v) => {
+  const t = typeof v === "string" ? Date.parse(v) : NaN;
+  return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : "";
+};
+
+async function listLinks(rawArgs) {
+  // The client controls both of these: `arguments: null` defeats a default
+  // parameter, and a body of literal `null` is valid JSON.
+  const args = rawArgs && typeof rawArgs === "object" ? rawArgs : {};
+  const body = await getJson("/api/links");
+  const links = body && typeof body === "object" ? body.links : null;
+  // Defensive: a malformed row must not take down the whole listing.
+  const all = (Array.isArray(links) ? links : []).filter((l) => l && typeof l === "object");
+
+  const needleOf = (v) => (typeof v === "string" ? v.trim().toLowerCase() : "");
+  const client = needleOf(args.client);
+  const report = needleOf(args.report);
+  const limit = Number.isFinite(args.limit) ? Math.min(Math.max(Math.trunc(args.limit), 1), 300) : 50;
+
+  // The endpoint already returns newest-first, so slicing keeps the newest.
+  const filtered = all
+    .filter((l) => (args.includeRevoked === true ? true : !l.revoked))
+    .filter((l) => !client || String(l.clientName || "").toLowerCase().includes(client))
+    .filter((l) => !report || String(l.reportName || "").toLowerCase().includes(report))
+    .slice(0, limit);
+
+  const rows = filtered.map((l) => {
+    const flags = [
+      l.revoked ? "revoked" : null,
+      l.pinProtected ? "PIN" : null,
+      l.expireAt ? `expires ${fmtDate(l.expireAt)}` : null,
+    ].filter(Boolean);
+    const meta = [fmtDate(l.createdAt), l.reportName, flags.join(", ")].filter(Boolean).join(" · ");
+    return `• ${l.clientName || "(no name)"} — ${BASE_URL}/l/${l.shortId}${meta ? `\n    ${meta}` : ""}`;
+  });
+
+  const scope = filtered.length === all.length ? "" : ` (of ${all.length} total)`;
+  const summary = rows.length
+    ? `${rows.length} link(s)${scope}:\n${rows.join("\n")}`
+    : `No links matched${all.length ? ` (${all.length} exist under this key).` : " — none created with this key yet."}`;
+  return { summary, links: filtered, totalCount: all.length };
+}
+
+async function revokeLink(rawArgs) {
+  const args = rawArgs && typeof rawArgs === "object" ? rawArgs : {};
+  const shortId = parseShortId(args.shortId);
+  // Mirror the server's own `=== false` check: only a literal false un-revokes,
+  // so an ambiguous value fails safe (revoking is reversible; a live leaked
+  // link is not).
+  const revoked = args.revoked === false ? false : true;
+  await postJson("/api/revoke-link", { shortId, revoked });
+  return {
+    summary: revoked
+      ? `Revoked ${BASE_URL}/l/${shortId} — it no longer opens the report.`
+      : `Restored ${BASE_URL}/l/${shortId} — it opens the report again.`,
+    shortId,
+    revoked,
+  };
+}
+
 // ── MCP stdio JSON-RPC plumbing ───────────────────────────────────────────────
 
 function send(msg) {
@@ -403,6 +570,8 @@ async function handle(msg) {
       let result;
       if (name === "create_share_link") result = await createShareLink(args);
       else if (name === "get_whatsapp_link") result = getWhatsappLink(args);
+      else if (name === "list_links") result = await listLinks(args);
+      else if (name === "revoke_link") result = await revokeLink(args);
       else throw new Error(`Unknown tool: ${name}`);
       reply(id, { content: [{ type: "text", text: result.summary }], structuredContent: result });
     } catch (e) {

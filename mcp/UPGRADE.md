@@ -23,6 +23,35 @@ The script will:
 
 ---
 
+## What's new in v1.4.0
+
+### `list_links` and `revoke_link` — manage links, not just mint them
+
+Two new tools close the gap with the web app: everything you could create from
+Claude/Codex you can now also review and take back.
+
+```
+"What links have I sent Peter?"
+"Show every link for the May report, including the revoked ones"
+"Revoke https://share.pmd-hk.com/l/abc123 — it went to the wrong client"
+"Actually restore that one"
+```
+
+`list_links` returns your links newest-first with client name, report, created
+date, expiry, and revoked / PIN status. Optional `client` and `report` filters are
+case-insensitive substring matches; `includeRevoked` (default false) and `limit`
+(default 50, max 300) narrow the output.
+
+`revoke_link` takes a short id or a full `/l/<id>` URL. It revokes by default;
+pass `revoked: false` to restore. Only links created with your own access key can
+be changed — the server rejects anyone else's with 403.
+
+> **Safety note:** an ambiguous `revoked` value always resolves to *revoking*, and
+> a URL that isn't exactly `/l/<id>` is rejected rather than guessed at. Revoking
+> the wrong link is reversible; leaving a leaked link live is not.
+
+---
+
 ## What's new in v1.2.0
 
 ### 1 — `previewImagePath`: local image auto-compress & upload
