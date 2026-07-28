@@ -128,14 +128,20 @@ export default function App() {
       return;
     }
 
+    // clearTimeout only cancels a request that hasn't fired yet. Once the fetch is
+    // in flight, a newer URL's (faster) response can land before this one's, so the
+    // stale reply must not be allowed to overwrite the warning.
+    let cancelled = false;
+
     const timer = setTimeout(async () => {
       try {
         const res = await fetch(`/api/check-image-size?url=${encodeURIComponent(previewImage)}`, {
           headers: { 'x-pwp-key': accessKey },
         });
-        if (!res.ok) return;
+        if (cancelled || !res.ok) return;
         const data = await res.json();
-        
+        if (cancelled) return;
+
         if (data.sizeBytes != null) {
           const kb = Math.round(data.sizeBytes / 1024);
           if (kb > 300) {
@@ -149,11 +155,14 @@ export default function App() {
         }
       } catch (err) {
         console.error('[CHECK_IMAGE_SIZE] Failed to query size:', err);
-        setImageSizeWarning('');
+        if (!cancelled) setImageSizeWarning('');
       }
     }, 600);
 
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [previewImage, accessKey]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
