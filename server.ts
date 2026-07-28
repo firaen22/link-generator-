@@ -296,6 +296,14 @@ const pinEntryHtml = (shortId: string): string => {
 </html>`;
 };
 
+// Express types every query value as `string | string[] | ParsedQs`: a duplicated
+// param (?i=a&i=b) or a bracketed one (?i[x]=1) arrives as an array/object, and the
+// same is true of any field inside an attacker-supplied `q` payload. Treat anything
+// non-string as absent — calling a string method on one of those throws, and inside
+// an async Express handler that throw is an UNHANDLED REJECTION that takes the whole
+// process down (verified: GET /s?i=a&i=b killed the server, no response sent).
+const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
+
 const resolveOgImage = (imageParam: string): string => {
   const fallback = 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1200&auto=format&fit=crop&.jpg';
   if (!imageParam?.startsWith('http')) return fallback;
@@ -531,36 +539,57 @@ const s3Client = new S3Client({
 // API Route for the Link Preview (Supports both old and new shorter path)
 app.get(["/api/share/:file_id", "/s/:file_id", "/s"], async (req, res) => {
   const { file_id } = req.params;
-  const { q, client_name, name, report_name, preview_image, c, r, i, d, desc, t, title: tParam } = req.query;
   const userAgent = req.headers['user-agent'] || '';
   const isCrawler = /WhatsApp|Telegram|facebookexternalhit|Twitterbot|Slackbot|Discordbot|Line|WeChat/i.test(userAgent);
 
+  // Every value below is public, unauthenticated input — normalize to a string
+  // before anything calls a string method on it (see asString above).
+  const q = asString(req.query.q);
+  const client_name = asString(req.query.client_name);
+  const name = asString(req.query.name);
+  const report_name = asString(req.query.report_name);
+  const preview_image = asString(req.query.preview_image);
+  const c = asString(req.query.c);
+  const r = asString(req.query.r);
+  const i = asString(req.query.i);
+  const d = asString(req.query.d);
+  const desc = asString(req.query.desc);
+  const t = asString(req.query.t);
+  const tParam = asString(req.query.title);
+
   // Handle shorthand or full names
-  let cName = (c || name || client_name || "貴客") as string;
-  let rName = (r || report_name || "Document") as string;
-  let imageParam = (i || preview_image) as string;
-  let descParam = (d || desc) as string;
-  let titleParam = (t || tParam) as string;
+  let cName = c || name || client_name || "貴客";
+  let rName = r || report_name || "Document";
+  let imageParam = i || preview_image;
+  let descParam = d || desc;
+  let titleParam = t || tParam;
   let finalFileId = file_id || "";
 
-  if (q && typeof q === 'string') {
+  if (q) {
     const decoded = decodeLzPayload(q);
     if (decoded) {
       console.log(`[SHARE] Decompressed payload: ${JSON.stringify(decoded).slice(0, 50)}...`);
-      if (decoded.c) cName = decoded.c;
-      if (decoded.r) rName = decoded.r;
-      if (decoded.i) imageParam = decoded.i;
-      if (decoded.d) descParam = decoded.d;
-      if (decoded.t) titleParam = decoded.t;
-      if (decoded.f) {
-        const isFirebasePath = decoded.f.startsWith('reports/');
-        const base64 = Buffer.from(decoded.f, 'utf8').toString('base64')
+      // Same treatment as the query params: a payload field can be any JSON type.
+      const dc = asString(decoded.c);
+      const dr = asString(decoded.r);
+      const di = asString(decoded.i);
+      const dd = asString(decoded.d);
+      const dt = asString(decoded.t);
+      const df = asString(decoded.f);
+      if (dc) cName = dc;
+      if (dr) rName = dr;
+      if (di) imageParam = di;
+      if (dd) descParam = dd;
+      if (dt) titleParam = dt;
+      if (df) {
+        const isFirebasePath = df.startsWith('reports/');
+        const base64 = Buffer.from(df, 'utf8').toString('base64')
           .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         finalFileId = isFirebasePath ? `f_${base64}` : `vblob_${base64}`;
-        console.log(`[SHARE] Resolved file_id: ${finalFileId} from path: ${decoded.f}`);
-        
-        if (rName === "Document" && decoded.f) {
-          const extracted = extractFileName(decoded.f);
+        console.log(`[SHARE] Resolved file_id: ${finalFileId} from path: ${df}`);
+
+        if (rName === "Document") {
+          const extracted = extractFileName(df);
           if (extracted && extracted !== "Document") {
             rName = extracted;
           }
@@ -604,7 +633,7 @@ app.get(["/api/share/:file_id", "/s/:file_id", "/s"], async (req, res) => {
   // Target URL: Points to our internal Viewer
   // Use relative paths to avoid dependency on APP_URL environment variable
   const viewerUrl = q
-    ? `/view?q=${encodeURIComponent(q as string)}`
+    ? `/view?q=${encodeURIComponent(q)}`
     : `/view/${finalFileId}?c=${encodeURIComponent(cName)}&r=${encodeURIComponent(rName)}`;
 
   console.log(`[SHARE] Redirecting to: ${viewerUrl}`);
