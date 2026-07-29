@@ -1,12 +1,12 @@
 # Private Wealth Pack (PWP) Link Generator
 
-This web application lets wealth advisors generate personalized, trackable PDF report links (`/l/<id>` and `/s/<id>`) for clients, captures client-reading telemetry (scroll depth, dwell time, zoom, device type, tab switches, return visits), analyzes engagement behavior via the Gemini API, and notifies advisors in real time through Telegram.
+This web application lets wealth advisors generate personalized, trackable PDF report links (`/l/<id>` and `/s/<id>`) for clients, optionally PIN-protected, captures client-reading telemetry (scroll depth, dwell time, zoom, device type, tab switches, return visits), analyzes engagement behavior via the Gemini API, offers an in-viewer jargon explainer for report terms, and notifies advisors in real time through Telegram. Links can be listed and revoked at any time, from the dashboard or via the MCP server.
 
 ## Architecture
 
 - **Frontend (`src/`)** — Vite React single-page app (Tailwind CSS). Key entrypoints: `src/App.tsx` (advisor dashboard / link creator) and `src/Viewer.tsx` (client-facing PDF viewer that captures telemetry).
 - **Backend (`server.ts` + `api/`)** — an Express app exposed as a single Vercel serverless function through `api/[...path].ts`. In production there is no long-running Node process; Vercel routes `/api/*`, `/s/*`, and `/l/*` through that one function.
-- **MCP server (`mcp/`)** — a Node Model Context Protocol server (`mcp/server.mjs`) for conversational link generation and WhatsApp short-link creation from Claude/Codex.
+- **MCP server (`mcp/`)** — a Node Model Context Protocol server (`mcp/server.mjs`) for conversational link generation, listing, revoking, and WhatsApp short-link creation from Claude/Codex. See [`mcp/README.md`](mcp/README.md).
 - **External services** — Gemini API (`@google/generative-ai`: behavior analytics + jargon explanation), Cloudflare R2 (`@aws-sdk/client-s3`: report file storage), Firebase Firestore & Storage (link metadata), Telegram Bot API (alerts), Dub.co API (short links).
 
 ## Local development
