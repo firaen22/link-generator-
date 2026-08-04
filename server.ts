@@ -2582,7 +2582,7 @@ ${nba}${behaviorBlock}`;
 
         if (readRes.status === 404) {
           const createRes = await fetch(
-            `${docUrl}?currentDocument=${encodeURIComponent(JSON.stringify({ exists: false }))}`,
+            `${docUrl}?currentDocument.exists=false`,
             {
             method: "PATCH",
             headers: fsReaderHeaders,
@@ -2613,7 +2613,10 @@ ${nba}${behaviorBlock}`;
 
           if (!deviceIds.includes(device_id)) {
             const nextDeviceIds = [...deviceIds, device_id].slice(-10);
-            const updateUrl = `${docUrl}?updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt&currentDocument=${encodeURIComponent(JSON.stringify({ updateTime: readerDoc.updateTime }))}`;
+            // Firestore REST preconditions bind as dotted primitive params (see the
+            // currentDocument.exists=false create above) — a JSON-encoded message
+            // 400s on every request.
+            const updateUrl = `${docUrl}?updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt&currentDocument.updateTime=${encodeURIComponent(readerDoc.updateTime)}`;
             const updateRes = await fetch(updateUrl, {
               method: "PATCH",
               headers: fsReaderHeaders,
