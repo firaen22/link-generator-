@@ -596,6 +596,16 @@ process.stdin.on("data", (chunk) => {
     try {
       msg = JSON.parse(line);
     } catch {
+      const idMatch = line.match(/"id"\s*:\s*(null|"(?:\\.|[^"\\])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/);
+      if (idMatch) {
+        try {
+          process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: JSON.parse(idMatch[1]), error: { code: -32700, message: "Parse error" } }) + "\n");
+        } catch {
+          console.error(`[pwp-links] malformed JSON-RPC line: ${line}`);
+        }
+      } else {
+        console.error(`[pwp-links] malformed JSON-RPC line: ${line}`);
+      }
       continue;
     }
     handle(msg).catch((e) => console.error("[pwp-links] handler error:", e.message));

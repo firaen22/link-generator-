@@ -61,6 +61,12 @@ if [ -z "$KEY" ]; then
   echo "✗ No access key provided. Re-run with PWP_API_KEY=<your-key> or answer the prompt." >&2
   exit 1
 fi
+if [[ "$KEY" == *$'\n'* || "$KEY" == *$'\r'* ]]; then
+  echo "✗ PWP_API_KEY must not contain newlines." >&2
+  exit 1
+fi
+TOML_KEY=${KEY//\\/\\\\}
+TOML_KEY=${TOML_KEY//\"/\\\"}
 
 # 4. Register with whichever hosts are present (Codex and/or Claude)
 REGISTERED=""
@@ -79,7 +85,7 @@ if command -v codex >/dev/null 2>&1 || [ -f "$CODEX_CONFIG" ]; then
       echo "args = [\"$SERVER\"]"
       echo ""
       echo "[mcp_servers.pwp-links.env]"
-      echo "PWP_API_KEY = \"$KEY\""
+      echo "PWP_API_KEY = \"$TOML_KEY\""
     } >> "$CODEX_CONFIG"
     echo "✓ Added [mcp_servers.pwp-links] to $CODEX_CONFIG"
   fi

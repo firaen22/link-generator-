@@ -1110,9 +1110,17 @@ app.post("/api/create-link", async (req, res) => {
   if (advisor === null) return;
   const { clients, f, r, t, d, i, w, origin: originInput, expiryDays, pin: rawPin } = req.body || {};
 
+  if (Array.isArray(clients) && clients.length > 20) {
+    return res.status(400).json({ error: "客戶數量不可超過 20 位 (clients)" });
+  }
+
   const names: string[] = Array.isArray(clients)
     ? clients.map((n: any) => String(n).trim()).filter(Boolean)
     : [];
+
+  if (names.some((name) => name.length > 80)) {
+    return res.status(400).json({ error: "每個客戶名稱不可超過 80 個字元" });
+  }
 
   if (names.length === 0) {
     return res.status(400).json({ error: "請提供至少一個客戶名稱 (clients)" });
@@ -1357,17 +1365,31 @@ app.post("/api/r2-presign", async (req, res) => {
   if (!requireApiKey(req, res)) return;
   const { fileName, contentType } = req.body;
 
-  if (!fileName || !contentType) {
-    return res.status(400).json({ error: "Missing fileName or contentType" });
+  const safeFileName = typeof fileName === "string" ? fileName.trim() : "";
+  const safeContentType = typeof contentType === "string" ? contentType.trim() : "";
+  const allowedContentTypes = new Set([
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+  ]);
+
+  if (!safeFileName || !safeContentType) {
+    return res.status(400).json({ error: "fileName 和 contentType 不可為空" });
+  }
+  if (safeFileName.length > 200 || /[\\/]/.test(safeFileName) || safeFileName.includes("..")) {
+    return res.status(400).json({ error: "fileName 不可超過 200 個字元、包含路徑分隔符或 .." });
+  }
+  if (!allowedContentTypes.has(safeContentType)) {
+    return res.status(400).json({ error: "不支援的 contentType" });
   }
 
   try {
     const bucketName = process.env.R2_BUCKET_NAME || "reports";
-    // Sanitize to a basename so a caller can't escape the prefix via
-    // slashes or "../" segments in fileName.
-    const safeName = String(fileName).replace(/[\\/]/g, "_").replace(/\.\./g, "_");
+    const safeName = safeFileName;
     // Preview images live under images/, reports (PDFs) under reports/.
-    const isImage = String(contentType).startsWith("image/");
+    const isImage = safeContentType.startsWith("image/");
     const prefix = isImage ? "images" : "reports";
     // Avoid filename collisions by prefixing with timestamp
     const r2Key = `${prefix}/${Date.now().toString(36)}_${safeName}`;
@@ -1375,7 +1397,7 @@ app.post("/api/r2-presign", async (req, res) => {
     const command = new PutObjectCommand({
       Bucket: bucketName,
       Key: r2Key,
-      ContentType: contentType,
+      ContentType: safeContentType,
     });
 
     const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
@@ -1402,7 +1424,8 @@ app.get("/api/pdf/:file_id", async (req, res) => {
     if (file_id.startsWith('f_')) {
       const filePath = fromUrlSafeBase64(file_id.slice(2));
       const encodedPath = encodeURIComponent(filePath).replace(/\//g, "%2F");
-      const bucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || "market-update-56e1c.firebasestorage.app";
+      const bucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET;
+      if (!bucket) throw new Error("Missing Firebase Storage bucket configuration: VITE_FIREBASE_STORAGE_BUCKET or FIREBASE_STORAGE_BUCKET");
       console.log(`[PDF_PROXY] Decoding f_ ID. Path: ${filePath} | Bucket: ${bucket}`);
       blobUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media`;
     } else if (file_id.startsWith('vblob_')) {
@@ -1431,7 +1454,8 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       return res.status(400).send("Invalid file ID format.");
     }
 
-    const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || "market-update-56e1c";
+    const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+    if (!projectId) throw new Error("Missing Firebase project configuration: VITE_FIREBASE_PROJECT_ID or FIREBASE_PROJECT_ID");
     console.log(`[PDF_PROXY] Request: ${file_id.slice(0, 10)}... | Project: ${projectId}`);
 
     // 2. Fetch with browser-like headers to avoid bot filters.
@@ -1753,7 +1777,8 @@ const setJargonCache = (key: string, terms: JargonTerm[]): void => {
 
 const readJargonStore = async (key: string): Promise<JargonTerm[] | null> => {
   try {
-    const command = new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME || "reports", Key: key });
+    const bucket = process.env.R2_BUCKET_NAME || "reports";
+    const command = new GetObjectCommand({ Bucket: bucket, Key: key });
     const response = await s3Client.send(command);
     const body = response.Body as { transformToString?: () => Promise<string> } | undefined;
     const raw = body?.transformToString ? await body.transformToString() : "";
@@ -1768,8 +1793,9 @@ const readJargonStore = async (key: string): Promise<JargonTerm[] | null> => {
 
 const writeJargonStore = async (key: string, terms: JargonTerm[]): Promise<void> => {
   try {
+    const bucket = process.env.R2_BUCKET_NAME || "reports";
     const command = new PutObjectCommand({
-      Bucket: process.env.R2_BUCKET_NAME || "reports",
+      Bucket: bucket,
       Key: key,
       Body: JSON.stringify({ terms: sanitizeJargonTerms(terms), at: Date.now() }),
       ContentType: "application/json",
@@ -2555,7 +2581,9 @@ ${nba}${behaviorBlock}`;
         const readRes = await fetch(docUrl, { headers: fsReaderHeaders });
 
         if (readRes.status === 404) {
-          await fetch(docUrl, {
+          const createRes = await fetch(
+            `${docUrl}?currentDocument=${encodeURIComponent(JSON.stringify({ exists: false }))}`,
+            {
             method: "PATCH",
             headers: fsReaderHeaders,
             body: JSON.stringify({
@@ -2564,12 +2592,15 @@ ${nba}${behaviorBlock}`;
                 updatedAt: { timestampValue: nowIso },
               },
             }),
-          }).then(async (writeRes) => {
-            if (!writeRes.ok) {
-              const detail = await writeRes.text().catch(() => "");
-              console.error(`[SESSION-END] Reader create failed (${writeRes.status}): ${detail.slice(0, 200)}`);
             }
-          });
+          );
+          const createDetail = !createRes.ok ? await createRes.text().catch(() => "") : "";
+          const createPreconditionFailed =
+            [409, 412].includes(createRes.status) ||
+            (createRes.status === 400 && /FAILED_PRECONDITION|ALREADY_EXISTS/.test(createDetail));
+          if (!createRes.ok && !createPreconditionFailed) {
+            console.error(`[SESSION-END] Reader create failed (${createRes.status}): ${createDetail.slice(0, 200)}`);
+          }
         } else if (!readRes.ok) {
           const detail = await readRes.text().catch(() => "");
           console.error(`[SESSION-END] Reader GET failed (${readRes.status}): ${detail.slice(0, 200)}`);
@@ -2582,9 +2613,7 @@ ${nba}${behaviorBlock}`;
 
           if (!deviceIds.includes(device_id)) {
             const nextDeviceIds = [...deviceIds, device_id].slice(-10);
-            // Plain GET+PATCH read-modify-write; no transaction. Concurrent
-            // sessions may double-alert, acceptable at this volume.
-            const updateUrl = `${docUrl}?updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt`;
+            const updateUrl = `${docUrl}?updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt&currentDocument=${encodeURIComponent(JSON.stringify({ updateTime: readerDoc.updateTime }))}`;
             const updateRes = await fetch(updateUrl, {
               method: "PATCH",
               headers: fsReaderHeaders,
@@ -2596,9 +2625,15 @@ ${nba}${behaviorBlock}`;
               }),
             });
 
-            if (!updateRes.ok) {
-              const detail = await updateRes.text().catch(() => "");
-              console.error(`[SESSION-END] Reader update failed (${updateRes.status}): ${detail.slice(0, 200)}`);
+            const updateDetail = !updateRes.ok ? await updateRes.text().catch(() => "") : "";
+            const updatePreconditionFailed =
+              [409, 412].includes(updateRes.status) ||
+              (updateRes.status === 400 && /FAILED_PRECONDITION/.test(updateDetail));
+            if (updatePreconditionFailed) {
+              // Another session updated the reader document after our GET.
+              // It owns the write and, consequently, the second-reader alert.
+            } else if (!updateRes.ok) {
+              console.error(`[SESSION-END] Reader update failed (${updateRes.status}): ${updateDetail.slice(0, 200)}`);
             } else if (deviceIds.length >= 1) {
               const secondReaderText =
                 `👥 <b>偵測到第二位讀者</b>\n\n` +
