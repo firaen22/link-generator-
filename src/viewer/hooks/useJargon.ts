@@ -32,6 +32,7 @@ export function useJargon(opts: Options): {
     const cacheRef = useRef(new Map<string, JargonTerm[]>());
     const latestRef = useRef<LatestPageText | null>(null);
     const activeRequestKeyRef = useRef<string | null>(null);
+    const requestControllerRef = useRef<AbortController | null>(null);
     const debounceRef = useRef<number | null>(null);
     const enabledRef = useRef(enabled);
     const pdfUrlRef = useRef(pdfUrl.trim());
@@ -45,6 +46,11 @@ export function useJargon(opts: Options): {
         }
     }, []);
 
+    const abortRequest = useCallback(() => {
+        requestControllerRef.current?.abort();
+        requestControllerRef.current = null;
+    }, []);
+
     const warnFailure = useCallback((key: string, error: unknown) => {
         if (warnedFailureKeysRef.current.has(key)) return;
         warnedFailureKeysRef.current.add(key);
@@ -56,6 +62,7 @@ export function useJargon(opts: Options): {
         latestRef.current = { key: '', pdfUrl: currentPdfUrl, page, text, image: imageDataUrl };
         if (!enabledRef.current) return;
         clearDebounce();
+        abortRequest();
 
         const imageBase64 = isJargonEligible(text) ? null : extractJargonImageBase64(imageDataUrl);
         const path: 'text' | 'image' | null = isJargonEligible(text)
@@ -84,6 +91,8 @@ export function useJargon(opts: Options): {
         debounceRef.current = window.setTimeout(async () => {
             const requestKey = key;
             const requestPath = path;
+            const controller = new AbortController();
+            requestControllerRef.current = controller;
             try {
                 const body = requestPath === 'text'
                     ? { text: prepareJargonText(text), fileId: fileIdRef.current, page }
@@ -92,6 +101,7 @@ export function useJargon(opts: Options): {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
+                    signal: controller.signal,
                 });
                 if (!response.ok) {
                     if (response.status !== 503) warnFailure(requestKey, new Error(`HTTP ${response.status}`));
@@ -109,6 +119,7 @@ export function useJargon(opts: Options): {
                 try {
                     payload = await response.json();
                 } catch (error) {
+                    if (error instanceof Error && error.name === 'AbortError') throw error;
                     warnFailure(requestKey, error);
                     payload = null;
                 }
@@ -123,6 +134,7 @@ export function useJargon(opts: Options): {
                     setTerms(nextTerms);
                 }
             } catch (error) {
+                if (error instanceof Error && error.name === 'AbortError') return;
                 warnFailure(requestKey, error);
                 const latest = latestRef.current;
                 const currentKey = latest && latest.pdfUrl === pdfUrlRef.current
@@ -131,9 +143,11 @@ export function useJargon(opts: Options): {
                 if (activeRequestKeyRef.current === requestKey && currentKey === requestKey) {
                     setTerms([]);
                 }
+            } finally {
+                if (requestControllerRef.current === controller) requestControllerRef.current = null;
             }
         }, 600);
-    }, [clearDebounce, warnFailure]);
+    }, [abortRequest, clearDebounce, warnFailure]);
 
     const onPageText = useCallback((page: number, text: string, imageDataUrl?: string) => {
         runPipeline(page, text, imageDataUrl);
@@ -141,9 +155,10 @@ export function useJargon(opts: Options): {
 
     const onPageChange = useCallback(() => {
         clearDebounce();
+        abortRequest();
         activeRequestKeyRef.current = null;
         setTerms([]);
-    }, [clearDebounce]);
+    }, [abortRequest, clearDebounce]);
 
     useEffect(() => {
         fileIdRef.current = fileId;
@@ -152,14 +167,16 @@ export function useJargon(opts: Options): {
     useEffect(() => {
         pdfUrlRef.current = pdfUrl.trim();
         clearDebounce();
+        abortRequest();
         activeRequestKeyRef.current = null;
         setTerms([]);
-    }, [pdfUrl, clearDebounce]);
+    }, [abortRequest, clearDebounce, pdfUrl]);
 
     useEffect(() => {
         enabledRef.current = enabled;
         if (!enabled) {
             clearDebounce();
+            abortRequest();
             activeRequestKeyRef.current = null;
             setTerms([]);
             return;
@@ -169,11 +186,14 @@ export function useJargon(opts: Options): {
         if (latest && latest.pdfUrl === pdfUrlRef.current) {
             runPipeline(latest.page, latest.text, latest.image);
         }
-    }, [enabled, clearDebounce, runPipeline]);
+    }, [abortRequest, enabled, clearDebounce, runPipeline]);
 
     useEffect(() => {
-        return () => clearDebounce();
-    }, [clearDebounce]);
+        return () => {
+            clearDebounce();
+            abortRequest();
+        };
+    }, [abortRequest, clearDebounce]);
 
     return { terms, onPageText, onPageChange };
 }
