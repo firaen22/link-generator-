@@ -13,6 +13,7 @@ import { GoogleAuth } from "google-auth-library";
 // import crashes the whole function at load (ERR_MODULE_NOT_FOUND) even though
 // tsx resolves it fine in local dev.
 import { sanitizeSessionEnd } from "./sanitizeSessionEnd.js";
+import { detectMicroLoops } from "./detectMicroLoops.js";
 import {
   JARGON_IMAGE_MAX_B64_LEN,
   JARGON_MAX_TEXT_LEN,
@@ -1199,8 +1200,14 @@ app.post("/api/create-link", async (req, res) => {
     return res.status(400).json({ error: "客戶數量不可超過 20 位 (clients)" });
   }
 
+  // Only accept genuine strings. String(n) used to coerce every element, so
+  // {clients:[null]} silently created a link addressed to the client "null"
+  // (and {clients:[{}]} one addressed to "[object Object]").
+  if (Array.isArray(clients) && clients.some((n: any) => typeof n !== "string")) {
+    return res.status(400).json({ error: "客戶名稱須為文字 (clients)" });
+  }
   const names: string[] = Array.isArray(clients)
-    ? clients.map((n: any) => String(n).trim()).filter(Boolean)
+    ? clients.map((n: string) => n.trim()).filter(Boolean)
     : [];
 
   if (names.some((name) => name.length > 80)) {
@@ -1210,8 +1217,15 @@ app.post("/api/create-link", async (req, res) => {
   if (names.length === 0) {
     return res.status(400).json({ error: "請提供至少一個客戶名稱 (clients)" });
   }
-  if (!f || typeof f !== "string") {
+  if (!f || typeof f !== "string" || f.trim() === "" || f.length > 1000) {
     return res.status(400).json({ error: "請提供已上傳檔案的參照 (f)，例如 r2:reports/...." });
+  }
+  // "r2:" alone passed the truthiness check above and minted a link whose payload
+  // carried an empty R2 key — /api/pdf then rejects it, so the advisor got a
+  // success response for a permanently broken link. Other `f` shapes (a full URL,
+  // or a bare Firebase Storage path) stay valid; see resolveFileId in pdfBridge.
+  if (f.startsWith("r2:") && f.slice(3).trim() === "") {
+    return res.status(400).json({ error: "檔案參照 r2: 後不可為空 (f)" });
   }
   const pin = rawPin === undefined || rawPin === null || rawPin === "" ? "" : rawPin;
   if (pin !== "" && (typeof pin !== "string" || !/^\d{4,8}$/.test(pin))) {
@@ -1267,9 +1281,14 @@ app.post("/api/create-link", async (req, res) => {
     ? candidate
     : normalize(String(envOrigin || requestOrigin));
 
-  const ttlDays = typeof expiryDays === "number" && Number.isFinite(expiryDays) && Number.isInteger(expiryDays) && expiryDays >= 1 && expiryDays <= 365
-    ? expiryDays
-    : 30;
+  // A supplied-but-invalid expiry used to fall back to 30 days silently, so
+  // {expiryDays:0} minted a 30-day link. Omitted still means "default 30";
+  // anything supplied must be valid, matching how maxOpens already 400s.
+  const hasExpiryDays = expiryDays !== undefined && expiryDays !== null && expiryDays !== "";
+  if (hasExpiryDays && !(typeof expiryDays === "number" && Number.isInteger(expiryDays) && expiryDays >= 1 && expiryDays <= 365)) {
+    return res.status(400).json({ error: "有效天數須為 1-365 的整數 (expiryDays)" });
+  }
+  const ttlDays = hasExpiryDays ? (expiryDays as number) : 30;
   const expireAt = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
   const createdAt = new Date().toISOString();
   const fsBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links`;
@@ -1630,8 +1649,11 @@ app.post("/api/replace-link-file", async (req, res) => {
     return res.status(400).json({ error: "invalid_request" });
   }
   const f = typeof rawFileRef === "string" ? rawFileRef.trim() : "";
-  if (f.length < 3 || f.length > 1000 || !f.startsWith("r2:")) {
-    return res.status(400).json({ error: "檔案參照須為 r2: 開頭 (f)" });
+  // length >= 4, not 3: "r2:" alone cleared the old `length < 3` check and would
+  // overwrite a working link's file reference with an empty key, then report
+  // success — silently breaking a link the advisor had already sent out.
+  if (f.length < 4 || f.length > 1000 || !f.startsWith("r2:") || f.slice(3).trim() === "") {
+    return res.status(400).json({ error: "檔案參照須為 r2: 開頭且不可為空 (f)" });
   }
 
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
@@ -2454,37 +2476,6 @@ const RESPONSE_SCHEMA = {
   additionalProperties: false,
 };
 
-// Helper: detect micro-loops from timestamped navigation history
-function detectMicroLoops(navHistory: Array<{ page: number; t: number }>): string[] {
-  const loops: string[] = [];
-  const WINDOW_MS = 120_000; // 2-minute analysis window
-  const MIN_CYCLES = 3;
-
-  if (navHistory.length < MIN_CYCLES * 2) return loops;
-
-  const pagePairs = new Map<string, number[]>();
-  for (let i = 1; i < navHistory.length; i++) {
-    const prev = navHistory[i - 1].page;
-    const curr = navHistory[i].page;
-    if (prev !== curr) {
-      const key = `${Math.min(prev, curr)}<->${Math.max(prev, curr)}`;
-      if (!pagePairs.has(key)) pagePairs.set(key, []);
-      pagePairs.get(key)!.push(navHistory[i].t);
-    }
-  }
-
-  pagePairs.forEach((timestamps, key) => {
-    if (timestamps.length >= MIN_CYCLES) {
-      const span = timestamps[timestamps.length - 1] - timestamps[0];
-      if (span <= WINDOW_MS) {
-        loops.push(`Pages ${key} (${timestamps.length}x in ${Math.round(span / 1000)}s)`);
-      }
-    }
-  });
-
-  return loops;
-}
-
 // AI-Powered Session Analysis Endpoint
 // Compact per-page reader-behaviour block for the Telegram summaries. The raw
 // matrix used to be visible only inside the Gemini prompt, so a throttled or
@@ -2881,7 +2872,7 @@ ${vossLabel}
       text = `📊 <b>閱讀結算 (基礎)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n⚠️ AI 分析失敗: ${escapeHTML((err as any).message)}${behaviorBlock}`;
     }
   } else if (!isDeepRead) {
-    text = `📊 <b>閱讀結算 (快速翻閱)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages} (${progressPercent.toFixed(1)}%)\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n💡 提示：客戶僅快速掃描。${behaviorBlock}`;
+    text = `📊 <b>閱讀結算 (快速翻閱)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages || '?'} (${progressPercent.toFixed(1)}%)\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n💡 提示：客戶僅快速掃描。${behaviorBlock}`;
   } else {
     text = `📊 <b>閱讀結算 (無 AI)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>頁數：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>長度：</b> ${total_duration_sec}s${behaviorBlock}`;
   }
@@ -2889,7 +2880,14 @@ ${vossLabel}
   // Telegram rejects messages over 4096 chars; the AI-generated fields are
   // unbounded, so truncate defensively. A cut mid-tag is fine — sendTelegram
   // already falls back to a tag-stripped plain resend on parse errors.
-  if (text.length > 3900) text = text.slice(0, 3900) + '…';
+  // Back off one unit if the cut would land between a surrogate pair, otherwise
+  // the message ends in a lone surrogate that renders as a replacement char.
+  if (text.length > 3900) {
+    let cut = 3900;
+    const code = text.charCodeAt(cut - 1);
+    if (code >= 0xd800 && code <= 0xdbff) cut -= 1;
+    text = text.slice(0, cut) + '…';
+  }
 
   // The AI path is already volume-bounded by aiAllowed; gate the cheaper summary
   // sends per IP so forged session_end requests can't spam Telegram.
@@ -2947,17 +2945,24 @@ ${vossLabel}
           console.error(`[SESSION-END] Reader GET failed (${readRes.status}): ${detail.slice(0, 200)}`);
         } else {
           const readerDoc = await readRes.json().catch(() => ({}));
+          // The catch above yields {} on a non-JSON 200, and an updateTime of
+          // undefined would send currentDocument.updateTime=undefined — a 400 on
+          // every request. Without a real updateTime there is no precondition to
+          // bind, so skip the merge rather than issue an unguarded (racy) write.
+          const readerUpdateTime = typeof readerDoc.updateTime === "string" ? readerDoc.updateTime : "";
           const rawDevices = readerDoc.fields?.deviceIds?.arrayValue?.values;
           const deviceIds = Array.isArray(rawDevices)
             ? rawDevices.map((v: any) => v?.stringValue).filter((v: any): v is string => typeof v === "string")
             : [];
 
-          if (!deviceIds.includes(device_id)) {
+          if (!readerUpdateTime) {
+            console.warn("[SESSION-END] Reader doc missing updateTime; skipping device merge");
+          } else if (!deviceIds.includes(device_id)) {
             const nextDeviceIds = [...deviceIds, device_id].slice(-10);
             // Firestore REST preconditions bind as dotted primitive params (see the
             // currentDocument.exists=false create above) — a JSON-encoded message
             // 400s on every request.
-            const updateUrl = `${docUrl}?updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt&currentDocument.updateTime=${encodeURIComponent(readerDoc.updateTime)}`;
+            const updateUrl = `${docUrl}?updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt&currentDocument.updateTime=${encodeURIComponent(readerUpdateTime)}`;
             const updateRes = await fetch(updateUrl, {
               method: "PATCH",
               headers: fsReaderHeaders,
