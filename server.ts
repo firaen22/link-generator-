@@ -13,6 +13,8 @@ import { GoogleAuth } from "google-auth-library";
 // import crashes the whole function at load (ERR_MODULE_NOT_FOUND) even though
 // tsx resolves it fine in local dev.
 import { sanitizeSessionEnd } from "./sanitizeSessionEnd.js";
+import { detectMicroLoops } from "./detectMicroLoops.js";
+import { fileIdMatchesLink } from "./linkFileRef.js";
 import {
   JARGON_IMAGE_MAX_B64_LEN,
   JARGON_MAX_TEXT_LEN,
@@ -941,8 +943,10 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
       : `專案報告：${cName}`;
     const description = descParam || "為您整理的最新市場動態，包含 AI 股分析及日圓走勢預測。";
 
-    // Use relative path for reliability and origin consistency
-    const viewerUrl = `/view?q=${encodeURIComponent(q)}`;
+    // Use relative path for reliability and origin consistency.
+    // lid carries the link id into the reader so /api/pdf can re-check the
+    // lifecycle on the bytes themselves — the checks above only gate this page.
+    const viewerUrl = `/view?q=${encodeURIComponent(q)}&lid=${encodeURIComponent(shortId)}`;
 
     console.log(`[SHORT_LINK] Resolved: ${shortId} -> Redirecting to: ${viewerUrl}`);
 
@@ -1178,7 +1182,7 @@ app.post("/api/unlock-link", async (req, res) => {
       }
     }
 
-    const viewerUrl = `/view?q=${encodeURIComponent(q)}`;
+    const viewerUrl = `/view?q=${encodeURIComponent(q)}&lid=${encodeURIComponent(shortId)}`;
     await incrementLinkOpenCount(projectId, shortId);
     await sendShortLinkOpenNotification(req, data, shortId, cName, rName, "🔐 已解鎖");
     res.json({ url: viewerUrl });
@@ -1199,8 +1203,14 @@ app.post("/api/create-link", async (req, res) => {
     return res.status(400).json({ error: "客戶數量不可超過 20 位 (clients)" });
   }
 
+  // Only accept genuine strings. String(n) used to coerce every element, so
+  // {clients:[null]} silently created a link addressed to the client "null"
+  // (and {clients:[{}]} one addressed to "[object Object]").
+  if (Array.isArray(clients) && clients.some((n: any) => typeof n !== "string")) {
+    return res.status(400).json({ error: "客戶名稱須為文字 (clients)" });
+  }
   const names: string[] = Array.isArray(clients)
-    ? clients.map((n: any) => String(n).trim()).filter(Boolean)
+    ? clients.map((n: string) => n.trim()).filter(Boolean)
     : [];
 
   if (names.some((name) => name.length > 80)) {
@@ -1210,8 +1220,15 @@ app.post("/api/create-link", async (req, res) => {
   if (names.length === 0) {
     return res.status(400).json({ error: "請提供至少一個客戶名稱 (clients)" });
   }
-  if (!f || typeof f !== "string") {
+  if (!f || typeof f !== "string" || f.trim() === "" || f.length > 1000) {
     return res.status(400).json({ error: "請提供已上傳檔案的參照 (f)，例如 r2:reports/...." });
+  }
+  // "r2:" alone passed the truthiness check above and minted a link whose payload
+  // carried an empty R2 key — /api/pdf then rejects it, so the advisor got a
+  // success response for a permanently broken link. Other `f` shapes (a full URL,
+  // or a bare Firebase Storage path) stay valid; see resolveFileId in pdfBridge.
+  if (f.startsWith("r2:") && f.slice(3).trim() === "") {
+    return res.status(400).json({ error: "檔案參照 r2: 後不可為空 (f)" });
   }
   const pin = rawPin === undefined || rawPin === null || rawPin === "" ? "" : rawPin;
   if (pin !== "" && (typeof pin !== "string" || !/^\d{4,8}$/.test(pin))) {
@@ -1267,9 +1284,14 @@ app.post("/api/create-link", async (req, res) => {
     ? candidate
     : normalize(String(envOrigin || requestOrigin));
 
-  const ttlDays = typeof expiryDays === "number" && Number.isFinite(expiryDays) && Number.isInteger(expiryDays) && expiryDays >= 1 && expiryDays <= 365
-    ? expiryDays
-    : 30;
+  // A supplied-but-invalid expiry used to fall back to 30 days silently, so
+  // {expiryDays:0} minted a 30-day link. Omitted still means "default 30";
+  // anything supplied must be valid, matching how maxOpens already 400s.
+  const hasExpiryDays = expiryDays !== undefined && expiryDays !== null && expiryDays !== "";
+  if (hasExpiryDays && !(typeof expiryDays === "number" && Number.isInteger(expiryDays) && expiryDays >= 1 && expiryDays <= 365)) {
+    return res.status(400).json({ error: "有效天數須為 1-365 的整數 (expiryDays)" });
+  }
+  const ttlDays = hasExpiryDays ? (expiryDays as number) : 30;
   const expireAt = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
   const createdAt = new Date().toISOString();
   const fsBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links`;
@@ -1630,8 +1652,11 @@ app.post("/api/replace-link-file", async (req, res) => {
     return res.status(400).json({ error: "invalid_request" });
   }
   const f = typeof rawFileRef === "string" ? rawFileRef.trim() : "";
-  if (f.length < 3 || f.length > 1000 || !f.startsWith("r2:")) {
-    return res.status(400).json({ error: "檔案參照須為 r2: 開頭 (f)" });
+  // length >= 4, not 3: "r2:" alone cleared the old `length < 3` check and would
+  // overwrite a working link's file reference with an empty key, then report
+  // success — silently breaking a link the advisor had already sent out.
+  if (f.length < 4 || f.length > 1000 || !f.startsWith("r2:") || f.slice(3).trim() === "") {
+    return res.status(400).json({ error: "檔案參照須為 r2: 開頭且不可為空 (f)" });
   }
 
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
@@ -1732,10 +1757,108 @@ app.post("/api/r2-presign", async (req, res) => {
 });
 
 // Proxy Endpoint for PDF - Ensures cross-domain compatibility and bypassing Vercel limits
+// Re-checks a share link's lifecycle for /api/pdf. Returns null when the bytes
+// may be served, or a {status, message} to send instead.
+//
+// Fails CLOSED on a Firestore error: /l/:shortId already 500s in that case, so
+// the link is unreachable anyway, and failing open here would make an outage a
+// revocation bypass.
+const checkPdfLinkLifecycle = async (
+  lid: string,
+  fileId: string,
+): Promise<{ status: number; message: string } | null> => {
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+  if (!projectId) {
+    return { status: 503, message: "Document temporarily unavailable." };
+  }
+
+  let data: any;
+  try {
+    const fsHeaders = await firestoreHeaders();
+    if (!fsHeaders) {
+      console.error("[PDF_PROXY] Missing Firestore service account; refusing to serve lid request");
+      return { status: 503, message: "Document temporarily unavailable." };
+    }
+    const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links/${lid}`;
+    const docRes = await fetch(docUrl, { headers: fsHeaders, signal: AbortSignal.timeout(10000) });
+    if (docRes.status === 404) {
+      return { status: 410, message: "This link is no longer available." };
+    }
+    if (!docRes.ok) {
+      const detail = await docRes.text().catch(() => "");
+      console.error(`[PDF_PROXY] Firestore read failed (${docRes.status}) for ${lid}: ${detail}`);
+      return { status: 503, message: "Document temporarily unavailable." };
+    }
+    data = await docRes.json();
+  } catch (error: any) {
+    console.error(`[PDF_PROXY] Firestore lookup threw for ${lid}:`, error?.message);
+    return { status: 503, message: "Document temporarily unavailable." };
+  }
+
+  const fields = data?.fields || {};
+
+  if (fields.revoked?.booleanValue === true) {
+    return { status: 410, message: "This link has been revoked." };
+  }
+  const expireAtRaw = fields.expireAt?.timestampValue;
+  if (expireAtRaw) {
+    // expireAt is always server-written ISO; an unparseable value means a
+    // corrupted doc — treat it as expired rather than serving forever.
+    const expireAtMs = new Date(expireAtRaw).getTime();
+    if (!Number.isFinite(expireAtMs) || expireAtMs < Date.now()) {
+      return { status: 410, message: "This link has expired." };
+    }
+  }
+  const maxOpens = parseInt(fields.maxOpens?.integerValue ?? "0", 10) || 0;
+  const openCount = parseInt(fields.openCount?.integerValue ?? "0", 10) || 0;
+  if (maxOpens > 0 && openCount > maxOpens) {
+    // Strictly greater: the open that got the reader here already incremented
+    // the counter, so >= would 410 the very page-load that was just allowed.
+    return { status: 410, message: "This link has reached its open limit." };
+  }
+
+  // A live link must not act as a key for any other object in the bucket.
+  // Fail closed when the binding can't be established: every link created by
+  // /api/create-link has a decodable q with a non-empty f, so a doc without one
+  // is corrupt or legacy-broken — its bytes were never reachable through it.
+  const q = fields.q?.stringValue;
+  const decoded = q ? decodeLzPayload(q) : null;
+  const f = typeof decoded?.f === "string" ? decoded.f : "";
+  if (!f) {
+    console.error(`[PDF_PROXY] Link ${lid} has no decodable f; refusing to bind`);
+    return { status: 403, message: "This document does not belong to that link." };
+  }
+  if (!fileIdMatchesLink(fileId, f, fromUrlSafeBase64)) {
+    console.error(`[PDF_PROXY] file_id does not belong to link ${lid}`);
+    return { status: 403, message: "This document does not belong to that link." };
+  }
+
+  return null;
+};
+
 app.get("/api/pdf/:file_id", async (req, res) => {
   const { file_id } = req.params;
 
+  // Optional link id. Requests that carry one are re-checked against the link's
+  // current lifecycle state (revoked / expired / open cap) so revocation takes
+  // the document back, not just the landing page. Requests WITHOUT one keep the
+  // old behaviour: /view?q=... and /s/:file_id are reachable with no link doc
+  // behind them, so requiring lid would break those flows outright.
+  const lidRaw = req.query.lid;
+  const lid = typeof lidRaw === "string" ? lidRaw : "";
+  if (lidRaw !== undefined && (typeof lidRaw !== "string" || !/^[a-z0-9]{1,32}$/i.test(lid))) {
+    return res.status(400).send("Invalid link id.");
+  }
+
   try {
+    if (lid) {
+      const blocked = await checkPdfLinkLifecycle(lid, file_id);
+      if (blocked) {
+        console.warn(`[PDF_PROXY] Blocked ${lid} (${blocked.status}): ${blocked.message}`);
+        return res.status(blocked.status).send(blocked.message);
+      }
+    }
+
     let blobUrl = "";
 
     // 1. Resolve logical PDF source URL
@@ -1796,7 +1919,9 @@ app.get("/api/pdf/:file_id", async (req, res) => {
     // 3. Forward critical PDF headers
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", 'inline; filename="report_secure.pdf"');
-    res.setHeader("Cache-Control", "private, max-age=3600"); // Cache for 1 hour for performance
+    // A long private cache would mask a revocation for its whole lifetime, so
+    // lifecycle-checked requests get a short one; unchecked ones are unchanged.
+    res.setHeader("Cache-Control", lid ? "private, max-age=60" : "private, max-age=3600");
 
     // 4. Stream response body to client (avoids loading whole file into Vercel memory)
     if (response.body) {
@@ -2454,37 +2579,6 @@ const RESPONSE_SCHEMA = {
   additionalProperties: false,
 };
 
-// Helper: detect micro-loops from timestamped navigation history
-function detectMicroLoops(navHistory: Array<{ page: number; t: number }>): string[] {
-  const loops: string[] = [];
-  const WINDOW_MS = 120_000; // 2-minute analysis window
-  const MIN_CYCLES = 3;
-
-  if (navHistory.length < MIN_CYCLES * 2) return loops;
-
-  const pagePairs = new Map<string, number[]>();
-  for (let i = 1; i < navHistory.length; i++) {
-    const prev = navHistory[i - 1].page;
-    const curr = navHistory[i].page;
-    if (prev !== curr) {
-      const key = `${Math.min(prev, curr)}<->${Math.max(prev, curr)}`;
-      if (!pagePairs.has(key)) pagePairs.set(key, []);
-      pagePairs.get(key)!.push(navHistory[i].t);
-    }
-  }
-
-  pagePairs.forEach((timestamps, key) => {
-    if (timestamps.length >= MIN_CYCLES) {
-      const span = timestamps[timestamps.length - 1] - timestamps[0];
-      if (span <= WINDOW_MS) {
-        loops.push(`Pages ${key} (${timestamps.length}x in ${Math.round(span / 1000)}s)`);
-      }
-    }
-  });
-
-  return loops;
-}
-
 // AI-Powered Session Analysis Endpoint
 // Compact per-page reader-behaviour block for the Telegram summaries. The raw
 // matrix used to be visible only inside the Gemini prompt, so a throttled or
@@ -2881,7 +2975,7 @@ ${vossLabel}
       text = `📊 <b>閱讀結算 (基礎)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n⚠️ AI 分析失敗: ${escapeHTML((err as any).message)}${behaviorBlock}`;
     }
   } else if (!isDeepRead) {
-    text = `📊 <b>閱讀結算 (快速翻閱)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages} (${progressPercent.toFixed(1)}%)\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n💡 提示：客戶僅快速掃描。${behaviorBlock}`;
+    text = `📊 <b>閱讀結算 (快速翻閱)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages || '?'} (${progressPercent.toFixed(1)}%)\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n💡 提示：客戶僅快速掃描。${behaviorBlock}`;
   } else {
     text = `📊 <b>閱讀結算 (無 AI)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>頁數：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>長度：</b> ${total_duration_sec}s${behaviorBlock}`;
   }
@@ -2889,7 +2983,14 @@ ${vossLabel}
   // Telegram rejects messages over 4096 chars; the AI-generated fields are
   // unbounded, so truncate defensively. A cut mid-tag is fine — sendTelegram
   // already falls back to a tag-stripped plain resend on parse errors.
-  if (text.length > 3900) text = text.slice(0, 3900) + '…';
+  // Back off one unit if the cut would land between a surrogate pair, otherwise
+  // the message ends in a lone surrogate that renders as a replacement char.
+  if (text.length > 3900) {
+    let cut = 3900;
+    const code = text.charCodeAt(cut - 1);
+    if (code >= 0xd800 && code <= 0xdbff) cut -= 1;
+    text = text.slice(0, cut) + '…';
+  }
 
   // The AI path is already volume-bounded by aiAllowed; gate the cheaper summary
   // sends per IP so forged session_end requests can't spam Telegram.
@@ -2947,17 +3048,24 @@ ${vossLabel}
           console.error(`[SESSION-END] Reader GET failed (${readRes.status}): ${detail.slice(0, 200)}`);
         } else {
           const readerDoc = await readRes.json().catch(() => ({}));
+          // The catch above yields {} on a non-JSON 200, and an updateTime of
+          // undefined would send currentDocument.updateTime=undefined — a 400 on
+          // every request. Without a real updateTime there is no precondition to
+          // bind, so skip the merge rather than issue an unguarded (racy) write.
+          const readerUpdateTime = typeof readerDoc.updateTime === "string" ? readerDoc.updateTime : "";
           const rawDevices = readerDoc.fields?.deviceIds?.arrayValue?.values;
           const deviceIds = Array.isArray(rawDevices)
             ? rawDevices.map((v: any) => v?.stringValue).filter((v: any): v is string => typeof v === "string")
             : [];
 
-          if (!deviceIds.includes(device_id)) {
+          if (!readerUpdateTime) {
+            console.warn("[SESSION-END] Reader doc missing updateTime; skipping device merge");
+          } else if (!deviceIds.includes(device_id)) {
             const nextDeviceIds = [...deviceIds, device_id].slice(-10);
             // Firestore REST preconditions bind as dotted primitive params (see the
             // currentDocument.exists=false create above) — a JSON-encoded message
             // 400s on every request.
-            const updateUrl = `${docUrl}?updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt&currentDocument.updateTime=${encodeURIComponent(readerDoc.updateTime)}`;
+            const updateUrl = `${docUrl}?updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt&currentDocument.updateTime=${encodeURIComponent(readerUpdateTime)}`;
             const updateRes = await fetch(updateUrl, {
               method: "PATCH",
               headers: fsReaderHeaders,

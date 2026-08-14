@@ -101,7 +101,17 @@ export default function App() {
   const [maxOpens, setMaxOpens] = useState('');
   const [linkPin, setLinkPin] = useState('');
   // Per-user access key (sent as x-pwp-key). Persisted so it's entered once.
-  const [accessKey, setAccessKey] = useState(() => localStorage.getItem('pwp_api_key') || '');
+  // Storage access throws (not returns null) when site data is blocked — in an
+  // in-app webview or with third-party data disabled — and an unguarded read
+  // here runs during render, so the whole app fails to mount instead of just
+  // losing the saved key. Same for the write in the input's onChange.
+  const [accessKey, setAccessKey] = useState(() => {
+    try {
+      return localStorage.getItem('pwp_api_key') || '';
+    } catch {
+      return '';
+    }
+  });
   const [isUploading, setIsUploading] = useState(false);
   const [isBulkGenerating, setIsBulkGenerating] = useState(false);
   const [isImageUploading, setIsImageUploading] = useState(false);
@@ -555,7 +565,12 @@ export default function App() {
               value={accessKey}
               onChange={(e) => {
                 setAccessKey(e.target.value);
-                localStorage.setItem('pwp_api_key', e.target.value);
+                try {
+                  localStorage.setItem('pwp_api_key', e.target.value);
+                } catch {
+                  // Storage blocked or over quota — the key still works for this
+                  // session, it just won't be remembered.
+                }
               }}
               placeholder="請輸入您的專屬存取金鑰"
               className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white"

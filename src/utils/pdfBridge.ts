@@ -54,8 +54,12 @@ export const resolveFileId = (fileFromProp: string | null): string => {
 /**
  * Generates the full API proxy URL for a given file ID.
  */
-export const getProxiedPdfUrl = (fileId: string): string => {
+export const getProxiedPdfUrl = (fileId: string, linkId?: string | null): string => {
     if (!fileId) return '';
+    // linkId lets the proxy re-check the share link's lifecycle before serving
+    // the bytes. Links opened via /l/:shortId carry it; bare /view?q=... and
+    // /s/:file_id have no link document behind them and omit it.
+    if (linkId) return `/api/pdf/${fileId}?lid=${encodeURIComponent(linkId)}`;
     return `/api/pdf/${fileId}`;
 };
 
