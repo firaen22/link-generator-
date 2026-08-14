@@ -29,6 +29,8 @@ export interface ResolvedReportParams {
   fileId: string;
   pdfUrl: string;
   whatsappNumber: string;
+  ctaLabel: string | null;
+  ctaMsg: string | null;
 }
 
 export {};

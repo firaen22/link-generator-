@@ -8,8 +8,8 @@ export const JARGON_MAX_TEXT_LEN = 6000;
 export const JARGON_IMAGE_MAX_DIM = 1280;
 export const JARGON_IMAGE_MAX_B64_LEN = 900_000;
 
-export function jargonCacheKey(pdfUrl: string, page: number, path: 'text' | 'image'): string {
-    return `${pdfUrl}#${page}#${path}`;
+export function jargonCacheKey(pdfUrl: string, page: number, path: 'text' | 'image', lang: 'zh' | 'en' = 'zh'): string {
+    return `${pdfUrl}#${page}#${path}${lang === 'en' ? '#en' : ''}`;
 }
 
 export function isJargonEligible(text: string): boolean {

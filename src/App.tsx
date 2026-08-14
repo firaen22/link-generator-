@@ -95,7 +95,10 @@ export default function App() {
   const [linkTitle, setLinkTitle] = useState('');
   const [description, setDescription] = useState('');
   const [whatsappNumber, setWhatsappNumber] = useState('');
+  const [ctaLabel, setCtaLabel] = useState('');
+  const [ctaMsg, setCtaMsg] = useState('');
   const [expiryDays, setExpiryDays] = useState(30);
+  const [maxOpens, setMaxOpens] = useState('');
   const [linkPin, setLinkPin] = useState('');
   // Per-user access key (sent as x-pwp-key). Persisted so it's entered once.
   const [accessKey, setAccessKey] = useState(() => localStorage.getItem('pwp_api_key') || '');
@@ -246,6 +249,9 @@ export default function App() {
     if (linkPin !== '' && !/^\d{4,8}$/.test(linkPin)) {
       return alert("PIN 須為 4-8 位數字");
     }
+    if (maxOpens !== '' && (!/^[1-9]\d*$/.test(maxOpens) || Number(maxOpens) < 1 || Number(maxOpens) > 1000)) {
+      return alert("開啟次數上限須為 1-1000");
+    }
 
     setIsUploading(true);
     setGeneratedClients([]);
@@ -275,7 +281,10 @@ export default function App() {
         origin,
         expiryDays,
       };
+      if (ctaLabel.trim()) createBody.ctaLabel = ctaLabel.trim();
+      if (ctaMsg.trim()) createBody.ctaMsg = ctaMsg.trim();
       if (linkPin) createBody.pin = linkPin;
+      if (/^[1-9]\d*$/.test(maxOpens)) createBody.maxOpens = Number(maxOpens);
 
       const createRes = await fetch('/api/create-link', {
         method: 'POST',
@@ -574,6 +583,36 @@ export default function App() {
           </div>
 
           <div>
+            <label htmlFor="ctaLabel" className="block text-sm font-semibold text-slate-700 mb-1.5">
+              CTA 按鈕文字（留空＝預設）
+            </label>
+            <input
+              type="text"
+              id="ctaLabel"
+              value={ctaLabel}
+              onChange={(e) => setCtaLabel(e.target.value)}
+              maxLength={30}
+              placeholder="預約顧問"
+              className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="ctaMsg" className="block text-sm font-semibold text-slate-700 mb-1.5">
+              CTA 預填訊息（留空＝只開啟對話）
+            </label>
+            <textarea
+              id="ctaMsg"
+              value={ctaMsg}
+              onChange={(e) => setCtaMsg(e.target.value)}
+              maxLength={200}
+              rows={3}
+              placeholder="您好，我想了解這份報告"
+              className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white"
+            />
+          </div>
+
+          <div>
             <label htmlFor="expiryDays" className="block text-sm font-semibold text-slate-700 mb-1.5">
               Link Expiry
             </label>
@@ -588,6 +627,23 @@ export default function App() {
               <option value={90}>90 days</option>
               <option value={180}>180 days</option>
             </select>
+          </div>
+
+          <div>
+            <label htmlFor="maxOpens" className="block text-sm font-semibold text-slate-700 mb-1.5">
+              開啟次數上限（留空＝不限）
+            </label>
+            <input
+              type="number"
+              id="maxOpens"
+              value={maxOpens}
+              onChange={(e) => setMaxOpens(e.target.value)}
+              min={1}
+              max={1000}
+              step={1}
+              placeholder="不限"
+              className="block w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none text-sm bg-slate-50 focus:bg-white"
+            />
           </div>
 
           <div>

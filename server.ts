@@ -308,6 +308,12 @@ const pinEntryHtml = (shortId: string): string => {
           errorEl.textContent = '嘗試次數過多，此連結已暫時鎖定，請稍後再試';
           return;
         }
+        if (res.status === 410) {
+          errorEl.textContent = body.error === 'link_capped'
+            ? '此連結已達開啟次數上限'
+            : '此連結已失效或過期';
+          return;
+        }
         errorEl.textContent = '暫時無法開啟連結，請稍後再試';
       } catch {
         errorEl.textContent = '暫時無法開啟連結，請稍後再試';
@@ -380,6 +386,44 @@ const sendTelegram = async (text: string, chatId?: string): Promise<void> => {
     }
   } catch (err) {
     console.error('Telegram notification failed:', err);
+  }
+};
+
+const sendTelegramStrict = async (text: string, chatId?: string): Promise<boolean> => {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const targetChat = chatId || process.env.TELEGRAM_CHAT_ID;
+  if (!token || !targetChat) {
+    console.log(`[TELEGRAM DRY-RUN]\n${text}`);
+    return false;
+  }
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: targetChat, text, parse_mode: 'HTML' }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (r.ok) return true;
+
+    const detail = await r.json().catch(() => ({}));
+    if ((detail as any).description?.includes("can't parse entities")) {
+      const plain = text
+        .replace(/<[^>]*>/g, '')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&');
+      const fallback = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: targetChat, text: plain }),
+        signal: AbortSignal.timeout(5000),
+      });
+      return fallback.ok;
+    }
+    return false;
+  } catch (err) {
+    console.error('Telegram strict notification failed:', err);
+    return false;
   }
 };
 
@@ -537,6 +581,33 @@ const sendShortLinkOpenNotification = async (
     await sendTelegramTo(notif, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
   } else {
     console.warn(`[SHORT_LINK] Telegram rate-limited for ${clientIp(req)}`);
+  }
+};
+
+const incrementLinkOpenCount = async (projectId: string, shortId: string): Promise<void> => {
+  try {
+    const fsHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
+    if (!fsHeaders) throw new Error("missing Firestore service account");
+    const commitUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:commit`;
+    const document = `projects/${projectId}/databases/(default)/documents/links/${shortId}`;
+    const response = await fetch(commitUrl, {
+      method: "POST",
+      headers: fsHeaders,
+      body: JSON.stringify({
+        writes: [{
+          transform: {
+            document,
+            fieldTransforms: [
+              { fieldPath: "openCount", increment: { integerValue: "1" } },
+              { fieldPath: "lastOpenAt", setToServerValue: "REQUEST_TIME" },
+            ],
+          },
+        }],
+      }),
+    });
+    if (!response.ok) throw new Error(`Firestore commit failed (${response.status}): ${(await response.text()).slice(0, 200)}`);
+  } catch (error) {
+    console.error(`[OPEN_COUNT] Failed to count ${shortId}:`, error);
   }
 };
 
@@ -816,6 +887,8 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     const data = await response.json();
     const expireAtRaw = data.fields?.expireAt?.timestampValue;
     const expireAtDate = expireAtRaw ? new Date(expireAtRaw) : null;
+    const maxOpens = parseInt(data.fields?.maxOpens?.integerValue ?? "0", 10) || 0;
+    const openCount = parseInt(data.fields?.openCount?.integerValue ?? "0", 10) || 0;
 
     if (data.fields?.revoked?.booleanValue === true) {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -824,6 +897,10 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     if (expireAtDate && Number.isFinite(expireAtDate.getTime()) && expireAtDate < new Date()) {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       return res.status(410).send(lifecycleErrorHtml("此連結已過期"));
+    }
+    if (maxOpens > 0 && openCount >= maxOpens && !isCrawler) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(410).send(lifecycleErrorHtml("此連結已達開啟次數上限"));
     }
 
     const q = data.fields?.q?.stringValue;
@@ -888,6 +965,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     }
 
     if (!isCrawler && !pinProtected) {
+      await incrementLinkOpenCount(projectId, shortId);
       await sendShortLinkOpenNotification(req, data, shortId, cName, rName);
     }
 
@@ -996,6 +1074,12 @@ app.post("/api/unlock-link", async (req, res) => {
       return res.status(410).json({ error: "link_unavailable" });
     }
 
+    const maxOpens = parseInt(fields.maxOpens?.integerValue ?? "0", 10) || 0;
+    const openCount = parseInt(fields.openCount?.integerValue ?? "0", 10) || 0;
+    if (maxOpens > 0 && openCount >= maxOpens) {
+      return res.status(410).json({ error: "link_capped" });
+    }
+
     const lockedUntilRaw = fields.pinLockedUntil?.timestampValue;
     const lockedUntil = lockedUntilRaw ? new Date(lockedUntilRaw) : null;
     if (lockedUntil && Number.isFinite(lockedUntil.getTime()) && lockedUntil > new Date()) {
@@ -1095,6 +1179,7 @@ app.post("/api/unlock-link", async (req, res) => {
     }
 
     const viewerUrl = `/view?q=${encodeURIComponent(q)}`;
+    await incrementLinkOpenCount(projectId, shortId);
     await sendShortLinkOpenNotification(req, data, shortId, cName, rName, "🔐 已解鎖");
     res.json({ url: viewerUrl });
   } catch (error) {
@@ -1108,7 +1193,7 @@ app.post("/api/unlock-link", async (req, res) => {
 app.post("/api/create-link", async (req, res) => {
   const advisor = requireApiKey(req, res);
   if (advisor === null) return;
-  const { clients, f, r, t, d, i, w, origin: originInput, expiryDays, pin: rawPin } = req.body || {};
+  const { clients, f, r, t, d, i, w, ctaLabel: rawCtaLabel, ctaMsg: rawCtaMsg, origin: originInput, expiryDays, pin: rawPin, maxOpens: rawMaxOpens } = req.body || {};
 
   if (Array.isArray(clients) && clients.length > 20) {
     return res.status(400).json({ error: "客戶數量不可超過 20 位 (clients)" });
@@ -1131,6 +1216,24 @@ app.post("/api/create-link", async (req, res) => {
   const pin = rawPin === undefined || rawPin === null || rawPin === "" ? "" : rawPin;
   if (pin !== "" && (typeof pin !== "string" || !/^\d{4,8}$/.test(pin))) {
     return res.status(400).json({ error: "PIN 須為 4-8 位數字" });
+  }
+  const hasMaxOpens = rawMaxOpens !== undefined && rawMaxOpens !== null && rawMaxOpens !== "";
+  if (hasMaxOpens && (typeof rawMaxOpens !== "number" || !Number.isInteger(rawMaxOpens) || rawMaxOpens < 1 || rawMaxOpens > 1000)) {
+    return res.status(400).json({ error: "開啟次數上限須為 1-1000 的整數 (maxOpens)" });
+  }
+  const ctaLabel = typeof rawCtaLabel === "string" ? rawCtaLabel.trim() : "";
+  if (rawCtaLabel !== undefined && typeof rawCtaLabel !== "string") {
+    return res.status(400).json({ error: "CTA 文字須為 1-30 字元 (ctaLabel)" });
+  }
+  if (ctaLabel.length > 30) {
+    return res.status(400).json({ error: "CTA 文字須為 1-30 字元 (ctaLabel)" });
+  }
+  const ctaMsg = typeof rawCtaMsg === "string" ? rawCtaMsg.trim() : "";
+  if (rawCtaMsg !== undefined && typeof rawCtaMsg !== "string") {
+    return res.status(400).json({ error: "CTA 訊息須為 1-200 字元 (ctaMsg)" });
+  }
+  if (ctaMsg.length > 200) {
+    return res.status(400).json({ error: "CTA 訊息須為 1-200 字元 (ctaMsg)" });
   }
 
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
@@ -1182,6 +1285,8 @@ app.post("/api/create-link", async (req, res) => {
         if (d) payload.d = String(d);
         if (i) payload.i = String(i);
         if (cleanWhatsapp) payload.w = cleanWhatsapp;
+        if (ctaLabel) payload.cl = ctaLabel;
+        if (ctaMsg) payload.cm = ctaMsg;
 
         const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
 
@@ -1198,6 +1303,7 @@ app.post("/api/create-link", async (req, res) => {
             expireAt: { timestampValue: expireAt },
             adv: { stringValue: advisor }, // advisor who created it (for read-notification routing)
           };
+          if (hasMaxOpens) fields.maxOpens = { integerValue: String(rawMaxOpens) };
           if (pin) {
             fields.pinHash = { stringValue: pinHashFor(candidate, pin) };
           }
@@ -1291,6 +1397,9 @@ app.get("/api/links", async (req, res) => {
           expireAt: fields.expireAt?.timestampValue || null,
           revoked: fields.revoked?.booleanValue === true,
           pinProtected: Boolean(fields.pinHash),
+          openCount: parseInt(fields.openCount?.integerValue ?? "0", 10) || 0,
+          maxOpens: fields.maxOpens?.integerValue != null ? parseInt(fields.maxOpens.integerValue, 10) || null : null,
+          lastOpenAt: fields.lastOpenAt?.timestampValue || null,
         };
       })
       .sort((a: any, b: any) => {
@@ -1303,6 +1412,158 @@ app.get("/api/links", async (req, res) => {
   } catch (error: any) {
     console.error("[LIST_LINKS] Error:", error.message);
     res.status(500).json({ error: "讀取連結失敗" });
+  }
+});
+
+app.get("/api/cron/silent-links", async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) return res.status(503).json({ error: "cron not configured" });
+  if (req.headers.authorization !== `Bearer ${cronSecret}`) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+  if (!projectId) return res.status(500).json({ error: "server_config_missing" });
+
+  try {
+    const fsHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
+    if (!fsHeaders) return res.status(500).json({ error: "server_config_missing" });
+
+    const now = new Date();
+    const cutoffIso = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    const queryRes = await fetch(
+      `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:runQuery`,
+      {
+        method: "POST",
+        headers: fsHeaders,
+        body: JSON.stringify({
+          structuredQuery: {
+            from: [{ collectionId: "links" }],
+            where: {
+              fieldFilter: {
+                field: { fieldPath: "createdAt" },
+                op: "GREATER_THAN_OR_EQUAL",
+                value: { stringValue: cutoffIso },
+              },
+            },
+            orderBy: [{ field: { fieldPath: "createdAt" }, direction: "DESCENDING" }],
+            limit: 300,
+          },
+        }),
+      }
+    );
+    if (!queryRes.ok) {
+      console.error(`[SILENT_LINKS] Firestore query failed (${queryRes.status}): ${(await queryRes.text()).slice(0, 200)}`);
+      return res.status(500).json({ error: "silent_links_check_failed" });
+    }
+
+    const rows = await queryRes.json();
+    const silent: Array<{ shortId: string; advisor: string; clientName: string; reportName: string; createdAt: string }> = [];
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const doc = row.document;
+      if (!doc) continue;
+      const fields = doc.fields || {};
+      if (fields.revoked?.booleanValue === true || fields.silentAlertAt) continue;
+      const createdAt = fields.createdAt?.stringValue;
+      const createdMs = typeof createdAt === "string" ? Date.parse(createdAt) : NaN;
+      if (!Number.isFinite(createdMs) || now.getTime() - createdMs < 48 * 60 * 60 * 1000) continue;
+      const expireAt = fields.expireAt?.timestampValue;
+      if (expireAt) {
+        const expireMs = Date.parse(expireAt);
+        if (Number.isFinite(expireMs) && expireMs <= now.getTime()) continue;
+      }
+      if ((parseInt(fields.openCount?.integerValue ?? "0", 10) || 0) !== 0) continue;
+
+      const decoded = fields.q?.stringValue ? decodeLzPayload(fields.q.stringValue) : null;
+      const clientName = fields.clientName?.stringValue || "貴客";
+      const reportName = decoded?.r ? String(decoded.r) : clientName;
+      const nameParts = String(doc.name || "").split("/");
+      silent.push({
+        shortId: nameParts[nameParts.length - 1] || "",
+        advisor: fields.adv?.stringValue || "",
+        clientName,
+        reportName,
+        createdAt,
+      });
+    }
+
+    const selected = silent.slice(0, 500);
+    const normalize = (s: string) => (s.endsWith("/") ? s.slice(0, -1) : s);
+    const base = normalize(process.env.VITE_APP_URL || process.env.APP_URL || `https://${req.get("host")}`);
+    const ageDays = (createdAt: string): number => Math.floor((now.getTime() - Date.parse(createdAt)) / (24 * 60 * 60 * 1000));
+    const lineFor = (link: typeof silent[number]): string =>
+      `👤 ${escapeHTML(link.clientName)}｜📄 ${escapeHTML(link.reportName)}｜⏳ 已建立 ${ageDays(link.createdAt)} 天｜${escapeHTML(base)}/l/${link.shortId}`;
+    const byAdvisor = new Map<string, typeof selected>();
+    for (const link of selected) byAdvisor.set(link.advisor, [...(byAdvisor.get(link.advisor) || []), link]);
+
+    const fallbackGroups = new Map<string, typeof selected>();
+    const deliveries: Array<{ text: string; links: typeof selected; chatId: string }> = [];
+    for (const [advisor, links] of byAdvisor) {
+      const chatId = advisorChats.get(advisor);
+      if (!chatId) {
+        fallbackGroups.set(advisor, [...(fallbackGroups.get(advisor) || []), ...links]);
+        continue;
+      }
+      const chunk = links.slice(0, 20);
+      const extra = links.length - chunk.length;
+      const message = `🔕 <b>未開啟提醒</b>\n${chunk.map(lineFor).join("\n")}${extra > 0 ? `\n…及另外 ${extra} 條` : ""}`;
+      // Mark ALL of this advisor's links as alerted, not just the 20 shown by
+      // name — the "…及另外 N 條" line already told them the rest exist, so
+      // leaving those unmarked would silently re-alert on every future run.
+      deliveries.push({ text: message.length > 3900 ? message.slice(0, 3900) + "…" : message, links, chatId });
+    }
+    if (fallbackGroups.size > 0) {
+      const fallbackLinks = [...fallbackGroups.entries()];
+      const links: typeof selected = [];
+      const sections: string[] = [];
+      for (const [advisor, group] of fallbackLinks) {
+        const remaining = 20 - links.length;
+        if (remaining <= 0) break;
+        const chunk = group.slice(0, remaining);
+        links.push(...chunk);
+        sections.push(`\n👨‍💼 <b>${escapeHTML(advisor || "未指定顧問")}</b>\n${chunk.map(lineFor).join("\n")}`);
+      }
+      const extra = selected.filter((link) => !advisorChats.get(link.advisor)).length - links.length;
+      const message = `🔕 <b>未開啟提醒</b>${sections.join("")}${extra > 0 ? `\n…及另外 ${extra} 條` : ""}`;
+      deliveries.push({ text: message.length > 3900 ? message.slice(0, 3900) + "…" : message, links, chatId: process.env.TELEGRAM_CHAT_ID || "" });
+    }
+
+    const alerted: typeof selected = [];
+    for (const delivery of deliveries) {
+      if (!delivery.chatId) {
+        console.warn("[SILENT_LINKS] Skipping delivery: no chat id configured (TELEGRAM_CHAT_ID unset?)");
+        continue;
+      }
+      if (await sendTelegramStrict(delivery.text, delivery.chatId)) alerted.push(...delivery.links);
+    }
+
+    let marked = 0;
+    if (alerted.length > 0) {
+      const markedAt = new Date().toISOString();
+      const writes = alerted.slice(0, 500).map((link) => ({
+        update: {
+          name: `projects/${projectId}/databases/(default)/documents/links/${link.shortId}`,
+          fields: { silentAlertAt: { timestampValue: markedAt } },
+        },
+        updateMask: { fieldPaths: ["silentAlertAt"] },
+        currentDocument: { exists: true },
+      }));
+      const commitRes = await fetch(`https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:commit`, {
+        method: "POST",
+        headers: fsHeaders,
+        body: JSON.stringify({ writes }),
+      });
+      if (!commitRes.ok) {
+        console.error(`[SILENT_LINKS] Firestore mark failed (${commitRes.status}): ${(await commitRes.text()).slice(0, 200)}`);
+      } else {
+        marked = writes.length;
+      }
+    }
+
+    return res.json({ checked: Array.isArray(rows) ? rows.filter((row: any) => row.document).length : 0, silent: silent.length, alerted: marked });
+  } catch (error) {
+    console.error("[SILENT_LINKS] Error:", error);
+    return res.status(500).json({ error: "silent_links_check_failed" });
   }
 });
 
@@ -1357,6 +1618,63 @@ app.post("/api/revoke-link", async (req, res) => {
   } catch (error: any) {
     console.error("[REVOKE_LINK] Error:", error.message);
     res.status(500).json({ error: "更新連結狀態失敗" });
+  }
+});
+
+app.post("/api/replace-link-file", async (req, res) => {
+  const advisor = requireApiKey(req, res);
+  if (advisor === null) return;
+
+  const { shortId, f: rawFileRef } = req.body || {};
+  if (typeof shortId !== "string" || !/^[a-z0-9]{1,32}$/i.test(shortId)) {
+    return res.status(400).json({ error: "invalid_request" });
+  }
+  const f = typeof rawFileRef === "string" ? rawFileRef.trim() : "";
+  if (f.length < 3 || f.length > 1000 || !f.startsWith("r2:")) {
+    return res.status(400).json({ error: "檔案參照須為 r2: 開頭 (f)" });
+  }
+
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+  if (!projectId) {
+    return res.status(500).json({ error: "伺服器缺少 Firebase 設定 (Project ID / API Key)" });
+  }
+  const fsBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links`;
+
+  try {
+    const fsHeaders = await firestoreHeaders();
+    if (!fsHeaders) return res.status(500).json({ error: "連結內容更新失敗" });
+    const docRes = await fetch(`${fsBase}/${shortId}`, { headers: fsHeaders });
+    if (!docRes.ok) return res.status(404).json({ error: "連結不存在" });
+    const doc = await docRes.json();
+    if (doc.fields?.adv?.stringValue !== advisor) {
+      return res.status(403).json({ error: "沒有權限修改此連結" });
+    }
+
+    const compressed = doc.fields?.q?.stringValue;
+    let payload: Record<string, any> | null = null;
+    try {
+      const json = compressed ? LZString.decompressFromEncodedURIComponent(compressed) : null;
+      if (!json) throw new Error("empty q");
+      payload = JSON.parse(json);
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("invalid payload");
+    } catch {
+      return res.status(500).json({ error: "連結內容損毀" });
+    }
+    payload.f = f;
+    const nextQ = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
+    const patchRes = await fetch(`${fsBase}/${shortId}?updateMask.fieldPaths=q&currentDocument.exists=true`, {
+      method: "PATCH",
+      headers: { ...fsHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ fields: { q: { stringValue: nextQ } } }),
+    });
+    if (!patchRes.ok) {
+      console.error(`[REPLACE_LINK_FILE] Firestore patch failed (${patchRes.status}) for ${shortId}: ${(await patchRes.text()).slice(0, 200)}`);
+      return res.status(500).json({ error: "連結內容更新失敗" });
+    }
+    return res.json({ success: true, shortId });
+  } catch (error: any) {
+    console.error("[REPLACE_LINK_FILE] Error:", error.message);
+    return res.status(500).json({ error: "連結內容更新失敗" });
   }
 });
 
@@ -1811,6 +2129,7 @@ app.post("/api/explain-jargon", async (req, res) => {
 
   try {
     const body = req.body && typeof req.body === "object" ? req.body : {};
+    const lang = body.lang === "en" ? "en" : "zh";
     const textCandidate = typeof body.text === "string" ? body.text.trim().slice(0, JARGON_MAX_TEXT_LEN) : "";
     let pathType: "text" | "image" | null = null;
     let basis = "";
@@ -1820,7 +2139,19 @@ app.post("/api/explain-jargon", async (req, res) => {
     if (textCandidate.length >= JARGON_MIN_TEXT_LEN) {
       pathType = "text";
       basis = textCandidate;
-      prompt = `你是一場財經簡報的即時助理。請從下方的頁面文字中，找出最多 4 個完全沒有金融背景的客戶可能不懂的金融專業術語（jargon）。
+      prompt = lang === "en"
+        ? `You are a real-time assistant for a financial presentation. From the page text below, find up to 4 financial jargon terms that a client with zero finance background may not understand.
+Explain each term in plain English for a client with zero finance background:
+- Use everyday language; never explain a term with another technical term or merely rephrase it
+- When useful, ground the concept with a concrete number, comparison, or everyday analogy
+- Keep each explanation to about 40 words maximum
+Keep each term's original on-page wording exactly. Put the most important terms first.
+Choose only genuine financial jargon; skip common words, company names, and numbers.
+If there are no jargon terms, return an empty list.
+Page text:
+${textCandidate}
+Output JSON only: { "terms": [ { "term": "...", "explanation": "..." } ] }`
+        : `你是一場財經簡報的即時助理。請從下方的頁面文字中，找出最多 4 個完全沒有金融背景的客戶可能不懂的金融專業術語（jargon）。
 每個術語請用繁體中文寫一段解說：
 - 用完全沒有金融背景的人一看就懂的日常語言，絕不能用術語解釋術語，也不能只是換句話說
 - 在適當情況下，用一個具體數字、比較或生活化比喻讓概念落地（例如「1 個基點 = 0.01%，50 個基點就是半個百分點」）
@@ -1838,7 +2169,17 @@ ${textCandidate}
       pathType = "image";
       imageBase64 = body.imageBase64;
       basis = imageBase64;
-      prompt = `你是一場財經簡報的即時助理。請先閱讀這張頁面圖片中所有可見文字，再從中找出最多 4 個完全沒有金融背景的客戶可能不懂的金融專業術語（jargon）。
+      prompt = lang === "en"
+        ? `You are a real-time assistant for a financial presentation. First read all visible text in this page image, then find up to 4 financial jargon terms that a client with zero finance background may not understand.
+Explain each term in plain English for a client with zero finance background:
+- Use everyday language; never explain a term with another technical term or merely rephrase it
+- When useful, ground the concept with a concrete number, comparison, or everyday analogy
+- Keep each explanation to about 40 words maximum
+Keep each term's original on-page wording exactly. Put the most important terms first.
+Choose only genuine financial jargon; skip fund codes, page numbers, percentages, and dates.
+If there are no jargon terms, return an empty list.
+Output JSON only: { "terms": [ { "term": "...", "explanation": "..." } ] }`
+        : `你是一場財經簡報的即時助理。請先閱讀這張頁面圖片中所有可見文字，再從中找出最多 4 個完全沒有金融背景的客戶可能不懂的金融專業術語（jargon）。
 每個術語請用繁體中文寫一段解說：
 - 用完全沒有金融背景的人一看就懂的日常語言，絕不能用術語解釋術語，也不能只是換句話說
 - 在適當情況下，用一個具體數字、比較或生活化比喻讓概念落地（例如「1 個基點 = 0.01%，50 個基點就是半個百分點」）
@@ -1868,16 +2209,16 @@ ${textCandidate}
     const fileId = typeof body.fileId === "string" ? body.fileId.trim().slice(0, 200) : "";
     const page = Number.isInteger(body.page) && body.page >= 1 ? body.page : 0;
     const contentHash = sha256Hex(basis);
-    const cacheKey = `jg:${fileId || "-"}#${page || 0}#${pathType}#${contentHash}`;
+    const cacheKey = `jg:${fileId || "-"}#${page || 0}#${pathType}#${contentHash}${lang === "en" ? "#en" : ""}`;
     const storeKey = fileId && page
-      ? `jargon/${sha256Hex(`${fileId}#${page}#${pathType}#${contentHash}`)}.json`
+      ? `jargon/${sha256Hex(`${fileId}#${page}#${pathType}#${contentHash}${lang === "en" ? "#en" : ""}`)}.json`
       : "";
     // Glossary override is applied at SERVE time (not before storing), so the
     // R2/L1 copy stays the raw model output and editing the glossary takes
     // effect immediately for already-cached pages.
     const cached = jargonCache.get(cacheKey);
     if (cached && Date.now() - cached.at < JARGON_CACHE_TTL_MS) {
-      return res.json({ success: true, terms: applyJargonGlossary(cached.terms), source: "cache" });
+      return res.json({ success: true, terms: lang === "zh" ? applyJargonGlossary(cached.terms) : cached.terms, source: "cache" });
     }
     if (cached) jargonCache.delete(cacheKey);
 
@@ -1885,7 +2226,7 @@ ${textCandidate}
       const stored = await readJargonStore(storeKey);
       if (stored !== null) {
         setJargonCache(cacheKey, stored);
-        return res.json({ success: true, terms: applyJargonGlossary(stored), source: "store" });
+        return res.json({ success: true, terms: lang === "zh" ? applyJargonGlossary(stored) : stored, source: "store" });
       }
     }
 
@@ -1895,7 +2236,7 @@ ${textCandidate}
       if (terms === null) {
         return res.status(502).json({ success: false, error: "AI processing failed" });
       }
-      return res.json({ success: true, terms: applyJargonGlossary(terms) });
+      return res.json({ success: true, terms: lang === "zh" ? applyJargonGlossary(terms) : terms });
     }
 
     if (!allow(`jg:ip:${ip}`, 40, 3_600_000, false) || !allow("jg:global", 200, 3_600_000, false)) {
@@ -1958,7 +2299,7 @@ ${textCandidate}
     }
 
     if (result !== null) {
-      return res.json({ success: true, terms: applyJargonGlossary(result) });
+      return res.json({ success: true, terms: lang === "zh" ? applyJargonGlossary(result) : result });
     }
 
     return res.status(502).json({ success: false, error: "AI processing failed" });
@@ -2533,8 +2874,8 @@ ${cialdiniLever}
 🎙 <b>Voss Label：</b>
 ${vossLabel}
 
-💡 <b>NBA WhatsApp 話術：</b>
-${nba}${behaviorBlock}`;
+💡 <b>NBA WhatsApp 話術（點按複製）：</b>
+<code>${nba}</code>${behaviorBlock}`;
 
     } catch (err) {
       text = `📊 <b>閱讀結算 (基礎)</b>\n\n👤 <b>客戶：</b> ${escapeHTML(client_name)}\n📄 <b>報告：</b> ${escapeHTML(rName)}\n📖 <b>進度：</b> ${maxReachedPage} / ${total_pages || '?'}\n⏱️ <b>歷時：</b> ${total_duration_sec}s\n⚠️ AI 分析失敗: ${escapeHTML((err as any).message)}${behaviorBlock}`;

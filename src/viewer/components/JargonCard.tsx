@@ -6,13 +6,15 @@ interface Props {
     terms: JargonTerm[];
     isDarkMode: boolean;
     visible: boolean;
+    lang: 'zh' | 'en';
+    onToggleLang: () => void;
 }
 
 // Reader's show/hide choice is a global UI preference (like ag_darkmode), not
 // per-file: someone who dislikes the card wants it off everywhere. '0' = hidden.
 const JARGON_PREF_KEY = 'ag_jargon';
 
-export function JargonCard({ terms, isDarkMode, visible }: Props) {
+export function JargonCard({ terms, isDarkMode, visible, lang, onToggleLang }: Props) {
     const [index, setIndex] = useState(0);
     // Restore the reader's saved choice; default to shown.
     const [dismissed, setDismissed] = useState(() => {
@@ -126,6 +128,13 @@ export function JargonCard({ terms, isDarkMode, visible }: Props) {
                                 </button>
                             </>
                         )}
+                        <button
+                            onClick={onToggleLang}
+                            aria-label="切換解釋語言"
+                            className={`flex items-center justify-center w-9 h-9 rounded-md transition-colors text-[11px] font-mono font-semibold ${ctrlBtn}`}
+                        >
+                            {lang === 'zh' ? 'EN' : '中'}
+                        </button>
                         <button
                             onClick={hide}
                             aria-label="隱藏關鍵詞解釋"
