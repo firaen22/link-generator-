@@ -12,6 +12,7 @@ interface Options {
     enabled: boolean;
     pdfUrl: string;
     fileId: string;
+    lang: 'zh' | 'en';
 }
 
 interface LatestPageText {
@@ -27,7 +28,7 @@ export function useJargon(opts: Options): {
     onPageText: (page: number, text: string, imageDataUrl?: string) => void;
     onPageChange: () => void;
 } {
-    const { enabled, pdfUrl, fileId } = opts;
+    const { enabled, pdfUrl, fileId, lang } = opts;
     const [terms, setTerms] = useState<JargonTerm[]>([]);
     const cacheRef = useRef(new Map<string, JargonTerm[]>());
     const latestRef = useRef<LatestPageText | null>(null);
@@ -37,6 +38,7 @@ export function useJargon(opts: Options): {
     const enabledRef = useRef(enabled);
     const pdfUrlRef = useRef(pdfUrl.trim());
     const fileIdRef = useRef(fileId);
+    const langRef = useRef(lang);
     const warnedFailureKeysRef = useRef(new Set<string>());
 
     const clearDebounce = useCallback(() => {
@@ -76,7 +78,7 @@ export function useJargon(opts: Options): {
             return;
         }
 
-        const key = jargonCacheKey(currentPdfUrl, page, path);
+        const key = jargonCacheKey(currentPdfUrl, page, path, langRef.current);
         latestRef.current = { key, pdfUrl: currentPdfUrl, page, text, image: imageDataUrl };
 
         const cached = cacheRef.current.get(key);
@@ -95,8 +97,8 @@ export function useJargon(opts: Options): {
             requestControllerRef.current = controller;
             try {
                 const body = requestPath === 'text'
-                    ? { text: prepareJargonText(text), fileId: fileIdRef.current, page }
-                    : { imageBase64, fileId: fileIdRef.current, page };
+                    ? { text: prepareJargonText(text), fileId: fileIdRef.current, page, ...(langRef.current === 'en' ? { lang: 'en' } : {}) }
+                    : { imageBase64, fileId: fileIdRef.current, page, ...(langRef.current === 'en' ? { lang: 'en' } : {}) };
                 const response = await fetch('/api/explain-jargon', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -108,7 +110,7 @@ export function useJargon(opts: Options): {
                     if (activeRequestKeyRef.current === requestKey) {
                         const latest = latestRef.current;
                         const currentKey = latest && latest.pdfUrl === pdfUrlRef.current
-                            ? jargonCacheKey(pdfUrlRef.current, latest.page, requestPath)
+                            ? jargonCacheKey(pdfUrlRef.current, latest.page, requestPath, langRef.current)
                             : null;
                         if (currentKey === requestKey) setTerms([]);
                     }
@@ -128,7 +130,7 @@ export function useJargon(opts: Options): {
                 cacheRef.current.set(requestKey, nextTerms);
                 const latest = latestRef.current;
                 const currentKey = latest && latest.pdfUrl === pdfUrlRef.current
-                    ? jargonCacheKey(pdfUrlRef.current, latest.page, requestPath)
+                    ? jargonCacheKey(pdfUrlRef.current, latest.page, requestPath, langRef.current)
                     : null;
                 if (activeRequestKeyRef.current === requestKey && currentKey === requestKey) {
                     setTerms(nextTerms);
@@ -138,7 +140,7 @@ export function useJargon(opts: Options): {
                 warnFailure(requestKey, error);
                 const latest = latestRef.current;
                 const currentKey = latest && latest.pdfUrl === pdfUrlRef.current
-                    ? jargonCacheKey(pdfUrlRef.current, latest.page, requestPath)
+                    ? jargonCacheKey(pdfUrlRef.current, latest.page, requestPath, langRef.current)
                     : null;
                 if (activeRequestKeyRef.current === requestKey && currentKey === requestKey) {
                     setTerms([]);
@@ -163,6 +165,18 @@ export function useJargon(opts: Options): {
     useEffect(() => {
         fileIdRef.current = fileId;
     }, [fileId]);
+
+    useEffect(() => {
+        langRef.current = lang;
+        clearDebounce();
+        abortRequest();
+        activeRequestKeyRef.current = null;
+        setTerms([]);
+        const latest = latestRef.current;
+        if (latest && latest.pdfUrl === pdfUrlRef.current) {
+            runPipeline(latest.page, latest.text, latest.image);
+        }
+    }, [abortRequest, clearDebounce, lang, runPipeline]);
 
     useEffect(() => {
         pdfUrlRef.current = pdfUrl.trim();

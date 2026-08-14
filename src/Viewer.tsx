@@ -45,7 +45,7 @@ export default function Viewer() {
   const { fileId: fileIdParam } = useParams();
   const [searchParams] = useSearchParams();
 
-  const { clientName, reportName, fileId, pdfUrl, whatsappNumber } = resolveReportParams(searchParams, fileIdParam);
+  const { clientName, reportName, fileId, pdfUrl, whatsappNumber, ctaLabel, ctaMsg } = resolveReportParams(searchParams, fileIdParam);
 
   // Cross-cutting state owned by the orchestrator
   const [numPages, setNumPages] = useState<number | null>(null);
@@ -70,6 +70,13 @@ export default function Viewer() {
   // so the map fills page-by-page as the reader flips.
   const [isTextMode, setIsTextMode] = useState(false);
   const [pageTexts, setPageTexts] = useState<Record<number, string>>({});
+  const [jargonLang, setJargonLang] = useState<'zh' | 'en'>(() => {
+    try {
+      return localStorage.getItem('ag_jargon_lang') === 'en' ? 'en' : 'zh';
+    } catch {
+      return 'zh';
+    }
+  });
 
   // The single scrollable <main> element, shared (by reference) with telemetry
   // (scroll/zoom sampling) and navigation (swipe binding).
@@ -124,7 +131,7 @@ export default function Viewer() {
 
   const { isWindowFocused } = useContentGuard({ sendTrackingEvent, numPages, pageNumber, showToast });
   const jargonEnabled = !showDisclaimer && !isClosed && !loadError;
-  const jargon = useJargon({ enabled: jargonEnabled, pdfUrl, fileId });
+  const jargon = useJargon({ enabled: jargonEnabled, pdfUrl, fileId, lang: jargonLang });
 
   // Single stable sink for PdfStage's per-page extraction: stores the text for
   // text mode (first result wins) and forwards to the jargon pipeline when
@@ -193,7 +200,17 @@ export default function Viewer() {
 
   const handleCtaClick = (page: number) => {
     recordCtaClick(page);
-    window.open(`https://wa.me/${whatsappNumber}`, '_blank');
+    window.open(`https://wa.me/${whatsappNumber}${ctaMsg ? `?text=${encodeURIComponent(ctaMsg)}` : ''}`, '_blank');
+  };
+
+  const handleToggleJargonLang = () => {
+    const next = jargonLang === 'zh' ? 'en' : 'zh';
+    try {
+      localStorage.setItem('ag_jargon_lang', next);
+    } catch {
+      // ignore storage errors (privacy mode)
+    }
+    setJargonLang(next);
   };
 
   const resetGestureTransform = (ref = transformRef.current) => {
@@ -368,10 +385,11 @@ export default function Viewer() {
         onZoomOut={zoomOut}
         onToggleFullscreen={toggleFullscreen}
         onCtaClick={handleCtaClick}
+        ctaLabel={ctaLabel}
       />
 
       {numPages !== null && !showDisclaimer && (
-        <JargonCard terms={jargon.terms} isDarkMode={isDarkMode} visible={isWindowFocused || isFullscreen} />
+        <JargonCard terms={jargon.terms} isDarkMode={isDarkMode} visible={isWindowFocused || isFullscreen} lang={jargonLang} onToggleLang={handleToggleJargonLang} />
       )}
 
       <Toast message={toast} isDarkMode={isDarkMode} />

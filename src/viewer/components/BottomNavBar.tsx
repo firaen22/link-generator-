@@ -15,6 +15,7 @@ interface BottomNavBarProps {
   onZoomOut: () => void;
   onToggleFullscreen: () => void;
   onCtaClick: (page: number) => void;
+  ctaLabel?: string | null;
 }
 
 /** Floating bottom bar: page-turn + tappable counter (jump to page), a separated
@@ -22,7 +23,7 @@ interface BottomNavBarProps {
  *  and its zoom — slides away in fullscreen). */
 export function BottomNavBar({
   pageNumber, numPages, isFullscreen, isDarkMode, scale,
-  onPrev, onNext, onJumpToPage, onZoomIn, onZoomOut, onToggleFullscreen, onCtaClick,
+  onPrev, onNext, onJumpToPage, onZoomIn, onZoomOut, onToggleFullscreen, onCtaClick, ctaLabel,
 }: BottomNavBarProps) {
   const [editingPage, setEditingPage] = useState(false);
   const [pageInput, setPageInput] = useState('');
@@ -164,8 +165,8 @@ export function BottomNavBar({
         className={`${isFullscreen ? 'hidden sm:flex' : 'flex'} min-h-11 backdrop-blur-xl items-center gap-2 px-4 rounded-2xl text-[13px] font-medium border shadow-[0_6px_20px_rgba(0,0,0,0.10)] transition-all active:scale-95 ${isDarkMode ? 'bg-[#1B1C20]/92 border-[#C6A867]/40 text-[#C6A867] hover:bg-white/5' : 'bg-[rgba(252,251,249,0.92)] border-[#B8964F]/40 text-[#9c7d3f] hover:bg-white'}`}
       >
         <Calendar className="w-4 h-4" />
-        <span className="hidden sm:inline">預約顧問 (15分鐘)</span>
-        <span className="sm:hidden">預約顧問</span>
+        <span className={`hidden sm:inline ${ctaLabel ? 'sm:max-w-[220px] truncate' : ''}`}>{ctaLabel ?? '預約顧問 (15分鐘)'}</span>
+        <span className={`sm:hidden ${ctaLabel ? 'max-w-[140px] truncate' : ''}`}>{ctaLabel ?? '預約顧問'}</span>
       </motion.button>
     </div>
   );

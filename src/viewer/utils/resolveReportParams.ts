@@ -27,6 +27,8 @@ export function resolveReportParams(
   let fileFromProp = '';
   // Advisor WhatsApp number for the "預約顧問" CTA — falls back to the default below
   let whatsappNumber = searchParams.get('w') || '85265387638';
+  let ctaLabel: string | null = null;
+  let ctaMsg: string | null = null;
 
   const q = searchParams.get('q');
   const decoded = decodeCompressedPayload(q);
@@ -36,6 +38,8 @@ export function resolveReportParams(
     if (decoded.r) reportName = decoded.r;
     if (decoded.f) fileFromProp = decoded.f;
     if (decoded.w) whatsappNumber = decoded.w;
+    if (typeof decoded.cl === 'string') ctaLabel = decoded.cl;
+    if (typeof decoded.cm === 'string') ctaMsg = decoded.cm;
   }
 
   // Fallback to extract clean filename from fileFromProp if reportName is generic
@@ -74,5 +78,5 @@ export function resolveReportParams(
   const pdfUrl = getProxiedPdfUrl(fileId);
   console.log('[VIEWER] PDF Proxy URL:', pdfUrl);
 
-  return { clientName, reportName, fileId, pdfUrl, whatsappNumber };
+  return { clientName, reportName, fileId, pdfUrl, whatsappNumber, ctaLabel, ctaMsg };
 }

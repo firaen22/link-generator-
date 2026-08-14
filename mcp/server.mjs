@@ -85,6 +85,22 @@ const TOOLS = [
           type: "string",
           description: "Advisor WhatsApp number for the in-report 預約顧問 CTA. Any format; digits are extracted.",
         },
+        ctaLabel: {
+          type: "string",
+          maxLength: 30,
+          description: "Optional text for the in-report CTA button. Defaults to 預約顧問.",
+        },
+        ctaMessage: {
+          type: "string",
+          maxLength: 200,
+          description: "Optional prefilled WhatsApp message opened by the in-report CTA.",
+        },
+        maxOpens: {
+          type: "integer",
+          minimum: 1,
+          maximum: 1000,
+          description: "Maximum non-crawler opens for each link. Omit for unlimited.",
+        },
       },
       required: ["pdfPath", "clients"],
     },
@@ -150,6 +166,20 @@ const TOOLS = [
         },
       },
       required: ["shortId"],
+    },
+  },
+  {
+    name: "replace_link_file",
+    description:
+      "Replace the PDF behind an existing link while keeping the same share URL; viewers get the new file. " +
+      "Only links created with this access key can be changed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        shortId: { type: "string", description: "The short id in the existing /l/<id> share URL." },
+        pdfPath: { type: "string", description: "Absolute path to the replacement local PDF file." },
+      },
+      required: ["shortId", "pdfPath"],
     },
   },
 ];
@@ -258,6 +288,34 @@ async function uploadPreviewImage(imagePath) {
   return `${BASE_URL}${publicPath}`;
 }
 
+async function uploadPdfToR2(pdfPath) {
+  if (typeof pdfPath !== "string" || !pdfPath.startsWith("/")) {
+    throw new Error("pdfPath must be an absolute path.");
+  }
+  let bytes;
+  try {
+    bytes = await readFile(pdfPath);
+  } catch (e) {
+    throw new Error(`Cannot read PDF at "${pdfPath}": ${e.message}`);
+  }
+  const fileName = basename(pdfPath);
+  const { uploadUrl, r2Key } = await postJson("/api/r2-presign", {
+    fileName,
+    contentType: "application/pdf",
+  });
+  if (!uploadUrl || !r2Key) throw new Error("Presign response missing uploadUrl/r2Key.");
+  const putRes = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": "application/pdf" },
+    body: bytes,
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!putRes.ok) {
+    throw new Error(`R2 upload failed (HTTP ${putRes.status}): ${(await putRes.text()).slice(0, 200)}`);
+  }
+  return `r2:${r2Key}`;
+}
+
 // Fields the user is offered a chance to fill in (or skip) before link creation.
 // All optional: blank/skipped fields fall back to the same defaults as before.
 const ELICIT_FIELDS = {
@@ -285,6 +343,16 @@ const ELICIT_FIELDS = {
     type: "string",
     title: "Advisor WhatsApp number",
     description: "For the in-report 預約顧問 CTA. Leave blank to omit the CTA.",
+  },
+  ctaLabel: {
+    type: "string",
+    title: "CTA button text",
+    description: "Text for the in-report CTA button. Leave blank for 預約顧問.",
+  },
+  ctaMessage: {
+    type: "string",
+    title: "CTA prefilled message",
+    description: "Prefilled WhatsApp message. Leave blank to open the conversation only.",
   },
 };
 
@@ -340,32 +408,10 @@ async function createShareLink(rawArgs) {
   if (names.length === 0) throw new Error("At least one non-empty client name (string) is required.");
 
   // Before any upload work, offer the user the full set of optional fields.
-  const { pdfPath, reportName, title, description, previewImage, previewImagePath, advisorWhatsapp } =
+  const { pdfPath, reportName, title, description, previewImage, previewImagePath, advisorWhatsapp, ctaLabel, ctaMessage, maxOpens } =
     await elicitMissingFields(rawArgs);
-
-  let bytes;
-  try {
-    bytes = await readFile(pdfPath);
-  } catch (e) {
-    throw new Error(`Cannot read PDF at "${pdfPath}": ${e.message}`);
-  }
+  const f = await uploadPdfToR2(pdfPath);
   const fileName = basename(pdfPath);
-
-  const { uploadUrl, r2Key } = await postJson("/api/r2-presign", {
-    fileName,
-    contentType: "application/pdf",
-  });
-  if (!uploadUrl || !r2Key) throw new Error("Presign response missing uploadUrl/r2Key.");
-
-  const putRes = await fetch(uploadUrl, {
-    method: "PUT",
-    headers: { "Content-Type": "application/pdf" },
-    body: bytes,
-    signal: AbortSignal.timeout(120_000),
-  });
-  if (!putRes.ok) {
-    throw new Error(`R2 upload failed (HTTP ${putRes.status}): ${(await putRes.text()).slice(0, 200)}`);
-  }
 
   // previewImagePath (local file, auto-compressed + hosted) wins over a raw URL.
   const finalPreviewImage = previewImagePath
@@ -378,7 +424,7 @@ async function createShareLink(rawArgs) {
   let finalDescription = description;
   if (!finalTitle || !finalDescription) {
     try {
-      const meta = await postJson("/api/generate-meta", { f: `r2:${r2Key}` });
+      const meta = await postJson("/api/generate-meta", { f });
       if (!finalTitle && meta.title) finalTitle = meta.title;
       if (!finalDescription && meta.description) finalDescription = meta.description;
     } catch (e) {
@@ -388,12 +434,15 @@ async function createShareLink(rawArgs) {
 
   const { links } = await postJson("/api/create-link", {
     clients: names,
-    f: `r2:${r2Key}`,
+    f,
     ...(reportName ? { r: reportName } : {}),
     ...(finalTitle ? { t: finalTitle } : {}),
     ...(finalDescription ? { d: finalDescription } : {}),
     ...(finalPreviewImage ? { i: finalPreviewImage } : {}),
     ...(advisorWhatsapp ? { w: advisorWhatsapp } : {}),
+    ...(ctaLabel ? { ctaLabel } : {}),
+    ...(ctaMessage ? { ctaMsg: ctaMessage } : {}),
+    ...(maxOpens !== undefined ? { maxOpens } : {}),
     origin: BASE_URL,
   });
 
@@ -477,6 +526,7 @@ async function listLinks(rawArgs) {
       l.revoked ? "revoked" : null,
       l.pinProtected ? "PIN" : null,
       l.expireAt ? `expires ${fmtDate(l.expireAt)}` : null,
+      l.maxOpens != null ? `opens ${l.openCount || 0}/${l.maxOpens}` : `opens ${l.openCount || 0}`,
     ].filter(Boolean);
     const meta = [fmtDate(l.createdAt), l.reportName, flags.join(", ")].filter(Boolean).join(" · ");
     return `• ${l.clientName || "(no name)"} — ${BASE_URL}/l/${l.shortId}${meta ? `\n    ${meta}` : ""}`;
@@ -503,6 +553,21 @@ async function revokeLink(rawArgs) {
       : `Restored ${BASE_URL}/l/${shortId} — it opens the report again.`,
     shortId,
     revoked,
+  };
+}
+
+async function replaceLinkFile(rawArgs) {
+  const args = rawArgs && typeof rawArgs === "object" ? rawArgs : {};
+  const shortId = parseShortId(args.shortId);
+  if (typeof args.pdfPath !== "string" || !args.pdfPath.startsWith("/")) {
+    throw new Error("pdfPath must be an absolute path.");
+  }
+  const f = await uploadPdfToR2(args.pdfPath);
+  await postJson("/api/replace-link-file", { shortId, f });
+  return {
+    summary: `Replaced the PDF for ${BASE_URL}/l/${shortId}; the share URL stays the same.`,
+    success: true,
+    shortId,
   };
 }
 
@@ -572,6 +637,7 @@ async function handle(msg) {
       else if (name === "get_whatsapp_link") result = getWhatsappLink(args);
       else if (name === "list_links") result = await listLinks(args);
       else if (name === "revoke_link") result = await revokeLink(args);
+      else if (name === "replace_link_file") result = await replaceLinkFile(args);
       else throw new Error(`Unknown tool: ${name}`);
       reply(id, { content: [{ type: "text", text: result.summary }], structuredContent: result });
     } catch (e) {

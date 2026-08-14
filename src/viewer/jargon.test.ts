@@ -59,8 +59,10 @@ assertEq(isJargonEligible(undefined as any), false, 'eligible undefined no-throw
 assertEq(prepareJargonText('  a\n\n b\tc  '), 'a b c', 'prepare collapse');
 assertEq(prepareJargonText('y'.repeat(7000)).length, 6000, 'prepare cap 6000');
 
-// jargonCacheKey (lang dropped in this port)
+// jargonCacheKey — zh keeps the existing key; en is isolated
 assertEq(jargonCacheKey('u', 3, 'text'), 'u#3#text', 'cache key shape');
+assertEq(jargonCacheKey('u', 3, 'text', 'zh'), 'u#3#text', 'zh cache key unchanged');
+assertEq(jargonCacheKey('u', 3, 'text', 'en'), 'u#3#text#en', 'en cache key differs');
 
 // parseJargonResponse
 assertEq(parseJargonResponse(null), [], 'parse null');
