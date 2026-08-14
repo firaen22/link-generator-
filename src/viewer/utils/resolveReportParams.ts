@@ -74,8 +74,13 @@ export function resolveReportParams(
     }
   }
 
+  // Present only when the reader arrived via /l/:shortId (or a PIN unlock);
+  // the proxy uses it to re-check revoke / expiry / open cap on the bytes.
+  const rawLinkId = searchParams.get('lid');
+  const linkId = rawLinkId && /^[a-z0-9]{1,32}$/i.test(rawLinkId) ? rawLinkId : null;
+
   console.log('[VIEWER] Final File ID:', fileId);
-  const pdfUrl = getProxiedPdfUrl(fileId);
+  const pdfUrl = getProxiedPdfUrl(fileId, linkId);
   console.log('[VIEWER] PDF Proxy URL:', pdfUrl);
 
   return { clientName, reportName, fileId, pdfUrl, whatsappNumber, ctaLabel, ctaMsg };
