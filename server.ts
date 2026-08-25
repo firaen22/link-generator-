@@ -1231,10 +1231,13 @@ app.post("/api/create-link", async (req, res) => {
   }
   // "r2:" alone passed the truthiness check above and minted a link whose payload
   // carried an empty R2 key — /api/pdf then rejects it, so the advisor got a
-  // success response for a permanently broken link. Other `f` shapes (a full URL,
-  // or a bare Firebase Storage path) stay valid; see resolveFileId in pdfBridge.
+  // success response for a permanently broken link. New links must use the same
+  // r2: reference shape produced by the current upload callers.
   if (f.startsWith("r2:") && f.slice(3).trim() === "") {
     return res.status(400).json({ error: "檔案參照 r2: 後不可為空 (f)" });
+  }
+  if (!f.startsWith("r2:")) {
+    return res.status(400).json({ error: "檔案參照須為 r2: 開頭 (f)" });
   }
   const pin = rawPin === undefined || rawPin === null || rawPin === "" ? "" : rawPin;
   if (pin !== "" && (typeof pin !== "string" || !/^\d{4,8}$/.test(pin))) {
@@ -1920,8 +1923,10 @@ app.get("/api/pdf/:file_id", async (req, res) => {
     });
 
     if (!response.ok) {
-      console.error(`[PDF_PROXY] Upstream failure: ${response.status} ${response.statusText}`);
-      return res.status(response.status).send(`Upstream Fetch Error: ${response.statusText}`);
+      const detail = await response.text().catch(() => "");
+      console.error(`[PDF_PROXY] Upstream failure: ${response.status} ${response.statusText}${detail ? `: ${detail.slice(0, 200)}` : ""}`);
+      const clientStatus = response.status === 404 ? 404 : 502;
+      return res.status(clientStatus).send("無法讀取文件，請稍後再試");
     }
 
     // 3. Forward critical PDF headers
@@ -1977,8 +1982,10 @@ app.get("/api/img/:file_id", async (req, res) => {
     // directly (200), so a 3xx would never be a legitimate response here.
     const response = await fetch(blobUrl, { redirect: 'manual', signal: AbortSignal.timeout(30000) });
     if (!response.ok) {
-      console.error(`[IMG_PROXY] Upstream failure: ${response.status} ${response.statusText}`);
-      return res.status(response.status).send("Upstream Fetch Error");
+      const detail = await response.text().catch(() => "");
+      console.error(`[IMG_PROXY] Upstream failure: ${response.status} ${response.statusText}${detail ? `: ${detail.slice(0, 200)}` : ""}`);
+      const clientStatus = response.status === 404 ? 404 : 502;
+      return res.status(clientStatus).send("無法讀取圖片，請稍後再試");
     }
 
     res.setHeader("Content-Type", response.headers.get("content-type") || "image/jpeg");
