@@ -59,7 +59,10 @@ export const getProxiedPdfUrl = (fileId: string, linkId?: string | null): string
     // linkId lets the proxy re-check the share link's lifecycle before serving
     // the bytes. Links opened via /l/:shortId carry it; bare /view?q=... and
     // /s/:file_id have no link document behind them and omit it.
-    if (linkId) return `/api/pdf/${fileId}?lid=${encodeURIComponent(linkId)}`;
+    // Presence, not truthiness: an empty ?lid= is still the caller asserting a
+    // link id, so forward it and let the proxy reject it rather than silently
+    // falling back to the unchecked no-lid path.
+    if (linkId !== null && linkId !== undefined) return `/api/pdf/${fileId}?lid=${encodeURIComponent(linkId)}`;
     return `/api/pdf/${fileId}`;
 };
 
@@ -98,7 +101,9 @@ export const fromUrlSafeBase64 = (encoded: string): string => {
  * Extracts a clean filename without extensions or timestamp prefixes from a file path or URL.
  */
 export const extractFileName = (filePath: string | null | undefined): string => {
-    if (!filePath) return 'Document';
+    // Declared as string, but every caller feeds it a field off an `any` payload
+    // decoded from a URL, so a non-string really does reach here.
+    if (typeof filePath !== 'string' || !filePath) return 'Document';
     // Strip prefixes like "r2:" or "r2_"
     let pathStr = filePath.replace(/^(r2|f|vblob)[:_]/, "");
     // Get the last path segment (filename)

@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 # NOTE: no bash globstar on macOS bash 3.2 — api/**/*.ts silently expands to
 # nothing there, which would skip api/[...path].ts entirely. Use find instead.
-files=(server.ts sanitizeSessionEnd.ts detectMicroLoops.ts linkFileRef.ts src/viewer/jargon.ts src/viewer/jargonGlossary.ts)
+files=(server.ts sanitizeSessionEnd.ts truncateForTelegram.ts detectMicroLoops.ts linkFileRef.ts src/viewer/jargon.ts src/viewer/jargonGlossary.ts)
 while IFS= read -r f; do files+=("$f"); done < <(find api -name '*.ts')
 
 pattern="^[[:space:]]*(import|export)([[:space:]][^;]*[[:space:]]from[[:space:]]*|[[:space:]]*)['\"](\\./|\\.\\./)[^'\"]*['\"]"

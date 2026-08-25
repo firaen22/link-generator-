@@ -146,12 +146,20 @@ export default function App() {
     // stale reply must not be allowed to overwrite the warning.
     let cancelled = false;
 
+    // A previous URL's warning must not linger once the URL changes — an
+    // early `!res.ok` return below used to leave it on screen unexplained.
+    setImageSizeWarning('');
+
     const timer = setTimeout(async () => {
       try {
         const res = await fetch(`/api/check-image-size?url=${encodeURIComponent(previewImage)}`, {
           headers: { 'x-pwp-key': accessKey },
         });
-        if (cancelled || !res.ok) return;
+        if (cancelled) return;
+        if (!res.ok) {
+          setImageSizeWarning('無法確認此圖片大小，預覽圖仍可能超出 300 KB 上限。');
+          return;
+        }
         const data = await res.json();
         if (cancelled) return;
 
@@ -185,8 +193,18 @@ export default function App() {
   // r2: reference. Shared by link generation and auto title/description.
   const uploadPdfIfNeeded = async (file: File): Promise<string> => {
     const fileIdentifier = `${file.name}_${file.size}`;
-    const sessionCache = JSON.parse(sessionStorage.getItem(SESSION_CACHE_KEY) || '{}');
-    if (sessionCache[fileIdentifier]) {
+    // Storage-blocked webviews (WhatsApp/Line in-app browser, Safari with site
+    // data off) throw here — the cache is a pure optimization, so degrade to
+    // "no cache" instead of letting it abort the upload.
+    let sessionCache: Record<string, string> = {};
+    try {
+      // JSON.parse can succeed and still return null / an array / a primitive
+      // (e.g. a stored "null"), which the catch won't see — the property read
+      // below would then throw and abort the upload. Keep only a plain object.
+      const parsed = JSON.parse(sessionStorage.getItem(SESSION_CACHE_KEY) || '{}');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) sessionCache = parsed;
+    } catch { /* storage blocked or corrupt cache entry */ }
+    if (typeof sessionCache[fileIdentifier] === 'string' && sessionCache[fileIdentifier]) {
       console.log('[UPLOAD] Reusing cached path:', sessionCache[fileIdentifier]);
       return sessionCache[fileIdentifier];
     }
@@ -210,7 +228,11 @@ export default function App() {
     if (!uploadRes.ok) throw new Error('檔案上傳至 R2 失敗');
 
     const cleanFileURL = `r2:${r2Key}`; // 'r2:' prefix so pdfBridge resolves it
-    sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({ ...sessionCache, [fileIdentifier]: cleanFileURL }));
+    // The PUT to R2 already succeeded — a throwing setItem must not undo that
+    // by failing the whole upload; just skip caching it for reuse this session.
+    try {
+      sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({ ...sessionCache, [fileIdentifier]: cleanFileURL }));
+    } catch { /* storage blocked or quota exceeded */ }
     console.log('[UPLOAD] Success:', cleanFileURL);
     return cleanFileURL;
   };
@@ -373,8 +395,17 @@ export default function App() {
     }
   };
 
-  const copyClientLink = (index: number) => {
-    navigator.clipboard.writeText(generatedClients[index].shortLink).catch(err => console.error('複製失敗:', err));
+  const copyClientLink = async (index: number) => {
+    // Guard the synchronous throw (navigator.clipboard missing on non-HTTPS /
+    // some in-app webviews) as well as a rejected write — either way, don't
+    // mark "copied" over whatever was already on the clipboard.
+    try {
+      await navigator.clipboard.writeText(generatedClients[index].shortLink);
+    } catch (err) {
+      console.error('複製失敗:', err);
+      alert('複製失敗，請手動複製連結');
+      return;
+    }
     setGeneratedClients(prev =>
       prev.map((c, i) => ({ ...c, copied: i === index }))
     );
@@ -385,8 +416,14 @@ export default function App() {
     }, 2000);
   };
 
-  const copyToClipboard = () => {
-    navigator.clipboard.writeText(generatedLink).catch(err => console.error('複製失敗:', err));
+  const copyToClipboard = async () => {
+    try {
+      await navigator.clipboard.writeText(generatedLink);
+    } catch (err) {
+      console.error('複製失敗:', err);
+      alert('複製失敗，請手動複製連結');
+      return;
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -413,9 +450,15 @@ export default function App() {
     }
   };
 
-  const copyAdvisorLink = (shortId: string) => {
+  const copyAdvisorLink = async (shortId: string) => {
     const link = `${window.location.origin}/l/${shortId}`;
-    navigator.clipboard.writeText(link).catch(err => console.error('複製失敗:', err));
+    try {
+      await navigator.clipboard.writeText(link);
+    } catch (err) {
+      console.error('複製失敗:', err);
+      alert('複製失敗，請手動複製連結');
+      return;
+    }
     setAdvisorLinks(prev =>
       prev.map(item => ({ ...item, copied: item.shortId === shortId }))
     );

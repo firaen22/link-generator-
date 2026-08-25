@@ -388,6 +388,12 @@ export function useTelemetry({
       const durationMs = Math.max(0, now - pageEnterTimeRef.current);
 
       updateSessionData(currentPageRef.current, durationMs, scaleRef.current, isActiveRef.current);
+      // Consume the elapsed span we just banked. Without this, a sub-2s exit
+      // below returns with the marker still at the old value, so the NEXT exit
+      // re-counts this span — and, because the visible-again branch only resets
+      // when a session_end actually fired, every second the reader spends away
+      // is then banked as reading time.
+      pageEnterTimeRef.current = now;
 
       const totalActiveTime = Math.floor((now - startTimeRef.current) / 1000);
 
@@ -530,6 +536,12 @@ export function useTelemetry({
           ctaClickPageRef.current = null;
           hasSentEngaged60Ref.current = false;
           engaged60PageRef.current = null;
+        } else {
+          // A sub-2s exit banked its span but sent nothing, so the session is
+          // still running and the full-reset above was skipped. Restart the
+          // page-dwell marker anyway: the reader was away, and that gap is not
+          // time spent on the current page.
+          pageEnterTimeRef.current = Date.now();
         }
       }
     };

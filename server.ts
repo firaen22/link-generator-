@@ -15,6 +15,7 @@ import { GoogleAuth } from "google-auth-library";
 import { sanitizeSessionEnd } from "./sanitizeSessionEnd.js";
 import { detectMicroLoops } from "./detectMicroLoops.js";
 import { fileIdMatchesLink } from "./linkFileRef.js";
+import { truncateForTelegram } from "./truncateForTelegram.js";
 import {
   JARGON_IMAGE_MAX_B64_LEN,
   JARGON_MAX_TEXT_LEN,
@@ -137,7 +138,9 @@ const toUrlSafeBase64 = (str: string): string =>
     .replace(/=+$/, '');
 
 const extractFileName = (filePath: string | null | undefined): string => {
-  if (!filePath) return "Document";
+  // Declared as string, but callers feed it a field off an `any` LZ payload,
+  // so a non-string really does reach here (mirrors the pdfBridge copy).
+  if (typeof filePath !== "string" || !filePath) return "Document";
   // Strip prefixes like "r2:" or "r2_"
   let pathStr = filePath.replace(/^(r2|f|vblob)[:_]/, "");
   // Get the last path segment (filename)
@@ -920,14 +923,17 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
 
     const decoded = decodeLzPayload(q);
     if (decoded) {
-      if (decoded.c) cName = decoded.c;
-      if (decoded.r) rName = decoded.r;
-      if (decoded.i) imageParam = decoded.i;
-      if (decoded.d) descParam = decoded.d;
-      if (decoded.t) titleParam = decoded.t;
-      
-      if (rName === "Document" && decoded.f) {
-        const extracted = extractFileName(decoded.f);
+      // asString on every field: the payload is JSON off an `any` decode, so a
+      // non-string here used to reach extractFileName and throw -> a 500 that
+      // permanently broke the link. Matches the /s/:file_id handler above.
+      if (asString(decoded.c)) cName = asString(decoded.c);
+      if (asString(decoded.r)) rName = asString(decoded.r);
+      if (asString(decoded.i)) imageParam = asString(decoded.i);
+      if (asString(decoded.d)) descParam = asString(decoded.d);
+      if (asString(decoded.t)) titleParam = asString(decoded.t);
+
+      if (rName === "Document" && asString(decoded.f)) {
+        const extracted = extractFileName(asString(decoded.f));
         if (extracted && extracted !== "Document") {
           rName = extracted;
         }
@@ -1172,10 +1178,10 @@ app.post("/api/unlock-link", async (req, res) => {
     let rName = "Document";
     const decoded = decodeLzPayload(q);
     if (decoded) {
-      if (decoded.c) cName = decoded.c;
-      if (decoded.r) rName = decoded.r;
-      if (rName === "Document" && decoded.f) {
-        const extracted = extractFileName(decoded.f);
+      if (asString(decoded.c)) cName = asString(decoded.c);
+      if (asString(decoded.r)) rName = asString(decoded.r);
+      if (rName === "Document" && asString(decoded.f)) {
+        const extracted = extractFileName(asString(decoded.f));
         if (extracted && extracted !== "Document") {
           rName = extracted;
         }
@@ -1532,7 +1538,7 @@ app.get("/api/cron/silent-links", async (req, res) => {
       // Mark ALL of this advisor's links as alerted, not just the 20 shown by
       // name — the "…及另外 N 條" line already told them the rest exist, so
       // leaving those unmarked would silently re-alert on every future run.
-      deliveries.push({ text: message.length > 3900 ? message.slice(0, 3900) + "…" : message, links, chatId });
+      deliveries.push({ text: truncateForTelegram(message), links, chatId });
     }
     if (fallbackGroups.size > 0) {
       const fallbackLinks = [...fallbackGroups.entries()];
@@ -1547,7 +1553,7 @@ app.get("/api/cron/silent-links", async (req, res) => {
       }
       const extra = selected.filter((link) => !advisorChats.get(link.advisor)).length - links.length;
       const message = `🔕 <b>未開啟提醒</b>${sections.join("")}${extra > 0 ? `\n…及另外 ${extra} 條` : ""}`;
-      deliveries.push({ text: message.length > 3900 ? message.slice(0, 3900) + "…" : message, links, chatId: process.env.TELEGRAM_CHAT_ID || "" });
+      deliveries.push({ text: truncateForTelegram(message), links, chatId: process.env.TELEGRAM_CHAT_ID || "" });
     }
 
     const alerted: typeof selected = [];
@@ -1800,11 +1806,13 @@ const checkPdfLinkLifecycle = async (
   if (fields.revoked?.booleanValue === true) {
     return { status: 410, message: "This link has been revoked." };
   }
-  const expireAtRaw = fields.expireAt?.timestampValue;
-  if (expireAtRaw) {
-    // expireAt is always server-written ISO; an unparseable value means a
-    // corrupted doc — treat it as expired rather than serving forever.
-    const expireAtMs = new Date(expireAtRaw).getTime();
+  // Presence, not truthiness: `timestampValue: ""` is a falsy-but-PRESENT
+  // field that `if (expireAtRaw)` would skip entirely, serving forever.
+  const expireAtField = fields.expireAt?.timestampValue;
+  if (expireAtField !== undefined) {
+    // expireAt is always server-written ISO; an unparseable or empty value
+    // means a corrupted doc — treat it as expired rather than serving forever.
+    const expireAtMs = new Date(expireAtField).getTime();
     if (!Number.isFinite(expireAtMs) || expireAtMs < Date.now()) {
       return { status: 410, message: "This link has expired." };
     }
@@ -2985,12 +2993,7 @@ ${vossLabel}
   // already falls back to a tag-stripped plain resend on parse errors.
   // Back off one unit if the cut would land between a surrogate pair, otherwise
   // the message ends in a lone surrogate that renders as a replacement char.
-  if (text.length > 3900) {
-    let cut = 3900;
-    const code = text.charCodeAt(cut - 1);
-    if (code >= 0xd800 && code <= 0xdbff) cut -= 1;
-    text = text.slice(0, cut) + '…';
-  }
+  text = truncateForTelegram(text);
 
   // The AI path is already volume-bounded by aiAllowed; gate the cheaper summary
   // sends per IP so forged session_end requests can't spam Telegram.

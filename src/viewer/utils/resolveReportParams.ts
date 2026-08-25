@@ -34,10 +34,14 @@ export function resolveReportParams(
   const decoded = decodeCompressedPayload(q);
   if (decoded) {
     console.log('[VIEWER] Decoded payload:', decoded);
-    if (decoded.c) clientName = decoded.c;
-    if (decoded.r) reportName = decoded.r;
-    if (decoded.f) fileFromProp = decoded.f;
-    if (decoded.w) whatsappNumber = decoded.w;
+    // Type-guard every field: `q` is attacker/typo-controlled URL input, and a
+    // non-string here used to flow straight out as clientName/reportName and
+    // crash the render (React refuses an object child; extractFileName calls
+    // .replace on it). cl/cm were already guarded — the rest now match.
+    if (typeof decoded.c === 'string' && decoded.c) clientName = decoded.c;
+    if (typeof decoded.r === 'string' && decoded.r) reportName = decoded.r;
+    if (typeof decoded.f === 'string' && decoded.f) fileFromProp = decoded.f;
+    if (typeof decoded.w === 'string' && decoded.w) whatsappNumber = decoded.w;
     if (typeof decoded.cl === 'string') ctaLabel = decoded.cl;
     if (typeof decoded.cm === 'string') ctaMsg = decoded.cm;
   }
@@ -76,8 +80,10 @@ export function resolveReportParams(
 
   // Present only when the reader arrived via /l/:shortId (or a PIN unlock);
   // the proxy uses it to re-check revoke / expiry / open cap on the bytes.
-  const rawLinkId = searchParams.get('lid');
-  const linkId = rawLinkId && /^[a-z0-9]{1,32}$/i.test(rawLinkId) ? rawLinkId : null;
+  // Forward it even when it looks malformed: the proxy 400s an invalid lid, and
+  // silently dropping it here would instead downgrade the request to the
+  // unchecked no-lid path — a security-relevant control failing quietly.
+  const linkId = searchParams.has('lid') ? (searchParams.get('lid') ?? '') : null;
 
   console.log('[VIEWER] Final File ID:', fileId);
   const pdfUrl = getProxiedPdfUrl(fileId, linkId);
