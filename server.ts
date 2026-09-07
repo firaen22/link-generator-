@@ -15,6 +15,7 @@ import { GoogleAuth } from "google-auth-library";
 import { sanitizeSessionEnd } from "./sanitizeSessionEnd.js";
 import { detectMicroLoops } from "./detectMicroLoops.js";
 import { fileIdMatchesLink } from "./linkFileRef.js";
+import { computeExtendedExpiry } from "./linkExtend.js";
 import { truncateForTelegram } from "./truncateForTelegram.js";
 import {
   JARGON_IMAGE_MAX_B64_LEN,
@@ -976,7 +977,9 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
 
     if (!isCrawler && !pinProtected) {
       await incrementLinkOpenCount(projectId, shortId);
-      await sendShortLinkOpenNotification(req, data, shortId, cName, rName);
+      const remaining = maxOpens > 0 ? maxOpens - (openCount + 1) : -1;
+      const marker = remaining === 1 ? '⚠️ <b>此連結只剩 1 次開啟機會</b>（可用 extend_link 工具提高上限）' : '';
+      await sendShortLinkOpenNotification(req, data, shortId, cName, rName, marker);
     }
 
     const html = `<!DOCTYPE html>
@@ -1190,7 +1193,9 @@ app.post("/api/unlock-link", async (req, res) => {
 
     const viewerUrl = `/view?q=${encodeURIComponent(q)}&lid=${encodeURIComponent(shortId)}`;
     await incrementLinkOpenCount(projectId, shortId);
-    await sendShortLinkOpenNotification(req, data, shortId, cName, rName, "🔐 已解鎖");
+    const remaining = maxOpens > 0 ? maxOpens - (openCount + 1) : -1;
+    const unlockMarker = remaining === 1 ? "🔐 已解鎖 ⚠️ <b>此連結只剩 1 次開啟機會</b>（可用 extend_link 工具提高上限）" : "🔐 已解鎖";
+    await sendShortLinkOpenNotification(req, data, shortId, cName, rName, unlockMarker);
     res.json({ url: viewerUrl });
   } catch (error) {
     console.error("[UNLOCK_LINK] Error:", error);
@@ -1649,6 +1654,63 @@ app.post("/api/revoke-link", async (req, res) => {
   } catch (error: any) {
     console.error("[REVOKE_LINK] Error:", error.message);
     res.status(500).json({ error: "更新連結狀態失敗" });
+  }
+});
+
+app.post("/api/extend-link", async (req, res) => {
+  const advisor = requireApiKey(req, res);
+  if (advisor === null) return;
+  const { shortId, extendDays, maxOpens } = req.body || {};
+  if (!shortId || typeof shortId !== "string" || !/^[a-z0-9]{1,32}$/i.test(shortId)) return res.status(400).json({ error: "無效的短連結 ID" });
+  const hasExtendDays = Object.prototype.hasOwnProperty.call(req.body || {}, "extendDays");
+  const hasMaxOpens = Object.prototype.hasOwnProperty.call(req.body || {}, "maxOpens");
+  if (!hasExtendDays && !hasMaxOpens) return res.status(400).json({ error: "請提供 extendDays 或 maxOpens" });
+  if (hasExtendDays && (!Number.isInteger(extendDays) || extendDays < 1 || extendDays > 365)) return res.status(400).json({ error: "延長天數須為 1-365 的整數 (extendDays)" });
+  if (hasMaxOpens && maxOpens !== null && (!Number.isInteger(maxOpens) || maxOpens < 1 || maxOpens > 1000)) return res.status(400).json({ error: "開啟次數上限須為 1-1000 的整數或 null (maxOpens)" });
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+  if (!projectId) return res.status(500).json({ error: "伺服器缺少 Firebase 設定 (Project ID / API Key)" });
+  const fsBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links`;
+  try {
+    const fsHeaders = await firestoreHeaders();
+    if (!fsHeaders) return res.status(500).json({ error: "延長連結失敗" });
+    const docRes = await fetch(`${fsBase}/${shortId}`, { headers: fsHeaders });
+    if (!docRes.ok) return res.status(404).json({ error: "找不到此連結" });
+    const doc = await docRes.json();
+    if (doc.fields?.adv?.stringValue !== advisor) return res.status(403).json({ error: "沒有權限修改此連結" });
+    const fields: Record<string, any> = {};
+    const updateFields: string[] = [];
+    let newExpireAt = doc.fields?.expireAt?.timestampValue as string | undefined;
+    if (hasExtendDays) {
+      const now = Date.now();
+      newExpireAt = computeExtendedExpiry(newExpireAt, now, extendDays);
+      fields.expireAt = { timestampValue: newExpireAt };
+      updateFields.push("expireAt");
+    }
+    if (hasMaxOpens) {
+      const openCount = parseInt(doc.fields?.openCount?.integerValue ?? "0", 10) || 0;
+      if (Number.isInteger(maxOpens) && maxOpens <= openCount) return res.status(400).json({ error: "開啟次數上限須高於目前開啟次數" });
+      updateFields.push("maxOpens");
+      if (maxOpens !== null) fields.maxOpens = { integerValue: String(maxOpens) };
+    }
+    // The maxOpens >= openCount check above was made against the document we
+    // read; bind the write to that snapshot so a concurrent open (or a second
+    // extend) cannot land a cap below the live count. Dotted primitive param,
+    // same as the session-end device merge.
+    if (typeof doc.updateTime !== "string") return res.status(500).json({ error: "延長連結失敗" });
+    const query = updateFields.map((field) => `updateMask.fieldPaths=${encodeURIComponent(field)}`).join("&")
+      + `&currentDocument.updateTime=${encodeURIComponent(doc.updateTime)}`;
+    const patchRes = await fetch(`${fsBase}/${shortId}?${query}`, { method: "PATCH", headers: { ...fsHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ fields }) });
+    if (!patchRes.ok) {
+      const detail = await patchRes.text();
+      if (detail.includes("FAILED_PRECONDITION")) return res.status(409).json({ error: "連結剛被更新，請重試" });
+      console.error(`[EXTEND_LINK] Firestore patch failed (${patchRes.status}) for ${shortId}: ${detail}`);
+      return res.status(500).json({ error: "延長連結失敗" });
+    }
+    const currentMaxOpens = doc.fields?.maxOpens?.integerValue != null ? parseInt(doc.fields.maxOpens.integerValue, 10) || null : null;
+    res.json({ ok: true, expireAt: newExpireAt || null, maxOpens: hasMaxOpens ? maxOpens : currentMaxOpens });
+  } catch (error: any) {
+    console.error("[EXTEND_LINK] Error:", error.message);
+    res.status(500).json({ error: "延長連結失敗" });
   }
 });
 
@@ -2503,6 +2565,9 @@ app.post("/api/track", async (req, res) => {
   } else if (event === 'click_appointment') {
     const pageNote = page != null ? `（停留喺第 ${escapeHTML(String(page))} 頁）` : '';
     text = `🔥 <b>高價值意向！</b>\n\n👤 客戶 <b>${cn}</b> 點擊咗<b>預約顧問</b>按鈕${pageNote}！\n請準備透過 WhatsApp 跟進。`;
+  } else if (event === 'click_ask_page') {
+    const pageNote = page != null ? `（第 ${escapeHTML(String(page))} 頁）` : '';
+    text = `❓ <b>客戶提問</b>\n\n👤 客戶 <b>${cn}</b> 對 <b>${rn}</b>${pageNote} 有疑問，已開啟 WhatsApp。\n請留意 WhatsApp 並即時回覆。`;
   } else if (event === 'engaged_60s') {
     // One-shot client milestone (fired once per session at >=60s). Replaces the
     // old heartbeat 60-90s window check, which silently missed the alert when
@@ -2638,7 +2703,7 @@ app.post("/api/session-end", async (req, res) => {
     // Phase 3 deep telemetry
     nav_history, zoom_clusters, scroll_samples, peak_scroll_velocity,
     // Phase 4 enrichment
-    cta_click_page, mins_since_last_visit, device_id, device_type, tab_switch_count, return_visit_count, engaged_60s_page
+    cta_click_page, ask_page_clicks, mins_since_last_visit, device_id, device_type, tab_switch_count, return_visit_count, engaged_60s_page
   } = sanitizeSessionEnd(req.body);
 
   let rName = report_name || "Document";
@@ -2834,6 +2899,7 @@ SESSION DATA:
 - Scroll profile: ${scrollProfile}
 - 60s engagement milestone: ${engaged_60s_page != null ? `crossed while on page ${engaged_60s_page} — sustained early engagement there` : 'not reached (session under 60s or milestone page unknown)'}
 - CTA click page (WhatsApp appointment button): ${cta_click_page != null ? `Page ${cta_click_page} — STRONGEST INTEREST SIGNAL` : 'not clicked'}
+- "Ask about this page" clicks (client opened WhatsApp with a page-specific question): ${ask_page_clicks > 0 ? `${ask_page_clicks} — client has concrete questions, answer them first` : 'none'}
 - Device: ${device_type || 'unknown'}
 - Return visits (completed sessions re-opened): ${return_visit_count ?? 0}
 - Minutes since last visit: ${mins_since_last_visit ?? "n/a"}
@@ -2954,6 +3020,7 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
       const deviceIcon = device_type === 'mobile' ? '📱' : device_type === 'desktop' ? '💻' : '❓';
       const timeLabel = getHkTimeOfDay().label;
       const ctaLine = cta_click_page != null ? `\n🔥 <b>CTA Clicked on Page：</b> ${cta_click_page}` : '';
+      const askLine = ask_page_clicks > 0 ? `\n❓ <b>詢問此頁：</b> ${ask_page_clicks} 次` : '';
       const returnVisitLine = isReturnVisit
         ? `\n🔄 <b>RETURN VISIT</b> — Client came back to re-read${mins_since_last_visit != null ? `（上次閱讀 ${formatReturnVisitGap(mins_since_last_visit)} 前）` : ''}`
         : '';
@@ -2961,7 +3028,7 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
       text = `🎯 <b>【Antigravity 銷售導航】</b>
 👤 <b>客戶：</b> ${escapeHTML(client_name)}  📄 <b>報告：</b> ${escapeHTML(rName)}
 🆔 <b>會話：</b> <code>${escapeHTML(shortSessionId(session_id))}</code>  ${modelTag} (<code>${usedModel}</code>)
-${deviceIcon} ${escapeHTML(device_type || 'unknown')}  ${timeLabel}  🔁 Returns: ${return_visit_count ?? 0}${returnVisitLine}${ctaLine}
+${deviceIcon} ${escapeHTML(device_type || 'unknown')}  ${timeLabel}  🔁 Returns: ${return_visit_count ?? 0}${returnVisitLine}${ctaLine}${askLine}
 
 🧠 <b>Intent Archetype：</b> ${archetype}
 📊 <b>Z-Score：</b> ${aiResult.z_score ?? zScore}

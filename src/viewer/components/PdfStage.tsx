@@ -4,6 +4,7 @@ import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { AlertCircle } from 'lucide-react';
 import { extractJargonImageBase64, jargonImageDims, JARGON_MIN_TEXT_LEN } from '../jargon';
+import { extractPdfPageText } from '../pdfText';
 
 interface PdfStageProps {
   pdfUrl: string;
@@ -105,11 +106,9 @@ export function PdfStage({
         });
     };
 
-    doc.getPage(pageNumber)
-      .then(page => page.getTextContent())
-      .then(tc => {
+    extractPdfPageText(doc, pageNumber)
+      .then(text => {
         if (cancelled) return;
-        const text = tc.items.map((it: any) => (typeof it.str === 'string' ? it.str : '')).join(' ');
         onPageText(pageNumber, text);
         if (text.trim().length >= JARGON_MIN_TEXT_LEN) return;
         captureImage(text);

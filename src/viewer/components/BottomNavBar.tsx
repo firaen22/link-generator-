@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { ChevronLeft, ChevronRight, Calendar, Maximize, Minimize, ZoomIn, ZoomOut } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar, MessageCircleQuestion, Maximize, Minimize, ZoomIn, ZoomOut } from 'lucide-react';
 
 interface BottomNavBarProps {
   pageNumber: number;
@@ -15,6 +15,7 @@ interface BottomNavBarProps {
   onZoomOut: () => void;
   onToggleFullscreen: () => void;
   onCtaClick: (page: number) => void;
+  onAskPageClick: (page: number) => void;
   ctaLabel?: string | null;
 }
 
@@ -23,7 +24,7 @@ interface BottomNavBarProps {
  *  and its zoom — slides away in fullscreen). */
 export function BottomNavBar({
   pageNumber, numPages, isFullscreen, isDarkMode, scale,
-  onPrev, onNext, onJumpToPage, onZoomIn, onZoomOut, onToggleFullscreen, onCtaClick, ctaLabel,
+  onPrev, onNext, onJumpToPage, onZoomIn, onZoomOut, onToggleFullscreen, onCtaClick, onAskPageClick, ctaLabel,
 }: BottomNavBarProps) {
   const [editingPage, setEditingPage] = useState(false);
   const [pageInput, setPageInput] = useState('');
@@ -153,6 +154,19 @@ export function BottomNavBar({
           {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
         </button>
       </motion.div>
+
+      <motion.button
+        initial={{ y: 40, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ duration: 0.3, ease: 'easeOut', delay: 0.05 }}
+        onClick={() => onAskPageClick(pageNumber)}
+        aria-label="詢問此頁"
+        title="詢問此頁"
+        className={`${isFullscreen ? 'hidden sm:flex' : 'flex'} min-h-11 backdrop-blur-xl items-center gap-2 px-4 rounded-2xl text-[13px] font-medium border shadow-[0_6px_20px_rgba(0,0,0,0.10)] transition-all active:scale-95 ${isDarkMode ? 'bg-[#1B1C20]/92 border-[#C6A867]/40 text-[#C6A867] hover:bg-white/5' : 'bg-[rgba(252,251,249,0.92)] border-[#B8964F]/40 text-[#9c7d3f] hover:bg-white'}`}
+      >
+        <MessageCircleQuestion className="w-4 h-4" />
+        <span className="hidden sm:inline">詢問此頁</span>
+      </motion.button>
 
       {/* Commercial CTA — separated from page-turn, quiet outline (no gradient/sheen).
           In fullscreen the pill gains zoom buttons, so on phones the CTA yields
