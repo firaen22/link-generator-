@@ -139,6 +139,7 @@ export function useTelemetry({
   const lastSampleTRef = useRef(performance.now());
 
   const ctaClickPageRef = useRef<number | null>(null);
+  const askPageClicksRef = useRef(0);
 
   const deviceTypeRef = useRef<'mobile' | 'desktop'>(
     /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.innerWidth < 768
@@ -424,6 +425,7 @@ export function useTelemetry({
         scroll_samples: scrollSamplesRef.current,
         peak_scroll_velocity: peakScrollVelocity,
         cta_click_page: ctaClickPageRef.current,
+        ask_page_clicks: askPageClicksRef.current,
         device_type: deviceTypeRef.current,
         tab_switch_count: tabSwitchCountRef.current,
         return_visit_count: returnVisitCountRef.current,
@@ -472,6 +474,7 @@ export function useTelemetry({
           tab_switch_count: tabSwitchCountRef.current,
           return_visit_count: returnVisitCountRef.current,
           cta_click_page: ctaClickPageRef.current ?? 0,
+          ask_page_clicks: askPageClicksRef.current,
           device_type: deviceTypeRef.current,
           peak_scroll_velocity: peakScrollVelocity,
           // Fires during pagehide/visibilitychange — ask gtag for beacon transport.
@@ -534,6 +537,7 @@ export function useTelemetry({
           zoomClustersRef.current = [];
           scrollSamplesRef.current = [];
           ctaClickPageRef.current = null;
+          askPageClicksRef.current = 0;
           hasSentEngaged60Ref.current = false;
           engaged60PageRef.current = null;
         } else {
@@ -663,10 +667,16 @@ export function useTelemetry({
     sendTrackingEvent('click_appointment', { page });
   };
 
+  const recordAskPageClick = (page: number) => {
+    askPageClicksRef.current += 1;
+    sendTrackingEvent('click_ask_page', { page });
+  };
+
   return {
     sendTrackingEvent,
     markOpenTracked,
     recordCtaClick,
+    recordAskPageClick,
     currentPageRef,
     scaleRef,
     numPagesRef,

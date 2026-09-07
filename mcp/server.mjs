@@ -169,6 +169,19 @@ const TOOLS = [
     },
   },
   {
+    name: "extend_link",
+    description: "Extend expiry from the later of now/current expiry and/or change the open cap; null removes the cap.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        shortId: { type: "string", description: "The short id in the existing /l/<id> share URL." },
+        extendDays: { type: "integer", minimum: 1, maximum: 365 },
+        maxOpens: { type: ["integer", "null"], minimum: 1, maximum: 1000 },
+      },
+      required: ["shortId"],
+    },
+  },
+  {
     name: "replace_link_file",
     description:
       "Replace the PDF behind an existing link while keeping the same share URL; viewers get the new file. " +
@@ -556,6 +569,20 @@ async function revokeLink(rawArgs) {
   };
 }
 
+async function extendLink(rawArgs) {
+  const args = rawArgs && typeof rawArgs === "object" ? rawArgs : {};
+  const shortId = parseShortId(args.shortId);
+  const body = { shortId };
+  if (Object.hasOwn(args, "extendDays")) body.extendDays = args.extendDays;
+  if (Object.hasOwn(args, "maxOpens")) body.maxOpens = args.maxOpens;
+  const result = await postJson("/api/extend-link", body);
+  let summary = `Extended ${BASE_URL}/l/${shortId} — now expires ${result.expireAt}`;
+  if (Object.hasOwn(args, "maxOpens")) {
+    summary += args.maxOpens === null ? ", open cap removed" : `, open cap ${result.maxOpens}`;
+  }
+  return { summary, shortId, expireAt: result.expireAt, maxOpens: result.maxOpens };
+}
+
 async function replaceLinkFile(rawArgs) {
   const args = rawArgs && typeof rawArgs === "object" ? rawArgs : {};
   const shortId = parseShortId(args.shortId);
@@ -637,6 +664,7 @@ async function handle(msg) {
       else if (name === "get_whatsapp_link") result = getWhatsappLink(args);
       else if (name === "list_links") result = await listLinks(args);
       else if (name === "revoke_link") result = await revokeLink(args);
+      else if (name === "extend_link") result = await extendLink(args);
       else if (name === "replace_link_file") result = await replaceLinkFile(args);
       else throw new Error(`Unknown tool: ${name}`);
       reply(id, { content: [{ type: "text", text: result.summary }], structuredContent: result });

@@ -121,7 +121,7 @@ export default function Viewer() {
   const { toast, showToast } = useToast();
 
   const {
-    sendTrackingEvent, markOpenTracked, recordCtaClick,
+    sendTrackingEvent, markOpenTracked, recordCtaClick, recordAskPageClick,
     numPagesRef, scaleRef, handleExitRef,
   } = useTelemetry({ fileId, clientName, reportName, pageNumber, scale, numPages, loading, containerRef });
 
@@ -201,6 +201,11 @@ export default function Viewer() {
   const handleCtaClick = (page: number) => {
     recordCtaClick(page);
     window.open(`https://wa.me/${whatsappNumber}${ctaMsg ? `?text=${encodeURIComponent(ctaMsg)}` : ''}`, '_blank');
+  };
+
+  const handleAskPageClick = (page: number) => {
+    recordAskPageClick(page);
+    window.open(`https://wa.me/${whatsappNumber}?text=${encodeURIComponent(`我對《${reportName}》第 ${page} 頁有疑問，想請教一下。`)}`, '_blank');
   };
 
   const handleToggleJargonLang = () => {
@@ -385,6 +390,7 @@ export default function Viewer() {
         onZoomOut={zoomOut}
         onToggleFullscreen={toggleFullscreen}
         onCtaClick={handleCtaClick}
+        onAskPageClick={handleAskPageClick}
         ctaLabel={ctaLabel}
       />
 

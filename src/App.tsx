@@ -6,6 +6,8 @@
 import React, { useState, useRef } from 'react';
 import { Copy, Check, Share2, UploadCloud, MessageCircle, Loader2, ImagePlus, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { prewarmJargon } from './prewarmJargon';
+import { resolveFileId } from './utils/pdfBridge';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface GeneratedClient {
@@ -334,6 +336,7 @@ export default function App() {
         (l: { name: string; shortId: string; shortLink: string; pinProtected?: boolean }) => ({ ...l, pinProtected: Boolean(l.pinProtected), copied: false })
       );
       setGeneratedClients(results);
+      if (file) void prewarmJargon(file, resolveFileId(cleanFileURL));
 
       // Set first link as the WhatsApp preview link
       if (results.length > 0) setGeneratedLink(results[0].shortLink);
@@ -492,6 +495,29 @@ export default function App() {
         prev.map(item => item.shortId === shortId ? { ...item, revoked } : item)
       );
       setLinksError(error instanceof Error ? error.message : '更新連結狀態失敗');
+    } finally {
+      setUpdatingLinkId('');
+    }
+  };
+
+  const extendAdvisorLink = async (shortId: string) => {
+    setUpdatingLinkId(shortId);
+    setLinksError('');
+    try {
+      const res = await fetch('/api/extend-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-pwp-key': accessKey },
+        body: JSON.stringify({ shortId, extendDays: 30 }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || '延長連結失敗');
+      }
+      const result = await res.json();
+      setAdvisorLinks(prev => prev.map(item => item.shortId === shortId ? { ...item, expireAt: result.expireAt } : item));
+    } catch (error) {
+      console.error('延長連結失敗:', error);
+      setLinksError(error instanceof Error ? error.message : '延長連結失敗');
     } finally {
       setUpdatingLinkId('');
     }
@@ -975,6 +1001,14 @@ export default function App() {
                           <code className="flex-1 text-xs font-mono text-indigo-600 truncate">
                             /l/{link.shortId}
                           </code>
+                          <button
+                            type="button"
+                            onClick={() => extendAdvisorLink(link.shortId)}
+                            disabled={updatingLinkId === link.shortId}
+                            className="shrink-0 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+                          >
+                            {updatingLinkId === link.shortId ? '更新中' : '延長30天'}
+                          </button>
                           <button
                             type="button"
                             onClick={() => copyAdvisorLink(link.shortId)}
