@@ -1070,8 +1070,13 @@ export default function App() {
                   alt="Preview"
                   className="w-full h-full object-cover"
                   onError={(e) => {
-                    // Fallback if image fails to load
-                    (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1200&auto=format&fit=crop&.jpg";
+                    // Fallback if image fails to load. Null the handler first so a
+                    // failing fallback (offline, CDN blocked) can't re-fire onError
+                    // and loop — the default src is already this same Unsplash URL.
+                    const img = e.target as HTMLImageElement;
+                    img.onerror = null;
+                    const fallback = "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?q=80&w=1200&auto=format&fit=crop&.jpg";
+                    if (img.src !== fallback) img.src = fallback;
                   }}
                 />
               </div>

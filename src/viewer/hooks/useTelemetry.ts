@@ -576,8 +576,14 @@ export function useTelemetry({
         if (!Number.isFinite(staleMs) || staleMs > 5 * 60_000) {
           safeRemoveItem(storageKey);
         } else {
-          sessionDataRef.current = parsed.pages_data || {};
-          navigationPathRef.current = parsed.path || [];
+          // Type-guard the restored blob: a corrupted-but-fresh snapshot with
+          // string pages_data/path would otherwise assign a string to these refs,
+          // and later updateSessionData() calls .push()/[pageNum] on it — throwing
+          // outside this try/catch, during normal dwell tracking.
+          const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+            typeof v === 'object' && v !== null && !Array.isArray(v);
+          sessionDataRef.current = isPlainObject(parsed.pages_data) ? parsed.pages_data : {};
+          navigationPathRef.current = Array.isArray(parsed.path) ? parsed.path : [];
           if (parsed.startTime) startTimeRef.current = parsed.startTime;
           if (parsed.sessionId) sessionIdRef.current = parsed.sessionId;
           if (parsed.engaged60) hasSentEngaged60Ref.current = true;
