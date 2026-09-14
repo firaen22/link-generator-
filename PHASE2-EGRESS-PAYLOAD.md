@@ -14,11 +14,31 @@ advisors. `/api/pdf` runs on ~every report open; `/api/generate-meta` runs once 
 link creation. Rank accordingly: A dominates aggregate transfer, B has the largest
 per-request waste.
 
+## Current status (refreshed 2026-09-15)
+Both high-value levers are shipped and enabled on prod; the remainder are decided.
+
+| # | Lever | State |
+|---|---|---|
+| 1 | `/api/pdf` `r2_` → 302 to R2 presign | ✅ **Shipped + enabled** — PR #39 `45f37f8`, flag `PDF_R2_REDIRECT=1` on prod |
+| 2 | `/api/generate-meta` sends extracted text | ✅ **Shipped + enabled** — PR #40 `41a6b86`, flag `META_TEXT_EXTRACT=1` on prod (deploy `1lvgg9e4u`) |
+| 3 | Gemini Files API upload-once | ⛔ **Decided: skip** — mooted by #2 + payload already sent once on the hot path |
+| 4 | CDN-cache no-lid responses | ⏸️ **Deferred — your call** — one-line lever, but unmeasured payoff + a privacy tradeoff |
+| 5 | Memoize `{title,description}` | ⏸️ **Deferred — marginal** — low hit-rate for non-trivial code |
+
+**Open residuals (need a human, no code):** (#1) no real `/l/<id>` end-to-end open tested
+(fires advisor notify + openCount); (#2) live text-mode not yet observed — watch
+`[GENERATE_META] text mode` vs `extract too short` on the next real generation. Details in
+"## Progress".
+
+The sections below are the original analysis, retained as the decision record; each
+recommendation now carries its outcome.
+
 ## Headline
-The one lever that changes the cost *axis* is stopping `/api/pdf` from streaming PDF
+The one lever that changed the cost *axis* was stopping `/api/pdf` from streaming PDF
 bytes through the function: check lifecycle, then **302 to a short-lived R2 presign**
-for `r2_` files, so bytes go R2→client and never transit Vercel. Everything else is a
-low-volume create-time saving or a cache trick bounded by the lifecycle contract.
+for `r2_` files, so bytes go R2→client and never transit Vercel (shipped as #1).
+Everything else is a low-volume create-time saving (#2, shipped) or a cache trick
+bounded by the lifecycle contract (#4/#5, deferred).
 
 ## Reproduced facts (`[verified: read server.ts / src]` unless tagged otherwise)
 - `/api/pdf` presigns an R2 GET, `fetch()`es the object and **streams it chunk-by-chunk**
@@ -111,23 +131,31 @@ infeasible — preview + deployment-specific URLs are SSO-walled (every request 
 both meters go to ~0 for `r2_` opens by construction. Confirmed live on prod that the
 handler now emits the 302 (see Progress); the byte-path change follows from that.
 
-### 2. `/api/generate-meta`: send a cover excerpt / first page, not 14 MB, per attempt
-Biggest per-call win: extract text server-side (pdf.js/`unpdf`, buffer already in hand)
-and send ~30–50 KB (~8–12k tokens) instead of ≤18.6 MB `inlineData` — ~100–400× fewer
+### 2. `/api/generate-meta`: send extracted text, not 14 MB, per attempt
+**Status: ✅ SHIPPED & ENABLED (2026-09-15).** PR #40 (`41a6b86`), flag
+`META_TEXT_EXTRACT=1` on prod. See "## Progress" for the review trail and known bounds.
+
+Biggest per-call win: extract text server-side (pdfjs, buffer already in hand) and send
+~tens of KB (≤3 pages / 40 000 chars) instead of ≤18.6 MB `inlineData` — ~100–400× fewer
 bytes per attempt, ×fan-out, and it removes the case where the 20 s `Promise.race` per
 attempt is lost just uploading 18 MB. Aggregate $ is small (advisor-volume), but it
-de-risks the create-path timeout. **Bound:** scanned/image-only PDFs extract empty →
-fallback to first 1–2 pages as an image (or Vision OCR); a fixed excerpt can miss topic
-if content is late (use first-pages + headings).
+de-risks the create-path timeout. **As shipped**, scanned/image-only or extraction
+failures fall back to the **unchanged full-PDF path** (not a page-image/OCR path — that
+was considered and dropped as unnecessary given the fallback preserves today's behavior).
 
 ### 3. Gemini Files API: upload once, reference by `fileUri` across the fan-out
-Stops re-transmitting the payload each retry (≤18.6 MB × N → one upload + cheap refs).
-**Bound:** Gemini files are scoped to the **project**, not the individual key — so
-same-project key rotation *can* share one upload; only rotation across *distinct
-projects* forces separate uploads (verify `timeRotatedKeys()`'s project topology). Upload
-still counts against the 45 s budget. Smaller once #2 is done; do #2 first.
+**Status: ⛔ DECIDED — SKIP (2026-09-15, after #2 shipped).** Verified from code: the
+fan-out reuses one `contentParts` array and returns on first success (`server.ts:2402`,
+`:2436`), so the payload is sent **once on the hot path** even today; upload-once saves
+only the retry tail and would itself cost an ~18 MB upload before attempt 1 (charged to
+the 45 s budget) plus Files-API lifecycle. With #2 the text-path payload is already KB.
+Not worth the complexity. (Original note: files are **project**-scoped, so same-project
+key rotation could share one upload — moot given the skip.)
 
 ### 4. no-lid responses → shared/CDN cacheable (`public, s-maxage`)
+**Status: ⏸️ DEFERRED — your call.** One `!lid`-scoped line at `server.ts:2057`. Unmeasured
+payoff, and #1's redirect already bypasses this path for `r2_` (leaving only `f_`/`vblob_`
+no-lid opens); it also means a shared CDN caches client report PDFs. See "## Progress".
 Bounded and smaller than it looks: a CDN hit still sends the PDF **CDN→client (FDT)**, so
 it saves the **function invocation + Fast Origin Transfer**, not the FDT meter. Only for
 the no-lid branch (`/view?q=`, `/s/:file_id`) which has no lifecycle to enforce, and it
@@ -138,6 +166,10 @@ already have, but don't extend it to `lid`. (No defensible payoff ratio — depe
 unmeasured no-lid share and hit rate.)
 
 ### 5. Memoize `{title,description}` by an immutable content key
+**Status: ⏸️ DEFERRED — marginal.** Low-frequency op (once per link creation) × low hit
+rate for non-trivial code (generalize the jargon two-tier cache + hash `pdfBuffer`). See
+"## Progress".
+
 Cache the generated meta so a re-linked report skips Gemini. **Bound:** `f = r2:reports/…`
 is a storage *key*, not proof of content-addressing — overwriting the object at that key
 would serve stale metadata. Key the cache on an object version / content digest (or a key
@@ -230,10 +262,13 @@ _Updated 2026-09-15._
     single-feature, so #5 = generalize it + add content hashing. Low-frequency op × low
     hit rate (few links per identical PDF) → non-trivial code for a tiny win.
 
-_Rollback for #1: set `PDF_R2_REDIRECT=0` (or unset) on Vercel prod + redeploy → instant
-revert to the proxy path. R2 CORS additions are backward-compatible (upload rule
-untouched) and can stay. #2 is inert until `META_TEXT_EXTRACT=1` is set on Vercel prod
-(held for a human) — a merged PR changes zero prod behavior._
+_Rollback (both levers are enabled on prod):_
+- _#1: set `PDF_R2_REDIRECT=0` (or unset) on Vercel prod + redeploy → instant revert to
+  the proxy path. R2 CORS additions are backward-compatible (upload rule untouched) and
+  can stay._
+- _#2: `vercel env rm META_TEXT_EXTRACT production` (or set `0`) + `vercel redeploy …
+  --target production` → reverts to the full-PDF path. The code already auto-falls-back on
+  any extraction failure, so the flag is the only switch._
 
 ---
 *Cross-checked by codex (OpenAI), grok (xAI), agy (Gemini), opencode (muse-spark),
