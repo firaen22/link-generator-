@@ -46,7 +46,8 @@ The −8 kB is just the App chunk not loading; pdfjs (172 gzip) is unavoidable o
 
 ### Cold-start (single catch-all `api/[...path].ts` → `server.ts`)
 Top-level imports evaluated on every cold start, for every route. Isolated
-warm-disk import times (this machine; **lower bound, not a Vercel prediction**):
+warm-disk import times (this machine; **local measurements only — not bounds and
+not Vercel predictions; the direction of the gap to production is unverified**):
 
 | module | ms | used by hot redirect? |
 |---|--:|---|
@@ -66,7 +67,13 @@ bundle. `firebase` (39 MB installed) is dead weight in `package.json` only.
 
 ## Recommendations (ranked)
 
-### Must-do
+### Primary lever (low-risk; reader benefit unproven — validate before claiming)
+Ranked first as the only server-side init lever, **not** as a proven reader win:
+its benefit for the dominant r2 reader is ~zero (shift, below), so its real payoff
+is the minority request classes plus general init hygiene. The unmeasured
+`pdf.worker` transfer/caching (nice-to-have #4) may be a larger real `/view` win
+and should be measured alongside it.
+
 1. **Defer `@aws-sdk/client-s3` + `s3-request-presigner`** behind a lazy,
    memoized async getter (`await import('@aws-sdk/client-s3')` *inside* the
    handlers; **not** top-level await, which would defeat it — move the
@@ -84,18 +91,27 @@ bundle. `firebase` (39 MB installed) is dead weight in `package.json` only.
    uses S3). Figures are warm-disk; Vercel absolute unverified.
 
    **Implementer caveats** (from code review):
-   - Import `getSignedUrl` lazily too; annotate with `import type { S3Client }`
-     — `isolatedModules` is on, so a value import of the type keeps the eager load.
-   - Memoize the **promise**, not the resolved client, and reset it on rejection:
-     otherwise concurrent first calls build two clients, or a failed import is
-     cached forever.
-   - `new S3Client()` reads `R2_*` env at construction — moving it into the getter
-     moves a misconfiguration from "every cold start logs" to "first PDF request
-     500s"; fail loud with a clear log.
-   - **Validation is required, not optional**: confirm the deferral on a *built
-     Vercel preview* (init-timing log, cold vs warm), not from source — Vercel
-     traces/bundles the package regardless; only a preview proves it isn't
-     evaluated at init.
+   - **Move *every* runtime `@aws-sdk/client-s3` import into the lazy getter**, not
+     just `S3Client`: `GetObjectCommand` and `PutObjectCommand` are imported on the
+     same top-level line (`server.ts:8`), and `getSignedUrl` from
+     `@aws-sdk/s3-request-presigner`. Leave any one of them as a top-level `import`
+     and the package still loads at init — the deferral is **entirely defeated**.
+     Check for transitive eager imports (a helper that pulls the SDK) too.
+   - Type-only references must be `import type { S3Client }` — a value import of a
+     type is what keeps the eager load; `isolatedModules` does not erase it for you.
+   - Memoize the **promise**, not the resolved client, and reset it on a *client-
+     construction* rejection so concurrent first calls don't build two clients.
+     Note a failure inside `import()` itself (module evaluation) is cached by the
+     ESM loader and a getter reset cannot retry it — only construction failures are
+     retryable.
+   - `new S3Client()` interpolates `R2_*` env into its endpoint/credentials, but the
+     `|| ""` fallbacks mean construction never throws; a misconfig already surfaces
+     at the first `.send()` today and still will after deferral — so this is **not**
+     a new failure mode, just relocated slightly later in the same request class.
+   - **Validation is required, not optional**: running the *built* artifact
+     establishes evaluation timing (init vs first-use), and a Vercel deploy
+     establishes the actual latency impact — Vercel traces/bundles the package
+     regardless, so source inspection alone proves nothing.
 
 ### Nice-to-have
 2. **`React.lazy` App vs Viewer** — but only with `/view` `modulepreload` to
@@ -109,31 +125,38 @@ bundle. `firebase` (39 MB installed) is dead weight in `package.json` only.
    handlers anyway (~1 ms; not its own task).
 
 ### Skip this phase
-- Deferring `google-auth-library` — **needed on the hot redirect path** (Firestore
-  REST). Both agy and grok proposed deferring it; reproduction refuted the premise.
+- Deferring `google-auth-library` — **needed eagerly on `/l`** (Firestore REST at
+  `server.ts:880`), so a lazy getter only shifts its ~29 ms onto the same request,
+  like S3. `/s` is Firestore-free and could benefit on `/s`-dominant traffic, but
+  the `/s`-vs-`/l` split is unmeasured — leave eager for now (agy and grok both
+  proposed deferring it; the shift-vs-save reasoning applies here too).
 - **Edge-caching the redirect response** (agy proposed) — the `/l` handler has
   required side effects: `incrementLinkOpenCount`, `sendShortLinkOpenNotification`
   (advisor "client opened" alert), PIN gating, max-opens enforcement. Caching
-  would suppress open tracking and bypass open limits. Also unsafe because the
-  handler branches on User-Agent (crawler vs human), so a shared cache entry would
-  poison one audience with the other's response. **Rejected.**
+  would suppress open tracking and bypass open limits — that is the fundamental
+  blocker, independent of cache key. (The handler also branches on User-Agent, so a
+  non-UA-keyed cache would additionally poison crawler/human responses; a UA-keyed
+  cache fixes *that* but not the side-effect suppression.) **Rejected.**
 - Splitting the catch-all / replacing Express on redirects (right idea, wrong
   phase), chasing `lucide-react`/`pdfjs-dist` **install** sizes as if they were
   request cost, `lz-string` deferral (~0.6 ms), a slimmer pdfjs without a probe.
 
 ### Considered & deferred — Cloudflare D1 / Workers migration
-Replacing Firestore-over-REST with D1 does not pay off **while compute stays on
-Vercel**: D1's speed comes from Workers bindings; from Vercel you'd hit D1's
-HTTP API — a cross-cloud hop per short-link resolve, same shape as today's
-Firestore REST call, with tighter throughput limits and no relational need
-(the workload is key-value: resolve id, increment open-count, check PIN/
-lifecycle). It only makes sense bundled with a full move to Cloudflare Workers
-(where R2 already lives) — a strategic platform rewrite, out of Phase 1 scope,
-and unmotivated by Phase 0 (dominant cost is the Gemini fan-out, not the datastore).
+Out of Phase 1 scope, and no motivation from Phase 0 (dominant cost is the Gemini
+fan-out, not the datastore). The architectural reason it's unattractive *while
+compute stays on Vercel*: D1's low latency comes from Workers bindings; reached
+from Vercel over its HTTP API it's a cross-cloud hop per short-link resolve — the
+same shape as today's Firestore REST call, with no relational need (the workload
+is key-value: resolve id, increment open-count, check PIN/lifecycle). It would
+plausibly pay off only bundled with a move to Cloudflare Workers (where R2 already
+lives), which is a strategic platform rewrite, not an efficiency tweak. Throughput
+limits and the exact latency trade are unquantified here — the scope call, not a
+benchmark, is what defers it.
 
 ## Corrections to the working assumptions (recorded)
-- Warm-disk import time is a **lower bound / opportunity estimate**, not a Vercel
-  latency prediction; direction of the gap is genuinely unverified (codex).
+- Warm-disk import time is a **local opportunity estimate**, neither a bound nor a
+  Vercel latency prediction; the direction of the gap to production is genuinely
+  unverified (codex).
 - Isolated import times are not strictly additive (shared sub-deps).
 - `firebase` is **never imported**, so "tree-shaken" is imprecise — it's simply
   dead `package.json` weight (grok).
@@ -147,8 +170,11 @@ Vercel preview before claiming the saving (codex).
 
 ---
 *Analysis cross-checked by codex (OpenAI), grok (xAI), agy (Gemini); every
-load-bearing premise reproduced against source. Pre-commit review: Fable
-(Claude) returned FIX — the S3-on-reader-path correction, the `filesystem`
-routing correction, and the implementer caveats above are its findings,
-reproduced and applied. codex-astra (OpenAI) hung without a verdict, so this
-pre-commit pass is single-lens — gap recorded.*
+load-bearing premise reproduced against source. Pre-commit review completed as a
+dual-family gate — Fable (Claude) and codex-astra (OpenAI) both returned FIX.
+Fable: the S3-on-reader-path correction, the `filesystem` routing correction, and
+the implementer caveats. codex-astra: the "move every SDK import (incl.
+GetObjectCommand/PutObjectCommand) or deferral is defeated" catch, the corrected
+`R2_*`-env failure caveat, the timing-language contradiction, the google-auth
+`/s` nuance, the cache-key qualification, and the softened D1 absolutes. All
+findings reproduced and applied.*
