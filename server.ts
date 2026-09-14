@@ -1986,9 +1986,37 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       
       const bucket = process.env.R2_BUCKET_NAME || "reports";
       console.log(`[PDF_PROXY] R2 ID. Key: ${r2Key} | Bucket: ${bucket}`);
-      
-      // We can generate a GET presigned URL for the proxy to fetch from R2
+
       const { client, GetObjectCommand, getSignedUrl } = await getS3();
+
+      // Phase 2 lever #1 (PHASE2-EGRESS-PAYLOAD.md): 302 the client straight to a
+      // short-lived R2 presign instead of proxying the bytes through the function,
+      // so the PDF goes R2->client and never transits Vercel (kills both the Fast
+      // Origin Transfer and Fast Data Transfer meters on the hot reader path).
+      //
+      // Gated OFF by default: enabling it REQUIRES R2 bucket CORS (GET/HEAD from the
+      // reader origin, exposing Content-Length/Accept-Ranges/Content-Range) because
+      // pdf.js loads file={pdfUrl} via fetch in CORS mode — a cross-origin 302 to R2
+      // without Access-Control-Allow-Origin fails the load and breaks EVERY open.
+      // Configure CORS first, then set PDF_R2_REDIRECT=1. Lifecycle (revoked/expired/
+      // maxOpens + lid<->f binding) is already checked above; the presign is a bounded
+      // <=60s authorization lease. The client sets disableRange (option (a)) so this is
+      // a single full GET within the lease, matching today's single-GET behaviour.
+      if (process.env.PDF_R2_REDIRECT === '1') {
+        const command = new GetObjectCommand({
+          Bucket: bucket,
+          Key: r2Key,
+          ResponseContentType: 'application/pdf',
+          ResponseContentDisposition: 'inline; filename="report_secure.pdf"',
+        });
+        const signed = await getSignedUrl(client, command, { expiresIn: 60 });
+        // no-store: the 302 body is a presign that expires in <=60s; a cached
+        // redirect would hand a reload back a dead URL.
+        res.setHeader("Cache-Control", "no-store");
+        return res.redirect(302, signed);
+      }
+
+      // Default: proxy path. Generate a GET presigned URL for the function to fetch.
       const command = new GetObjectCommand({
         Bucket: bucket,
         Key: r2Key,

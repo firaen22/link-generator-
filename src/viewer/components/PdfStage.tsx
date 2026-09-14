@@ -6,6 +6,15 @@ import { AlertCircle } from 'lucide-react';
 import { extractJargonImageBase64, jargonImageDims, JARGON_MIN_TEXT_LEN } from '../jargon';
 import { extractPdfPageText } from '../pdfText';
 
+// Load the PDF in a single range-less GET. Pairs with the server's Phase 2
+// r2_ 302-to-presign (PDF_R2_REDIRECT): a redirected read stays one GET inside
+// the <=60s presign lease instead of issuing many signature-checked range
+// requests that would need a session-long (more shareable) presign. Harmless on
+// the proxy path, which never advertises Accept-Ranges anyway. Module-scope
+// constant so the reference is stable across renders (react-pdf reloads the
+// document if `options` changes identity).
+const PDF_DOC_OPTIONS = { disableRange: true } as const;
+
 interface PdfStageProps {
   pdfUrl: string;
   pageNumber: number;
@@ -129,6 +138,7 @@ export function PdfStage({
   return (
     <Document
       file={pdfUrl}
+      options={PDF_DOC_OPTIONS}
       onLoadSuccess={(pdf) => {
         docRef.current = pdf;
         setNumPages(pdf.numPages);
