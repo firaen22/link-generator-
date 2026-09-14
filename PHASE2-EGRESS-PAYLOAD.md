@@ -175,7 +175,7 @@ _Updated 2026-09-15._
   - **Residual (open):** no end-to-end load of a *real* report through a *real* `/l/<id>`
     tested — that fires the advisor "opened" notification and bumps open counts, so it was
     left for a human open. Every component is verified; only their live composition is not.
-- **#2 `/api/generate-meta` text extraction — ✅ MERGED to main. PR #40 (`41a6b86`). Flag `META_TEXT_EXTRACT` unset/default OFF — zero prod behavior change until enabled (held, separate step).**
+- **#2 `/api/generate-meta` text extraction — ✅ MERGED to main. PR #40 (`41a6b86`). Flag `META_TEXT_EXTRACT`=1 ENABLED on Vercel prod 2026-09-15 (deploy `1lvgg9e4u`, aliased share.pmd-hk.com). Rollback: `vercel env rm META_TEXT_EXTRACT production` (or set 0) + redeploy. Live text-mode NOT yet observed (needs a real advisor generate-meta call) — watch `[GENERATE_META] text mode` vs `extract too short` logs (F3).**
   - Code: flag `META_TEXT_EXTRACT` (default OFF). When on, `extractPdfCoverText`
     (already-shipped `pdfjs-dist`, no new dep, reads the content stream — no canvas)
     pulls the first ≤3 pages / 40 000 chars of text and sends ~tens of KB to Gemini
