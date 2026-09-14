@@ -206,9 +206,29 @@ _Updated 2026-09-15._
     already extracts these zh-Hant reports via the same pdfjs API (jargon feature), so the
     real corpus uses embedded fonts / ToUnicode. **Watch the `extract too short` log rate
     after enabling** to confirm on the live corpus.
-- **#3–#5 — not started.** #3 (Gemini Files API upload-once) is largely mooted for the
-  text path by #2 — reconsider its value only for the scanned/image fallback. #4/#5 remain
-  as scoped above.
+- **#3–#5 — assessed against the code after #2; recommend NOT building #3, and treating
+  #4/#5 as your call (evidence below, verified by direct read 2026-09-15).**
+  - **#3 Gemini Files API — RECOMMEND SKIP.** The fan-out reuses one `contentParts` array
+    (`server.ts:2402`) and stops on the first success (`return res.json` at
+    `server.ts:2436`), so the payload is sent **once on the hot path**; upload-once only
+    saves the retry tail and would itself cost an ~18 MB upload before attempt 1 (charged
+    to the 45 s budget) plus Files-API lifecycle. With #2 the text-path payload is already
+    KB, not MB. Low value on both paths — not worth the complexity.
+  - **#4 CDN cache on no-lid — YOUR CALL (cheap, but unmeasured + a privacy tradeoff).**
+    One `!lid`-scoped line at `server.ts:2057` (`private, max-age=3600` → `public,
+    s-maxage=…`). The no-lid path (`/view?q=`, `/s/:file_id`) is already un-revocable and
+    un-authenticated, so no NEW exposure — but it means a **shared CDN caches client report
+    PDFs**, the payoff is unmeasured (no-lid share × hit rate unknown), and #1's `r2_`
+    redirect (`server.ts:2015`, `no-store`) already bypasses this path for `r2_` objects,
+    leaving only `f_`/`vblob_` no-lid opens. Implementable flag-gated (default OFF) like
+    the others if you want a measurable lever; not built pending your decision.
+  - **#5 memoize {title,description} — RECOMMEND DEFER (marginal).** generate-meta runs
+    once per link creation and holds only the storage key `f` (`server.ts:2278`), no
+    digest — a correct cache must hash `pdfBuffer` (`sha256Hex` exists at `server.ts:2458`)
+    to avoid serving stale meta when an R2 key is overwritten. The jargon two-tier cache
+    (in-mem Map + R2 sidecar, `server.ts:2490-2536`) is the reusable pattern but is
+    single-feature, so #5 = generalize it + add content hashing. Low-frequency op × low
+    hit rate (few links per identical PDF) → non-trivial code for a tiny win.
 
 _Rollback for #1: set `PDF_R2_REDIRECT=0` (or unset) on Vercel prod + redeploy → instant
 revert to the proxy path. R2 CORS additions are backward-compatible (upload rule
