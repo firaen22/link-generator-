@@ -178,3 +178,51 @@ GetObjectCommand/PutObjectCommand) or deferral is defeated" catch, the corrected
 `R2_*`-env failure caveat, the timing-language contradiction, the google-auth
 `/s` nuance, the cache-key qualification, and the softened D1 absolutes. All
 findings reproduced and applied.*
+
+---
+
+## Validation — eager vs deferred A/B (post-merge, 2026-09-14)
+
+The lazy getter shipped in `9e9770f` (merged to `main` as `987b50f`, PR #38).
+This section records the measurement promised above ("validate cold vs warm
+before claiming the saving").
+
+**Why a local A/B, not a Vercel one.** A production A/B is impossible after
+merge — the eager code is gone from `main`, so there is no "before" isolate to
+measure. Preview deployments are SSO-protected: every request 302s to
+`vercel.com/sso-api` at the edge *before* the function runs, so a preview cannot
+be cold-started or read externally `[verified: curl -D-]`. External TTFB from
+HK to the `iad1` function region is 350–800 ms, dominated by the cross-Pacific
+hop + 82 ms TLS — it cannot isolate an ~80 ms module-eval component. The clean
+instrument is a **fresh-process module-eval A/B on the built source**: it
+isolates exactly the delta the code changes, and the Vercel container overhead
+it omits is identical across both variants, so that overhead cancels out of the
+delta. Method: `git worktree` at `41eac22` (last eager commit) vs current
+`main`; fresh `node --import tsx` process per iteration, `VERCEL=1` (no listen).
+
+**End-to-end `server.ts` import** (warm tsx + OS cache, min of 12):
+
+| variant | min | p50 | max |
+|---|--:|--:|--:|
+| deferred (current) | 63.5 | 64.6 | 66.0 |
+| eager (`41eac22`) | 107.3 | 109.9 | 130.2 |
+| **delta** | **~44 ms** | ~45 ms | — |
+
+ms. The two trees differ *only* in the aws-sdk imports + module-scope
+`new S3Client()`, so the delta is fully attributable to the deferral.
+
+**Payload isolated** (fresh process: `import client-s3 + s3-request-presigner`
+then `new S3Client`):
+- warm OS cache: **~35 ms** (import 33.6 + construct 1.5), stable across 14 runs
+- cold disk (first run, files not yet in page cache): **~83 ms** — corroborates
+  the 82.1 ms Phase 1 figure
+- client construction alone: ~1.5 ms (negligible)
+
+**Reading it for Vercel.** A cold start is a fresh container with a *cold* file
+cache, so the representative saving is the **~83 ms** end (same files: 35 ms warm
+vs 83 ms cold ≈ 2.4×), paid once per cold isolate. The warm ~44 ms is the firm
+lower bound. Consistent with the headline: the saving lands on cold starts that
+never touch S3 (short-link redirects, PIN gates, expired/revoked/max-opens
+pages); for the r2 reader path it **shifts** to first `/api/pdf`, not saves
+(must-do #1 caveat, unchanged). All figures warm-disk local — a lower bound on,
+not a prediction of, the Vercel cold-container number.
