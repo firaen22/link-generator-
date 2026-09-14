@@ -61,6 +61,12 @@ Grows with **readers**, linearly. `private,max-age=60` saves only the *same* bro
 ## Recommendations (ranked by payoff on this traffic model)
 
 ### 1. `/api/pdf` `r2_`: lifecycle-check, then 302 to a short-lived presign — the Phase 2 lever
+**Status: ✅ SHIPPED & LIVE (2026-09-15).** PR #39 (`45f37f8`, merged to `main`),
+gated behind `PDF_R2_REDIRECT` (default OFF). Flag set to `1` on Vercel **production**
++ redeployed; R2 CORS configured on bucket `marketupdate` first. Chose option (a)
+(`disableRange` + ≤60 s presign). Dual-family pre-commit gate (Fable + codex-astra)
+both PROCEED. See "## Progress" below.
+
 Eliminates ~100% of both Vercel transfer meters on the hot path and frees the worker
 from pumping bytes at the client's download speed. **Split the handler — `r2_`
 redirects; `vblob_` and `f_` keep proxying** (see Blocked).
@@ -98,8 +104,12 @@ is an explicit control).
   *widens* the shareability window. The range "latency win" is real only under (b) and is
   not free.
 
-**Validate #1's transfer delta (FOT+FDT) on a Vercel preview against Phase 0 before
-claiming the saving.**
+**Transfer-delta validation (done, with a caveat):** a Vercel-preview A/B was
+infeasible — preview + deployment-specific URLs are SSO-walled (every request 302s to
+`vercel.com/sso-api` at the edge before the function runs). The FOT+FDT elimination is
+**structural, not measured**: a 302 means the PDF bytes never enter the function, so
+both meters go to ~0 for `r2_` opens by construction. Confirmed live on prod that the
+handler now emits the 302 (see Progress); the byte-path change follows from that.
 
 ### 2. `/api/generate-meta`: send a cover excerpt / first page, not 14 MB, per attempt
 Biggest per-call win: extract text server-side (pdf.js/`unpdf`, buffer already in hand)
@@ -148,11 +158,82 @@ primary model, fall back only on quota/transient/model errors, not every empty p
 - **Chasing base64/PDF compression** — base64 isn't Gemini's semantic cost and PDFs are
   usually already compressed; low payoff vs #2.
 
-## Next
-Analysis only — no code changed by this report. The must-do (#1, `r2_` redirect) is a
-self-contained handler split whose correctness hinges on R2 CORS + the expiry/range
-choice above; the create-path win (#2) is independent. Validate #1's FOT+FDT delta on a
-Vercel preview against Phase 0 before claiming the saving.
+## Progress
+_Updated 2026-09-15._
+
+- **#1 `/api/pdf` `r2_` redirect — ✅ SHIPPED & LIVE in prod.**
+  - Code: PR #39 (`45f37f8`), flag `PDF_R2_REDIRECT` (default OFF), client `disableRange`
+    (option a). Reviewed by Fable + codex-astra (both PROCEED, no blocking defects).
+  - Infra: R2 bucket `marketupdate` CORS set — reader rule (`GET`/`HEAD` from
+    `https://share.pmd-hk.com`, exposing `Content-Length`/`Content-Range`/`Accept-Ranges`/
+    `Content-Type`/`ETag`) ahead of the preserved advisor-upload rule (`PUT`/`POST` + `*`).
+    Verified: preflight from the reader origin returns the scoped `ACAO`; a real GET
+    returns the expose-headers.
+  - Enabled: `PDF_R2_REDIRECT=1` on Vercel **production** + redeploy (aliased to
+    `share.pmd-hk.com`). Verified live: prod `/api/pdf/<r2_…>` → `302`, `no-store`,
+    presign `X-Amz-Expires=60`, inline `application/pdf`.
+  - **Residual (open):** no end-to-end load of a *real* report through a *real* `/l/<id>`
+    tested — that fires the advisor "opened" notification and bumps open counts, so it was
+    left for a human open. Every component is verified; only their live composition is not.
+- **#2 `/api/generate-meta` text extraction — ✅ CODE COMPLETE & GATED — PR #40 OPEN (merge held).**
+  - Code: flag `META_TEXT_EXTRACT` (default OFF). When on, `extractPdfCoverText`
+    (already-shipped `pdfjs-dist`, no new dep, reads the content stream — no canvas)
+    pulls the first ≤3 pages / 40 000 chars of text and sends ~tens of KB to Gemini
+    instead of the ≤18.6 MB base64 PDF per key×model attempt. Falls back to the
+    unchanged full-PDF path when extraction throws/aborts/times-out or yields <120 chars
+    (scanned/image-only reports), so enabling the flag cannot break those. Flag OFF is
+    byte-for-byte the current `[prompt, {inlineData}]` request.
+  - Reviewed: 3-lens (codex `gpt-5.6-luna`, agy `gemini-3.8-flash-high`, grok-4.6) then
+    dual-family pre-commit gate (Fable + codex `gpt-6-astra`). Fixes applied from review:
+    clear the extraction timeout on every race outcome (a dangling timer kept the
+    invocation billed ~12 s past the response); `AbortSignal` → `loadingTask.destroy()`
+    so a lost race stops the parser; hold the loading task + destroy in `finally` (runs
+    even when `getDocument` rejects); reserve one 20 s fan-out attempt of the 45 s budget
+    (guard `>= 2000`) so extraction can't starve the fan-out into a 502 on a slow-R2 tail;
+    fence the extracted text as untrusted data in the prompt; `verbosity: 0` to silence a
+    per-call warning.
+  - **Known bound (F1, reproduced):** on Node, pdfjs parses via microtasks on the request
+    thread, so the timeout/abort are COOPERATIVE — they land only at the per-page
+    `setImmediate` yield, not mid-page. A single pathological page's `getTextContent`
+    runs to completion; the real bound is `maxPages=3` + advisor gate + 14 MB cap. The
+    per-page yield caps a runaway to one page. True preemption (worker_threads) is a
+    follow-up, not this change.
+  - **Deferred (D):** a single page's items are joined before the `maxChars` check —
+    `getTextContent()` already materializes all items, so peak is one report page; not
+    worth extra code at 3-page scope.
+  - **Rollout note (F3):** predefined-CMap CJK fonts (no `cMapUrl` set) extract no text →
+    `<120` → full-PDF fallback (safe, but no savings). Prod evidence: the browser reader
+    already extracts these zh-Hant reports via the same pdfjs API (jargon feature), so the
+    real corpus uses embedded fonts / ToUnicode. **Watch the `extract too short` log rate
+    after enabling** to confirm on the live corpus.
+- **#3–#5 — assessed against the code after #2; recommend NOT building #3, and treating
+  #4/#5 as your call (evidence below, verified by direct read 2026-09-15).**
+  - **#3 Gemini Files API — RECOMMEND SKIP.** The fan-out reuses one `contentParts` array
+    (`server.ts:2402`) and stops on the first success (`return res.json` at
+    `server.ts:2436`), so the payload is sent **once on the hot path**; upload-once only
+    saves the retry tail and would itself cost an ~18 MB upload before attempt 1 (charged
+    to the 45 s budget) plus Files-API lifecycle. With #2 the text-path payload is already
+    KB, not MB. Low value on both paths — not worth the complexity.
+  - **#4 CDN cache on no-lid — YOUR CALL (cheap, but unmeasured + a privacy tradeoff).**
+    One `!lid`-scoped line at `server.ts:2057` (`private, max-age=3600` → `public,
+    s-maxage=…`). The no-lid path (`/view?q=`, `/s/:file_id`) is already un-revocable and
+    un-authenticated, so no NEW exposure — but it means a **shared CDN caches client report
+    PDFs**, the payoff is unmeasured (no-lid share × hit rate unknown), and #1's `r2_`
+    redirect (`server.ts:2015`, `no-store`) already bypasses this path for `r2_` objects,
+    leaving only `f_`/`vblob_` no-lid opens. Implementable flag-gated (default OFF) like
+    the others if you want a measurable lever; not built pending your decision.
+  - **#5 memoize {title,description} — RECOMMEND DEFER (marginal).** generate-meta runs
+    once per link creation and holds only the storage key `f` (`server.ts:2278`), no
+    digest — a correct cache must hash `pdfBuffer` (`sha256Hex` exists at `server.ts:2458`)
+    to avoid serving stale meta when an R2 key is overwritten. The jargon two-tier cache
+    (in-mem Map + R2 sidecar, `server.ts:2490-2536`) is the reusable pattern but is
+    single-feature, so #5 = generalize it + add content hashing. Low-frequency op × low
+    hit rate (few links per identical PDF) → non-trivial code for a tiny win.
+
+_Rollback for #1: set `PDF_R2_REDIRECT=0` (or unset) on Vercel prod + redeploy → instant
+revert to the proxy path. R2 CORS additions are backward-compatible (upload rule
+untouched) and can stay. #2 is inert until `META_TEXT_EXTRACT=1` is set on Vercel prod
+(held for a human) — a merged PR changes zero prod behavior._
 
 ---
 *Cross-checked by codex (OpenAI), grok (xAI), agy (Gemini), opencode (muse-spark),
