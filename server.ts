@@ -2156,6 +2156,11 @@ app.post("/api/generate-meta", async (req, res) => {
     return res.status(500).json({ error: "伺服器未設定 GEMINI_API_KEY" });
   }
 
+  // Budget clock starts at handler entry so the shared wall-clock budget covers
+  // the R2 PDF fetch below too, not just the Gemini fan-out — a slow/cold object
+  // otherwise runs unbudgeted and can push the whole handler past maxDuration.
+  const metaStart = Date.now();
+
   const { f } = req.body;
   if (!f || typeof f !== "string" || !f.startsWith("r2:")) {
     return res.status(400).json({ error: "缺少或不支援的檔案參考 (f)，僅支援 R2 上傳" });
@@ -2171,7 +2176,11 @@ app.post("/api/generate-meta", async (req, res) => {
     const bucket = process.env.R2_BUCKET_NAME || "reports";
     const command = new GetObjectCommand({ Bucket: bucket, Key: r2Key });
     const url = await getSignedUrl(s3Client, command, { expiresIn: 60 });
-    const resp = await fetch(url);
+    // Bound the fetch by the remaining wall-clock budget (capped at 20s) so a
+    // slow/cold R2 object aborts instead of hanging the handler to maxDuration.
+    const r2Remaining = GEMINI_ROUTE_DEADLINE_MS - (Date.now() - metaStart);
+    if (r2Remaining <= 0) throw new Error("Budget exhausted before R2 fetch");
+    const resp = await fetch(url, { signal: AbortSignal.timeout(Math.min(20000, r2Remaining)) });
     if (!resp.ok) throw new Error(`R2 fetch ${resp.status}`);
     // Gemini's inline-data request cap is ~20MB and base64 inflates ~1.33×, so
     // guard at 14MB raw. Check Content-Length first to avoid buffering an
@@ -2205,7 +2214,6 @@ app.post("/api/generate-meta", async (req, res) => {
   // Rotate keys over time; lite/high-quota models lead since this is a simple,
   // frequent task. JSON is requested via mime-type + prompt and parsed defensively
   // (no responseSchema — keeps the whole fallback list compatible).
-  const metaStart = Date.now();
   metaLoop: for (const key of timeRotatedKeys()) {
     for (const modelName of STANDARD_MODELS) {
       // Stop the fan-out once the shared budget is spent — a call started past
@@ -2703,6 +2711,9 @@ const formatReturnVisitGap = (mins: number): string => {
 };
 
 app.post("/api/session-end", async (req, res) => {
+  // Budget clock starts at handler entry so the shared Gemini fan-out budget
+  // (thinking + standard phases) also covers pre-AI parsing/prompt work.
+  const aiStart = Date.now();
   const { event, session_id, client_name, report_name, file_id } = req.body;
   // Everything numeric/array below is unauthenticated client input. Coerce and
   // clamp it in one place (kills NaN poisoning, oversized arrays, and HTML
@@ -2934,10 +2945,6 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
 
       const randomStartIndex = apiKeys.length ? Math.floor(Math.random() * apiKeys.length) : 0;
       const rotationOrder = rotatedKeys(randomStartIndex);
-      // One shared budget across BOTH the thinking and standard fallback phases,
-      // so the whole fan-out stays within the function deadline instead of
-      // burning K×(2+5) sequential calls the platform will time out on.
-      const aiStart = Date.now();
 
       // ── Try thinking-capable models first ────────────────────────────────
       outer: for (const [i, currentKey] of rotationOrder.entries()) {
