@@ -175,7 +175,7 @@ _Updated 2026-09-15._
   - **Residual (open):** no end-to-end load of a *real* report through a *real* `/l/<id>`
     tested — that fires the advisor "opened" notification and bumps open counts, so it was
     left for a human open. Every component is verified; only their live composition is not.
-- **#2 `/api/generate-meta` text extraction — ✅ CODE COMPLETE & GATED, PR OPEN (merge held).**
+- **#2 `/api/generate-meta` text extraction — ✅ CODE COMPLETE & GATED — PR #40 OPEN (merge held).**
   - Code: flag `META_TEXT_EXTRACT` (default OFF). When on, `extractPdfCoverText`
     (already-shipped `pdfjs-dist`, no new dep, reads the content stream — no canvas)
     pulls the first ≤3 pages / 40 000 chars of text and sends ~tens of KB to Gemini
