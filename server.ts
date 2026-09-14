@@ -5,8 +5,11 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import LZString from 'lz-string';
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+// @aws-sdk/client-s3 + s3-request-presigner are loaded lazily (see getS3 below):
+// they are ~83ms of isolate-init that only the R2 handlers need, so the eager
+// import is deferred off cold starts that never touch S3 (short-link redirects,
+// PIN gates, expired/revoked pages). All value imports must stay out of module
+// scope or the deferral is defeated — types below are inferred from import().
 import { GoogleAuth } from "google-auth-library";
 // The .js extension is required: Vercel's Node runtime compiles each TS file
 // separately and keeps import specifiers as-is, so an extensionless relative
@@ -617,15 +620,40 @@ const incrementLinkOpenCount = async (projectId: string, shortId: string): Promi
   }
 };
 
-// Cloudflare R2 Client
-const s3Client = new S3Client({
-  region: "auto",
-  endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-  credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID || "",
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || "",
-  },
-});
+// Cloudflare R2 client — lazily constructed on first S3 use, not at module init.
+// The whole SDK (client + presigner) is dynamically imported here so the ~83ms
+// evaluation is paid only on R2 handlers, never on the hot short-link redirect.
+// Memoize the PROMISE (not the resolved value) so concurrent first callers share
+// one construction; reset it on rejection so a transient failure can retry.
+// NOTE: an import() module-evaluation failure is cached by the ESM loader, so in
+// practice the reset only retries client-construction failures. Types are inferred
+// from the dynamic import; do NOT add a top-level value `import` from these
+// packages or the eager load returns (an `import type` is erased and is safe).
+let s3Ready: ReturnType<typeof buildS3> | null = null;
+async function buildS3() {
+  const [{ S3Client, PutObjectCommand, GetObjectCommand }, { getSignedUrl }] =
+    await Promise.all([
+      import("@aws-sdk/client-s3"),
+      import("@aws-sdk/s3-request-presigner"),
+    ]);
+  const client = new S3Client({
+    region: "auto",
+    endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId: process.env.R2_ACCESS_KEY_ID || "",
+      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || "",
+    },
+  });
+  return { client, PutObjectCommand, GetObjectCommand, getSignedUrl };
+}
+function getS3() {
+  if (!s3Ready) {
+    s3Ready = buildS3();
+    // Drop the memo on failure so the next call rebuilds (see NOTE re: import()).
+    s3Ready.catch(() => { s3Ready = null; });
+  }
+  return s3Ready;
+}
 
 // ── Firestore access ──────────────────────────────────────────────────────────
 // A Firebase Web API key is NOT a credential: a REST call carrying only `?key=...`
@@ -1808,13 +1836,14 @@ app.post("/api/r2-presign", async (req, res) => {
     // Avoid filename collisions by prefixing with timestamp
     const r2Key = `${prefix}/${Date.now().toString(36)}_${safeName}`;
 
+    const { client, PutObjectCommand, getSignedUrl } = await getS3();
     const command = new PutObjectCommand({
       Bucket: bucketName,
       Key: r2Key,
       ContentType: safeContentType,
     });
 
-    const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+    const uploadUrl = await getSignedUrl(client, command, { expiresIn: 3600 });
 
     // Stable, crawler-public URL for OG previews (.jpg suffix keeps strict
     // crawlers happy; /api/img strips it before decoding the key).
@@ -1959,11 +1988,12 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       console.log(`[PDF_PROXY] R2 ID. Key: ${r2Key} | Bucket: ${bucket}`);
       
       // We can generate a GET presigned URL for the proxy to fetch from R2
+      const { client, GetObjectCommand, getSignedUrl } = await getS3();
       const command = new GetObjectCommand({
         Bucket: bucket,
         Key: r2Key,
       });
-      blobUrl = await getSignedUrl(s3Client, command, { expiresIn: 60 });
+      blobUrl = await getSignedUrl(client, command, { expiresIn: 60 });
     } else {
       return res.status(400).send("Invalid file ID format.");
     }
@@ -2037,8 +2067,9 @@ app.get("/api/img/:file_id", async (req, res) => {
     }
     const bucket = process.env.R2_BUCKET_NAME || "reports";
 
+    const { client, GetObjectCommand, getSignedUrl } = await getS3();
     const command = new GetObjectCommand({ Bucket: bucket, Key: r2Key });
-    const blobUrl = await getSignedUrl(s3Client, command, { expiresIn: 60 });
+    const blobUrl = await getSignedUrl(client, command, { expiresIn: 60 });
 
     // redirect:'manual' for parity with /api/pdf — R2 presigned GETs serve bytes
     // directly (200), so a 3xx would never be a legitimate response here.
@@ -2174,8 +2205,9 @@ app.post("/api/generate-meta", async (req, res) => {
   try {
     const r2Key = f.slice(3);
     const bucket = process.env.R2_BUCKET_NAME || "reports";
+    const { client, GetObjectCommand, getSignedUrl } = await getS3();
     const command = new GetObjectCommand({ Bucket: bucket, Key: r2Key });
-    const url = await getSignedUrl(s3Client, command, { expiresIn: 60 });
+    const url = await getSignedUrl(client, command, { expiresIn: 60 });
     // Bound the fetch by the remaining wall-clock budget (capped at 20s) so a
     // slow/cold R2 object aborts instead of hanging the handler to maxDuration.
     const r2Remaining = GEMINI_ROUTE_DEADLINE_MS - (Date.now() - metaStart);
@@ -2315,8 +2347,9 @@ const setJargonCache = (key: string, terms: JargonTerm[]): void => {
 const readJargonStore = async (key: string): Promise<JargonTerm[] | null> => {
   try {
     const bucket = process.env.R2_BUCKET_NAME || "reports";
+    const { client, GetObjectCommand } = await getS3();
     const command = new GetObjectCommand({ Bucket: bucket, Key: key });
-    const response = await s3Client.send(command);
+    const response = await client.send(command);
     const body = response.Body as { transformToString?: () => Promise<string> } | undefined;
     const raw = body?.transformToString ? await body.transformToString() : "";
     const parsed = JSON.parse(raw);
@@ -2331,13 +2364,14 @@ const readJargonStore = async (key: string): Promise<JargonTerm[] | null> => {
 const writeJargonStore = async (key: string, terms: JargonTerm[]): Promise<void> => {
   try {
     const bucket = process.env.R2_BUCKET_NAME || "reports";
+    const { client, PutObjectCommand } = await getS3();
     const command = new PutObjectCommand({
       Bucket: bucket,
       Key: key,
       Body: JSON.stringify({ terms: sanitizeJargonTerms(terms), at: Date.now() }),
       ContentType: "application/json",
     });
-    await s3Client.send(command);
+    await client.send(command);
   } catch (err: any) {
     console.warn(`[JARGON] store write failed: ${(err?.message || "").slice(0, 60)}`);
   }
