@@ -2054,7 +2054,26 @@ app.get("/api/pdf/:file_id", async (req, res) => {
     res.setHeader("Content-Disposition", 'inline; filename="report_secure.pdf"');
     // A long private cache would mask a revocation for its whole lifetime, so
     // lifecycle-checked requests get a short one; unchecked ones are unchanged.
-    res.setHeader("Cache-Control", lid ? "private, max-age=60" : "private, max-age=3600");
+    //
+    // Phase 2 lever #4 (PHASE2-EGRESS-PAYLOAD.md): the no-lid path (/view?q=,
+    // /s/:file_id) has no link doc behind it and is un-revocable by design, so its
+    // response is safe to put in a SHARED (CDN) cache — a hit then serves future
+    // viewers without a function invocation or Fast Origin Transfer. Gated OFF by
+    // default (PDF_NOLID_CDN_CACHE=1). NEVER for `lid`: a shared cache would serve a
+    // revoked/expired/over-cap link for the whole TTL, bypassing checkPdfLinkLifecycle.
+    // Note this only affects `f_`/`vblob_` no-lid opens in practice — `r2_` is 302'd
+    // to a presign above (PDF_R2_REDIRECT) before reaching here. s-maxage caps how
+    // long the CDN may serve stale bytes if the underlying object is replaced; 24h is
+    // acceptable for this already-un-revocable route, browser stays at 1h.
+    const noLidCdnCache = process.env.PDF_NOLID_CDN_CACHE === "1";
+    res.setHeader(
+      "Cache-Control",
+      lid
+        ? "private, max-age=60"
+        : noLidCdnCache
+          ? "public, max-age=3600, s-maxage=86400"
+          : "private, max-age=3600",
+    );
 
     // 4. Stream response body to client (avoids loading whole file into Vercel memory)
     if (response.body) {
@@ -2401,6 +2420,34 @@ app.post("/api/generate-meta", async (req, res) => {
   }
   if (!contentParts) contentParts = buildPdfParts();
 
+  // Phase 2 lever #5 (PHASE2-EGRESS-PAYLOAD.md): check a content-addressed cache
+  // keyed on sha256(pdfBuffer), so regenerating the same PDF re-uses the meta
+  // without a fan-out. Two-tier: L1 in-memory Map, L2 R2 sidecar `meta/<sha256>.json`.
+  // Gated OFF by default (META_CACHE=1). Best-effort: any cache miss or I/O failure
+  // just regenerates.
+  let cachedMeta: MetaResult | null = null;
+  if (process.env.META_CACHE === "1") {
+    const metaKey = `meta/${sha256Hex(pdfBuffer.toString("binary"))}.json`;
+    // L1 hit?
+    const cached = metaCache.get(metaKey);
+    if (cached && Date.now() - cached.at < META_CACHE_TTL_MS) {
+      cachedMeta = cached.meta;
+      console.log(`[GENERATE_META] cache hit (L1) | ${metaKey.slice(0, 30)}...`);
+    } else {
+      // L1 miss: try L2 (R2).
+      const stored = await readMetaStore(metaKey).catch(() => null);
+      if (stored) {
+        cachedMeta = stored;
+        setMetaCache(metaKey, stored); // populate L1 on read
+        console.log(`[GENERATE_META] cache hit (L2) | ${metaKey.slice(0, 30)}...`);
+      }
+    }
+  }
+
+  if (cachedMeta) {
+    return res.json(cachedMeta);
+  }
+
   // Rotate keys over time; lite/high-quota models lead since this is a simple,
   // frequent task. JSON is requested via mime-type + prompt and parsed defensively
   // (no responseSchema — keeps the whole fallback list compatible).
@@ -2433,6 +2480,13 @@ app.post("/api/generate-meta", async (req, res) => {
         const description = String(parsed?.description || "").trim();
         if (title && description) {
           console.log(`[GENERATE_META] Success | ${modelName}`);
+          // Cache write (best-effort, don't block the response on cache I/O).
+          if (process.env.META_CACHE === "1") {
+            const metaKey = `meta/${sha256Hex(pdfBuffer.toString("binary"))}.json`;
+            const meta = { title, description };
+            setMetaCache(metaKey, meta); // L1 write
+            void writeMetaStore(metaKey, meta); // L2 write, async, fire-and-forget
+          }
           return res.json({ title, description });
         }
         throw new Error("Empty title/description");
@@ -2532,6 +2586,73 @@ const writeJargonStore = async (key: string, terms: JargonTerm[]): Promise<void>
     await client.send(command);
   } catch (err: any) {
     console.warn(`[JARGON] store write failed: ${(err?.message || "").slice(0, 60)}`);
+  }
+};
+
+// --- Phase 2 lever #5: content-addressed cache for /api/generate-meta -----------
+// Memoize {title,description} keyed on the sha256 of the PDF BYTES (not the `f=r2:`
+// storage path — that key can be overwritten, which would serve stale meta). Two
+// tiers mirror the jargon cache: an L1 in-memory Map (fast, per-instance) and an L2
+// R2 sidecar `meta/<sha256>.json` (durable across cold starts / instances). A hit
+// skips the whole Gemini key×model fan-out. Best-effort: any cache I/O failure is
+// swallowed and the request just regenerates. Gated OFF by default (META_CACHE=1).
+type MetaResult = { title: string; description: string };
+const metaCache = new Map<string, { meta: MetaResult; at: number }>();
+const META_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const META_CACHE_MAX = 500;
+
+const setMetaCache = (key: string, meta: MetaResult): void => {
+  if (!metaCache.has(key) && metaCache.size >= META_CACHE_MAX) {
+    let oldestKey: string | null = null;
+    let oldestAt = Infinity;
+    for (const [entryKey, entry] of metaCache) {
+      if (entry.at < oldestAt) {
+        oldestAt = entry.at;
+        oldestKey = entryKey;
+      }
+    }
+    if (oldestKey) metaCache.delete(oldestKey);
+  }
+  metaCache.set(key, { meta, at: Date.now() });
+};
+
+const readMetaStore = async (key: string): Promise<MetaResult | null> => {
+  try {
+    const bucket = process.env.R2_BUCKET_NAME || "reports";
+    const { client, GetObjectCommand } = await getS3();
+    const response = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    const body = response.Body as { transformToString?: () => Promise<string> } | undefined;
+    const raw = body?.transformToString ? await body.transformToString() : "";
+    const parsed = JSON.parse(raw);
+    // Phase 2 lever #5 FIX: enforce L2 TTL and strict validation. Codex must-fix
+    // findings: L2 never checked parsed.at (served stale indefinitely), and L2 bypassed
+    // the string/length validation applied to generated metadata (allowing malformed
+    // cache entries). Both now required for L2 hit.
+    const storedAt = Number(parsed?.at);
+    if (!Number.isFinite(storedAt) || storedAt + META_CACHE_TTL_MS <= Date.now()) {
+      return null; // TTL expired or missing/invalid timestamp
+    }
+    const title = typeof parsed?.title === "string" ? parsed.title.trim() : "";
+    const description = typeof parsed?.description === "string" ? parsed.description.trim() : "";
+    return title && description ? { title, description } : null;
+  } catch (err: any) {
+    // A miss (NoSuchKey) is the common case and not worth logging at warn.
+    return null;
+  }
+};
+
+const writeMetaStore = async (key: string, meta: MetaResult): Promise<void> => {
+  try {
+    const bucket = process.env.R2_BUCKET_NAME || "reports";
+    const { client, PutObjectCommand } = await getS3();
+    await client.send(new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: JSON.stringify({ title: meta.title, description: meta.description, at: Date.now() }),
+      ContentType: "application/json",
+    }));
+  } catch (err: any) {
+    console.warn(`[GENERATE_META] cache write failed: ${(err?.message || "").slice(0, 60)}`);
   }
 };
 
