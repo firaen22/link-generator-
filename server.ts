@@ -2205,8 +2205,13 @@ app.post("/api/generate-meta", async (req, res) => {
   // Rotate keys over time; lite/high-quota models lead since this is a simple,
   // frequent task. JSON is requested via mime-type + prompt and parsed defensively
   // (no responseSchema — keeps the whole fallback list compatible).
-  for (const key of timeRotatedKeys()) {
+  const metaStart = Date.now();
+  metaLoop: for (const key of timeRotatedKeys()) {
     for (const modelName of STANDARD_MODELS) {
+      // Stop the fan-out once the shared budget is spent — a call started past
+      // the deadline would be billed but its response discarded by the platform.
+      const remainingMs = GEMINI_ROUTE_DEADLINE_MS - (Date.now() - metaStart);
+      if (remainingMs <= 0) break metaLoop;
       try {
         const genAI = new GoogleGenerativeAI(key);
         const model = genAI.getGenerativeModel({
@@ -2222,7 +2227,7 @@ app.post("/api/generate-meta", async (req, res) => {
         apiCall.catch(() => {}); // avoid unhandled rejection if the timeout wins the race
         const result = (await Promise.race([
           apiCall,
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 20000)),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), Math.min(20000, remainingMs))),
         ])) as any;
         const raw = result.response.text().replace(/^```json|```$/gm, "").trim();
         const parsed = JSON.parse(raw);
@@ -2243,7 +2248,11 @@ app.post("/api/generate-meta", async (req, res) => {
 });
 
 const JARGON_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const JARGON_ROUTE_DEADLINE_MS = 45_000;
+// Wall-clock budget for a Gemini key×model fan-out. Sized below the Vercel
+// function maxDuration so we never START an attempt whose response the platform
+// deadline would discard — late retries bill tokens for nothing. Shared by
+// /api/generate-meta, /api/explain-jargon and /api/session-end.
+const GEMINI_ROUTE_DEADLINE_MS = 45_000;
 const JARGON_CACHE_MAX = 500;
 const jargonCache = new Map<string, { terms: JargonTerm[]; at: number }>();
 const jargonInFlight = new Map<string, Promise<JargonTerm[] | null>>();
@@ -2451,7 +2460,7 @@ Output JSON only: { "terms": [ { "term": "...", "explanation": "..." } ] }`
       const routeStart = Date.now();
       for (const key of timeRotatedKeys()) {
         for (const modelName of STANDARD_MODELS) {
-          const remainingMs = JARGON_ROUTE_DEADLINE_MS - (Date.now() - routeStart);
+          const remainingMs = GEMINI_ROUTE_DEADLINE_MS - (Date.now() - routeStart);
           if (remainingMs <= 0) return null;
           try {
             const genAI = new GoogleGenerativeAI(key);
@@ -2925,12 +2934,18 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
 
       const randomStartIndex = apiKeys.length ? Math.floor(Math.random() * apiKeys.length) : 0;
       const rotationOrder = rotatedKeys(randomStartIndex);
+      // One shared budget across BOTH the thinking and standard fallback phases,
+      // so the whole fan-out stays within the function deadline instead of
+      // burning K×(2+5) sequential calls the platform will time out on.
+      const aiStart = Date.now();
 
       // ── Try thinking-capable models first ────────────────────────────────
       outer: for (const [i, currentKey] of rotationOrder.entries()) {
         const keyIndex = (randomStartIndex + i) % apiKeys.length;
 
         for (const modelName of THINKING_MODELS) {
+          const remainingMs = GEMINI_ROUTE_DEADLINE_MS - (Date.now() - aiStart);
+          if (remainingMs <= 0) break outer;
           try {
             const genAI = new GoogleGenerativeAI(currentKey);
             const model = genAI.getGenerativeModel({
@@ -2946,7 +2961,7 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
             apiCall.catch(() => {}); // avoid unhandled rejection if the timeout wins the race
             const result = await Promise.race([
               apiCall,
-              new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 25000))
+              new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), Math.min(25000, remainingMs)))
             ]) as any;
 
             aiResult = JSON.parse(result.response.text());
@@ -2970,6 +2985,8 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
           const keyIndex = (randomStartIndex + i) % apiKeys.length;
 
           for (const modelName of STANDARD_MODELS) {
+            const remainingMs = GEMINI_ROUTE_DEADLINE_MS - (Date.now() - aiStart);
+            if (remainingMs <= 0) break outer2;
             try {
               const genAI = new GoogleGenerativeAI(currentKey);
               const model = genAI.getGenerativeModel({ model: modelName });
@@ -2980,7 +2997,7 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
               apiCall.catch(() => {}); // avoid unhandled rejection if the timeout wins the race
               const result = await Promise.race([
                 apiCall,
-                new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 15000))
+                new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), Math.min(15000, remainingMs)))
               ]) as any;
 
               const raw = result.response.text().replace(/^```json|```$/gm, '').trim();
