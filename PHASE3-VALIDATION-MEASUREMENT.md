@@ -283,8 +283,56 @@ generation requests. Still to **validate against real grouped logs** in the wind
    the log/GA4 signal.
 
 ---
-*Scope + Run 1 + Run 2. Scope reviewed (Fable + codex-astra); Run 1 reviewed by codex-luna + agy +
-grok-4.6 then Fable + codex-astra; Run 2 (GA4 gate re-derivation) reviewed by codex-astra + grok-4.6
-— both INCONCLUSIVE, overturning an author NO; two reviewer sub-claims refuted by code
-(extract→R2 not Firestore; cron `limit:300` no paging). **Gate verdict: INCONCLUSIVE (narrowed)** —
-reader-open cliff retired; one Firestore console usage snapshot now closes both clauses.*
+
+## Phase 3 — Run 3: storage byte snapshot pulled → **gate = NO** (2026-09-15)
+
+The one missing input from Run 2 (stored bytes) is now **measured**, not modeled. Pulled from
+Cloud Monitoring, metric `firestore.googleapis.com/storage/data_and_index_storage_bytes` (whole
+database, market-update-56e1c) [verified: read Metrics Explorer table 2026-09-15]:
+
+| Quantity | Measured | vs cap |
+|---|---|---|
+| **Stored data + index** | **1.465 MiB** | **0.143% of 1 GiB** |
+| Doc count (`/links` 586 + `/readers` 23) | 609 | — |
+| Effective bytes/doc (incl. indexes) | 2,522 B ≈ **2.46 KiB** | confirms the 1–2 KB body inference |
+| Daily reads (worst measured day) | ~580 | 1.16% (**86× headroom**) |
+| Daily writes (24h) | 17 | 0.085% |
+
+Crucially the metric is **data + index**, so codex-astra's index-inclusion concern is answered
+directly — no multiplier guess. Recomputed margins:
+- **Clause 1 (daily ops): NO cliff** — 86× on the worst measured day; the only cap-approaching
+  construct (58 users × 3 full dashboard loads = 52.5k reads) is refuted by code — `/api/links` is
+  owner-partitioned (`where adv == advisor`, `limit:300`, API-key-gated, server.ts:1408/1429) and
+  the readers who generate the 1.22 opens/day never call it — and is contradicted by the 30-day
+  total of 1,300 reads.
+- **Clause 2 (storage): NO cliff** — 0.143% of cap used; growth upper bound (all 98 writes/30d as
+  new docs) = 2.87 MiB/yr → **~357-year** time-to-cap (~36 yr even at 10× growth). A 1-year cliff
+  needs ≥582 KiB/doc effective; measured is 2.46 KiB = **236× below** threshold. A 90-day cliff is
+  **physically impossible**: 609 docs × the 1 MiB/doc platform max = 59.5% of cap, 903 docs (90-day
+  max headcount) × 1 MiB = 88% — cannot cross 1 GiB regardless of byte value (grok-4.6).
+
+**Gate verdict: NO — do not open Phase 4.** This is *not* "stop monitoring": a periodic Usage-tab
+glance stays cheap; a storage/request rewrite is not warranted.
+
+Carried separately (NOT Phase 4 storage-gate triggers):
+1. **Compute/latency:** extraction runs before the cache check (server.ts:2410 < 2461) — a cache hit
+   still pays the extraction attempt.
+2. **Abuse hardening (new, Fable):** `/l/:shortId` (server.ts:886-905) is unauthenticated and
+   **unthrottled** — the rate limiter (server.ts:457) covers only `/api/track` + `/api/session-end`;
+   every `/l/` hit bills 1 Firestore read incl. misses, so a scanner can exhaust the daily read
+   quota. An *abuse* cliff, not a *growth* cliff → small hardening PR (extend the limiter / negative
+   cache / quota alert), not Phase 4.
+3. **Cleanup:** kill the `E2E-TEST-DELETE` heartbeat client.
+
+Lever efficacy M1–M4 remain uncovered (need a real-traffic on-flag window); at 1.22 opens/day their
+measurable payoff is tiny — they are cheap correctness/insurance, not a measured material saving.
+
+---
+*Scope + Run 1 + Run 2 + Run 3. Scope reviewed (Fable + codex-astra); Run 1 reviewed by codex-luna +
+agy + grok-4.6 then Fable + codex-astra; Run 2 (GA4 gate re-derivation) reviewed by codex-astra +
+grok-4.6 — both INCONCLUSIVE, overturning an author NO. **Run 3 (storage snapshot) reviewed by
+codex-astra (OpenAI) + grok-4.6 (xAI) cross-family + Fable (Claude): all three converge to NO once
+the 1.465 MiB is in hand** — codex's INCONCLUSIVE was explicitly "until bytes measured"; the byte
+pull resolves it. Reviewer sub-claims refuted by code across runs: extract→R2 not Firestore
+(server.ts:2692); cron `limit:300` no paging (server.ts:1514); dashboard owner-partitioned
+(server.ts:1429). **Gate verdict: NO — headroom named on both clauses, both now measured.***
