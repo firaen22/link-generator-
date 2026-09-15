@@ -465,6 +465,17 @@ const getHkTimeOfDay = (): { name: 'morning' | 'afternoon' | 'evening' | 'late n
 // blunts single-source floods; a distributed multi-IP flood is out of scope for
 // app-level code (would need a WAF or a durable global counter).
 const RL_MAX_WINDOW_MS = 3_600_000; // longest window any caller uses (per-IP / global AI caps)
+// Per-IP cap on link-RESOLVE Firestore reads. Both /l/:shortId and /api/pdf?lid= do a
+// billed Firestore GET on any valid-charset id — hits AND misses are billed — and both are
+// unauthenticated, so a scanner walking base36 ids could burn the daily read quota.
+// Per-minute tier (300/min) allows seminar-like scenarios (~60 opens/min/IP) while staying
+// below typical reader patterns on shared IPs (CGNAT). Hourly tier (1200/hr) bounds slow
+// scanners: 1200/hr avg = 20/min, so a patient scanner pacing just under 300/min for brief
+// bursts still hits the hourly cap within ~4 hours (1200 opens = ~100 Firestore reads).
+// Together these tiers bound both burst and growth while fail-open preserves legitimate
+// access during map overflow. See codex-astra review for threat model.
+const LINK_RESOLVE_MAX_PER_MIN = 300;
+const LINK_RESOLVE_MAX_PER_HOUR = 1200;
 // Cost counters (ai:global, ai:ip:<ip>, jg:global, jg:ip:<ip>) live in a SEPARATE map that is never bulk-
 // cleared. They're bounded by the number of real client IPs (x-real-ip, set by the
 // platform), so a single attacker can't grow them — and they must NOT be wipeable, or
@@ -899,6 +910,18 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
   // reshape the upstream request path.
   if (!/^[a-z0-9]{1,32}$/i.test(shortId)) {
     return res.status(404).send(`找不到此連結 (${escapeHTMLAttr(shortId)})`);
+  }
+
+  // Rate-limit the billed Firestore resolve read per client IP (shared budget with the
+  // /api/pdf?lid= lifecycle read below, so pivoting between them can't double it). Placed
+  // AFTER the free charset guard so malformed ids — which never read Firestore — don't
+  // consume budget. Per-minute check lets real readers burst (~60 opens/min); hourly check
+  // bounds slow scanners that pace under the per-minute cap.
+  const ip = clientIp(req);
+  if (!allow(`lr:${ip}`, LINK_RESOLVE_MAX_PER_MIN, 60_000) ||
+      !allow(`lr:h:${ip}`, LINK_RESOLVE_MAX_PER_HOUR, 3_600_000)) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(429).send(lifecycleErrorHtml("請求過於頻繁，請稍後再試"));
   }
 
   try {
@@ -1954,6 +1977,14 @@ app.get("/api/pdf/:file_id", async (req, res) => {
 
   try {
     if (lid) {
+      // Shared per-IP resolve budget with /l/ above: the lifecycle check is a billed
+      // Firestore GET on the lid, so a scanner pivoting here must draw from the same cap.
+      // Per-minute and hourly tiers together bound both burst and growth.
+      const ip = clientIp(req);
+      if (!allow(`lr:${ip}`, LINK_RESOLVE_MAX_PER_MIN, 60_000) ||
+          !allow(`lr:h:${ip}`, LINK_RESOLVE_MAX_PER_HOUR, 3_600_000)) {
+        return res.status(429).send("Too many requests. Please try again shortly.");
+      }
       const blocked = await checkPdfLinkLifecycle(lid, file_id);
       if (blocked) {
         console.warn(`[PDF_PROXY] Blocked ${lid} (${blocked.status}): ${blocked.message}`);
@@ -3462,6 +3493,14 @@ ${vossLabel}
     console.warn(`[SESSION-END] Telegram rate-limited for ${ip}`);
   }
 
+  // Dedicated counters for reader-detection Firestore reads. A separate bounded map
+  // prevents telemetry session-key spray from clearing the link-resolve budget.
+  // Rate-limit reader-detection before the GET; skip on denial, return telemetry success.
+  const READER_DETECT_MAX_PER_MIN = 60;
+  const readerDetectLimiter = (ip: string): boolean => {
+    return allow(`rd:${ip}`, READER_DETECT_MAX_PER_MIN, 60_000);
+  };
+
   try {
     const validReaderInput =
       device_id !== null &&
@@ -3470,99 +3509,105 @@ ${vossLabel}
       total_duration_sec >= 10;
 
     if (validReaderInput) {
-      const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
-      if (!projectId) {
-        console.error("[SESSION-END] Missing Firebase config for second-reader detection");
+      // Rate-limit reader-detection Firestore reads before attempting the GET.
+      // On denial, skip detection entirely and return telemetry success.
+      if (!readerDetectLimiter(ip)) {
+        console.warn(`[SESSION-END] Reader detection rate-limited for ${ip}`);
       } else {
-        const readerKey = createHash('sha256').update(`${file_id}|${client_name}`).digest('hex').slice(0, 40);
-        const fsReaderHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
-        if (!fsReaderHeaders) {
-          console.error("[SESSION-END] Missing Firestore service account for second-reader detection");
+        const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+        if (!projectId) {
+          console.error("[SESSION-END] Missing Firebase config for second-reader detection");
         } else {
-        const docBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
-        const docUrl = `${docBase}/readers/${readerKey}`;
-        const nowIso = new Date().toISOString();
-        const readRes = await fetch(docUrl, { headers: fsReaderHeaders });
+          const readerKey = createHash('sha256').update(`${file_id}|${client_name}`).digest('hex').slice(0, 40);
+          const fsReaderHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
+          if (!fsReaderHeaders) {
+            console.error("[SESSION-END] Missing Firestore service account for second-reader detection");
+          } else {
+            const docBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
+            const docUrl = `${docBase}/readers/${readerKey}`;
+            const nowIso = new Date().toISOString();
+            const readRes = await fetch(docUrl, { headers: fsReaderHeaders });
 
-        if (readRes.status === 404) {
-          const createRes = await fetch(
-            `${docUrl}?currentDocument.exists=false`,
-            {
-            method: "PATCH",
-            headers: fsReaderHeaders,
-            body: JSON.stringify({
-              fields: {
-                deviceIds: { arrayValue: { values: [{ stringValue: device_id }] } },
-                updatedAt: { timestampValue: nowIso },
-              },
-            }),
-            }
-          );
-          const createDetail = !createRes.ok ? await createRes.text().catch(() => "") : "";
-          const createPreconditionFailed =
-            [409, 412].includes(createRes.status) ||
-            (createRes.status === 400 && /FAILED_PRECONDITION|ALREADY_EXISTS/.test(createDetail));
-          if (!createRes.ok && !createPreconditionFailed) {
-            console.error(`[SESSION-END] Reader create failed (${createRes.status}): ${createDetail.slice(0, 200)}`);
-          }
-        } else if (!readRes.ok) {
-          const detail = await readRes.text().catch(() => "");
-          console.error(`[SESSION-END] Reader GET failed (${readRes.status}): ${detail.slice(0, 200)}`);
-        } else {
-          const readerDoc = await readRes.json().catch(() => ({}));
-          // The catch above yields {} on a non-JSON 200, and an updateTime of
-          // undefined would send currentDocument.updateTime=undefined — a 400 on
-          // every request. Without a real updateTime there is no precondition to
-          // bind, so skip the merge rather than issue an unguarded (racy) write.
-          const readerUpdateTime = typeof readerDoc.updateTime === "string" ? readerDoc.updateTime : "";
-          const rawDevices = readerDoc.fields?.deviceIds?.arrayValue?.values;
-          const deviceIds = Array.isArray(rawDevices)
-            ? rawDevices.map((v: any) => v?.stringValue).filter((v: any): v is string => typeof v === "string")
-            : [];
+            if (readRes.status === 404) {
+              const createRes = await fetch(
+                `${docUrl}?currentDocument.exists=false`,
+                {
+                  method: "PATCH",
+                  headers: fsReaderHeaders,
+                  body: JSON.stringify({
+                    fields: {
+                      deviceIds: { arrayValue: { values: [{ stringValue: device_id }] } },
+                      updatedAt: { timestampValue: nowIso },
+                    },
+                  }),
+                }
+              );
+              const createDetail = !createRes.ok ? await createRes.text().catch(() => "") : "";
+              const createPreconditionFailed =
+                [409, 412].includes(createRes.status) ||
+                (createRes.status === 400 && /FAILED_PRECONDITION|ALREADY_EXISTS/.test(createDetail));
+              if (!createRes.ok && !createPreconditionFailed) {
+                console.error(`[SESSION-END] Reader create failed (${createRes.status}): ${createDetail.slice(0, 200)}`);
+              }
+            } else if (!readRes.ok) {
+              const detail = await readRes.text().catch(() => "");
+              console.error(`[SESSION-END] Reader GET failed (${readRes.status}): ${detail.slice(0, 200)}`);
+            } else {
+              const readerDoc = await readRes.json().catch(() => ({}));
+              // The catch above yields {} on a non-JSON 200, and an updateTime of
+              // undefined would send currentDocument.updateTime=undefined — a 400 on
+              // every request. Without a real updateTime there is no precondition to
+              // bind, so skip the merge rather than issue an unguarded (racy) write.
+              const readerUpdateTime = typeof readerDoc.updateTime === "string" ? readerDoc.updateTime : "";
+              const rawDevices = readerDoc.fields?.deviceIds?.arrayValue?.values;
+              const deviceIds = Array.isArray(rawDevices)
+                ? rawDevices.map((v: any) => v?.stringValue).filter((v: any): v is string => typeof v === "string")
+                : [];
 
-          if (!readerUpdateTime) {
-            console.warn("[SESSION-END] Reader doc missing updateTime; skipping device merge");
-          } else if (!deviceIds.includes(device_id)) {
-            const nextDeviceIds = [...deviceIds, device_id].slice(-10);
-            // Firestore REST preconditions bind as dotted primitive params (see the
-            // currentDocument.exists=false create above) — a JSON-encoded message
-            // 400s on every request.
-            const updateUrl = `${docUrl}?updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt&currentDocument.updateTime=${encodeURIComponent(readerUpdateTime)}`;
-            const updateRes = await fetch(updateUrl, {
-              method: "PATCH",
-              headers: fsReaderHeaders,
-              body: JSON.stringify({
-                fields: {
-                  deviceIds: { arrayValue: { values: nextDeviceIds.map((id) => ({ stringValue: id })) } },
-                  updatedAt: { timestampValue: nowIso },
-                },
-              }),
-            });
+              if (!readerUpdateTime) {
+                console.warn("[SESSION-END] Reader doc missing updateTime; skipping device merge");
+              } else if (!deviceIds.includes(device_id)) {
+                const nextDeviceIds = [...deviceIds, device_id].slice(-10);
+                // Firestore REST preconditions bind as dotted primitive params (see the
+                // currentDocument.exists=false create above) — a JSON-encoded message
+                // 400s on every request.
+                const updateUrl = `${docUrl}?updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt&currentDocument.updateTime=${encodeURIComponent(readerUpdateTime)}`;
+                const updateRes = await fetch(updateUrl, {
+                  method: "PATCH",
+                  headers: fsReaderHeaders,
+                  body: JSON.stringify({
+                    fields: {
+                      deviceIds: { arrayValue: { values: nextDeviceIds.map((id) => ({ stringValue: id })) } },
+                      updatedAt: { timestampValue: nowIso },
+                    },
+                  }),
+                });
 
-            const updateDetail = !updateRes.ok ? await updateRes.text().catch(() => "") : "";
-            const updatePreconditionFailed =
-              [409, 412].includes(updateRes.status) ||
-              (updateRes.status === 400 && /FAILED_PRECONDITION/.test(updateDetail));
-            if (updatePreconditionFailed) {
-              // Another session updated the reader document after our GET.
-              // It owns the write and, consequently, the second-reader alert.
-            } else if (!updateRes.ok) {
-              console.error(`[SESSION-END] Reader update failed (${updateRes.status}): ${updateDetail.slice(0, 200)}`);
-            } else if (deviceIds.length >= 1) {
-              const secondReaderText =
-                `👥 <b>偵測到第二位讀者</b>\n\n` +
-                `👤 <b>客戶：</b> ${escapeHTML(client_name)}\n` +
-                `📄 <b>報告：</b> ${escapeHTML(rName)}\n` +
-                `📱 裝置：${escapeHTML(device_type)}（第 ${nextDeviceIds.length} 部裝置）\n` +
-                `💡 連結可能已被轉發給其他決策者（配偶／家人）。`;
-              if (allow(`tg:${ip}`, 12, 60_000)) {
-                await sendTelegram(secondReaderText);
-              } else {
-                console.warn(`[SESSION-END] Second-reader Telegram rate-limited for ${ip}`);
+                const updateDetail = !updateRes.ok ? await updateRes.text().catch(() => "") : "";
+                const updatePreconditionFailed =
+                  [409, 412].includes(updateRes.status) ||
+                  (updateRes.status === 400 && /FAILED_PRECONDITION/.test(updateDetail));
+                if (updatePreconditionFailed) {
+                  // Another session updated the reader document after our GET.
+                  // It owns the write and, consequently, the second-reader alert.
+                } else if (!updateRes.ok) {
+                  console.error(`[SESSION-END] Reader update failed (${updateRes.status}): ${updateDetail.slice(0, 200)}`);
+                } else if (deviceIds.length >= 1) {
+                  const secondReaderText =
+                    `👥 <b>偵測到第二位讀者</b>\n\n` +
+                    `👤 <b>客戶：</b> ${escapeHTML(client_name)}\n` +
+                    `📄 <b>報告：</b> ${escapeHTML(rName)}\n` +
+                    `📱 裝置：${escapeHTML(device_type)}（第 ${nextDeviceIds.length} 部裝置）\n` +
+                    `💡 連結可能已被轉發給其他決策者（配偶／家人）。`;
+                  if (allow(`tg:${ip}`, 12, 60_000)) {
+                    await sendTelegram(secondReaderText);
+                  } else {
+                    console.warn(`[SESSION-END] Second-reader Telegram rate-limited for ${ip}`);
+                  }
+                }
               }
             }
           }
-        }
         }
       }
     }
