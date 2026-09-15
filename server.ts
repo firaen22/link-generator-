@@ -465,7 +465,7 @@ const getHkTimeOfDay = (): { name: 'morning' | 'afternoon' | 'evening' | 'late n
 // blunts single-source floods; a distributed multi-IP flood is out of scope for
 // app-level code (would need a WAF or a durable global counter).
 const RL_MAX_WINDOW_MS = 3_600_000; // longest window any caller uses (per-IP / global AI caps)
-// Cost counters (ai:global, ai:ip:<ip>, jg:global, jg:ip:<ip>) live in a SEPARATE map that is never bulk-
+// Cost counters (ai:*, jg:*, ul:*, rd:* — global + ip: variants) live in a SEPARATE map that is never bulk-
 // cleared. They're bounded by the number of real client IPs (x-real-ip, set by the
 // platform), so a single attacker can't grow them — and they must NOT be wipeable, or
 // an attacker could spray unique session ids into the map below to force a clear and
@@ -479,7 +479,7 @@ const rlHits = new Map<string, number[]>();
 // global cap will reject anyway).
 const allow = (key: string, max: number, windowMs: number, commit = true): boolean => {
   const now = Date.now();
-  const isCostKey = key === "ai:global" || key.startsWith("ai:ip:") || key === "jg:global" || key.startsWith("jg:ip:");
+  const isCostKey = key === "ai:global" || key.startsWith("ai:ip:") || key === "jg:global" || key.startsWith("jg:ip:") || key === "ul:global" || key.startsWith("ul:ip:") || key === "rd:global" || key.startsWith("rd:ip:");
   const store = isCostKey ? rlCost : rlHits;
 
   // Bound memory under a key-spraying flood. Prune only entries whose newest hit is
@@ -901,6 +901,24 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     return res.status(404).send(`找不到此連結 (${escapeHTMLAttr(shortId)})`);
   }
 
+  // This route does an unauthenticated, BILLED Firestore GET on EVERY request — there
+  // is no cache in this handler (META_CACHE lives on the /api/generate-meta path, not
+  // here). Charge it against a protected, never-cleared cost budget (rd:*, in rlCost)
+  // so a spray of unique shortIds can't drain the Spark free-tier read quota (50k/day,
+  // shared across read paths). Same class as the /api/unlock-link fix. The per-IP cap
+  // is generous so legit crawler unfurls (WhatsApp/Telegram/… one GET per link, from
+  // large provider IP pools) pass; the per-process global cap is the backstop against
+  // a moderately-distributed spray. Both are PER-PROCESS (each serverless instance has
+  // its own rlCost) like ai:/jg:/ul: — this bounds single-process spend, not a
+  // deployment-wide guarantee. A single-IP spray is bounded to 120 billed reads/hr.
+  const ip = clientIp(req);
+  if (!allow(`rd:ip:${ip}`, 120, 3_600_000, false) || !allow("rd:global", 1000, 3_600_000, false)) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(429).send(lifecycleErrorHtml("系統繁忙，請稍後再試"));
+  }
+  allow(`rd:ip:${ip}`, 120, 3_600_000);
+  allow("rd:global", 1000, 3_600_000);
+
   try {
     const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links/${shortId}`;
     console.log(`[SHORT_LINK] Resolving ID: ${shortId} via ${docUrl}`);
@@ -1075,6 +1093,23 @@ app.post("/api/unlock-link", async (req, res) => {
   }
   allow(`pin:${ip}`, 10, 60_000);
   allow(`pin:id:${shortId}`, 30, 3_600_000);
+
+  // The pin: caps above are PIN-brute-force limits and live in the sprayable rlHits
+  // store, so a key-spray that forces store.clear() (see allow()) resets them and
+  // re-opens the billed Firestore GET below. Charge that GET against a SEPARATE,
+  // never-cleared cost budget (ul:*, in rlCost) so spraying can't reset the read
+  // protection. Peek both before committing either, so a maxed global cap doesn't
+  // burn a legit user's per-IP budget. The global cap is PER-PROCESS (like the ai:/jg:
+  // globals): each serverless instance keeps its own rlCost, so N warm instances allow
+  // up to N×600/hr — it bounds single-process spend against the Spark free tier
+  // (50k reads/day, shared with the /l/ resolve path), not a deployment-wide guarantee.
+  // 600/hr = 14.4k/day/process leaves headroom for real reads while capping abuse;
+  // like ai:/jg: it accepts that a flood can 429 unlock attempts to bound billed reads.
+  if (!allow(`ul:ip:${ip}`, 40, 3_600_000, false) || !allow("ul:global", 600, 3_600_000, false)) {
+    return res.status(429).json({ error: "too_many_attempts" });
+  }
+  allow(`ul:ip:${ip}`, 40, 3_600_000);
+  allow("ul:global", 600, 3_600_000);
 
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
   if (!projectId) {
