@@ -2242,6 +2242,23 @@ async function extractPdfCoverText(
   pdfBuffer: Buffer,
   opts: { maxPages: number; maxChars: number; signal?: AbortSignal },
 ): Promise<string> {
+  // pdfjs' legacy build has a module-scope `new DOMMatrix()` (pdf.mjs, canvas render
+  // code) that runs when the module evaluates. DOMMatrix is not a Node global and the
+  // @napi-rs/canvas polyfill is not in the Vercel serverless bundle, so the import
+  // throws `DOMMatrix is not defined` and every extraction fell back to the full PDF.
+  // getTextContent never uses that matrix (it is only touched in the Path2D render
+  // path we never enter), so it just has to be constructable — a stub is enough, and
+  // avoids pulling the heavy native canvas dep into the bundle.
+  if (typeof (globalThis as any).DOMMatrix === "undefined") {
+    (globalThis as any).DOMMatrix = class DOMMatrix {
+      a = 1; b = 0; c = 0; d = 1; e = 0; f = 0;
+      constructor(init?: number[]) {
+        if (Array.isArray(init) && init.length >= 6) {
+          [this.a, this.b, this.c, this.d, this.e, this.f] = init;
+        }
+      }
+    };
+  }
   const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(pdfBuffer),
