@@ -3755,7 +3755,14 @@ ${vossLabel}
         const nowIso = new Date().toISOString();
         const readRes = await fetch(docUrl, { headers: fsReaderHeaders });
 
-        if (readRes.status === 404) {
+        // Both reader PATCHes below are unauthenticated telemetry writes (attacker-
+        // scalable by rotating file_id|client_name / device_id), so they draw from the
+        // WRITE fuse like an uncapped openCount increment: reserve BEFORE each write,
+        // and on deny skip the write (and the second-reader alert that depends on it)
+        // — never fail the request.
+        if (readRes.status === 404 && !chargeWriteBudget(ip)) {
+          console.warn(`[WRITE_BUDGET] reader create skipped for ${ip}`);
+        } else if (readRes.status === 404) {
           const createRes = await fetch(
             `${docUrl}?currentDocument.exists=false`,
             {
@@ -3793,6 +3800,8 @@ ${vossLabel}
 
           if (!readerUpdateTime) {
             console.warn("[SESSION-END] Reader doc missing updateTime; skipping device merge");
+          } else if (!deviceIds.includes(device_id) && !chargeWriteBudget(ip)) {
+            console.warn(`[WRITE_BUDGET] reader device merge skipped for ${ip}`);
           } else if (!deviceIds.includes(device_id)) {
             const nextDeviceIds = [...deviceIds, device_id].slice(-10);
             // Firestore REST preconditions bind as dotted primitive params (see the
