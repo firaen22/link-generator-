@@ -1355,6 +1355,20 @@ app.post("/api/unlock-link", async (req, res) => {
       });
     }
 
+    // Reserve exactly ONE write-fuse slot per attempt BEFORE comparing the PIN. Whichever
+    // write follows uses it: a wrong PIN → the failedPinCount increment (the durable
+    // lockout enforcement), a correct PIN with prior failures → the counter reset, a
+    // clean correct PIN → the slot goes unused (never refunded). Reserving before the
+    // compare is what makes the fuse FAIL-CLOSED without an oracle: when the fuse is
+    // blown every attempt is 429 — an attacker cannot distinguish right from wrong and
+    // cannot advance guesses while the durable counter is frozen. (Reserving only on the
+    // wrong branch, after the compare, left exactly that oracle open.) A blown fuse is
+    // an abuse condition; legit unlock volume is far below the per-IP tiers.
+    if (!chargeWriteBudget(ip)) {
+      console.warn(`[WRITE_BUDGET] unlock attempt denied (fuse) for ${shortId} ip=${ip}`);
+      return res.status(429).json({ error: "too_many_attempts" });
+    }
+
     const candidateHash = pinHashFor(shortId, pin);
     const ok = storedHash.length === candidateHash.length && sameHash(storedHash, candidateHash);
 
@@ -1373,23 +1387,16 @@ app.post("/api/unlock-link", async (req, res) => {
 
       // Durable lockout is read-modify-write; concurrent wrong attempts can
       // undercount, but this still closes the serverless scale-out brute-force gap.
-      // This PATCH IS the lockout enforcement, not telemetry, so it must never be
-      // SKIPPED on a blown write fuse (skipping would stop failedPinCount advancing and
-      // never arm the 20-fail lockout). It is not self-bounded either: a recipient who
-      // HOLDS the PIN can alternate wrong/correct — the correct attempt resets the
-      // counter (that reset is fused below) so lockout never arms and every wrong
-      // attempt is one more write. So this write is FAIL-CLOSED on the fuse: reserve a
-      // slot, and if none is available DENY the attempt with 429 (no write issued, no
-      // lockout bypass — the attempt simply doesn't count). A blown fuse is an abuse
-      // condition; a correct PIN still unlocks (that path only skips its reset).
+      // This PATCH IS the lockout enforcement, not telemetry, so it is never SKIPPED
+      // on a blown fuse (skipping would freeze failedPinCount and never arm the 20-fail
+      // lockout). Its write slot was reserved BEFORE the PIN compare above — see that
+      // comment for why the reservation must precede the compare. It is not otherwise
+      // self-bounded: a recipient who HOLDS the PIN can alternate wrong/correct (the
+      // correct attempt resets the counter), so every attempt must be counted.
       const fsPatchHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
       if (!fsPatchHeaders) {
         console.error("[UNLOCK_LINK] Missing Firestore service account");
         return res.status(500).json({ error: "unlock_failed" });
-      }
-      if (!chargeWriteBudget(ip)) {
-        console.warn(`[WRITE_BUDGET] wrong-PIN attempt denied (fuse) for ${shortId} ip=${ip}`);
-        return res.status(429).json({ error: "too_many_attempts" });
       }
       const patchRes = await fetch(
         `${fsBase}/${shortId}?${masks.map((m) => `updateMask.fieldPaths=${encodeURIComponent(m)}`).join("&")}`,
@@ -1422,14 +1429,12 @@ app.post("/api/unlock-link", async (req, res) => {
       const fsResetHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
       if (!fsResetHeaders) {
         console.error("[UNLOCK_LINK] Missing Firestore service account");
-      } else if (!chargeWriteBudget(ip)) {
-        // Unlike the wrong-PIN increment above (lockout enforcement — fail-closed 429 on
-        // a blown fuse), this reset is NOT enforcement: skipping it merely leaves the
-        // counter high, so the lockout arms sooner — the conservative direction. It is an
-        // unauthenticated write an attacker holding the PIN can drive (alternate
-        // wrong/correct → one reset per pair), so it draws from the write fuse.
-        console.warn(`[WRITE_BUDGET] PIN counter reset skipped for ${shortId} ip=${ip}`);
       } else {
+        // This reset uses the write slot reserved before the PIN compare above (one
+        // reservation per attempt covers exactly one write: the wrong-PIN increment OR
+        // this reset). It is an unauthenticated write an attacker holding the PIN can
+        // drive (alternate wrong/correct → one reset per pair), which is why every
+        // attempt — not just wrong ones — is charged to the fuse.
         const resetRes = await fetch(
           `${fsBase}/${shortId}?updateMask.fieldPaths=failedPinCount`,
           {
