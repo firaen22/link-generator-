@@ -545,7 +545,7 @@ const allow = (key: string, max: number, windowMs: number, commit = true): boole
 // Spark caps writes at 20,000/day PROJECT-GLOBAL, resetting at midnight Pacific
 // (verified against Firebase docs, Sep 2026). This limiter lives in one warm
 // Vercel isolate's memory: N warm isolates each carry their own budget, so
-// N × WQ_GLOBAL_PER_DAY + owner writes can still exceed 20k, and a cold isolate
+// N × (WQ_GLOBAL_PER_DAY + WQ_UNLOCK_GLOBAL_PER_DAY) + owner writes can still exceed 20k, and a cold isolate
 // starts at zero (fail-open). It stops ONE IP on ONE instance from walking the
 // project into the wall and survives session-id spray; it does NOT coordinate
 // across isolates or regions. The real fix is Blaze (removes the hard cap) or a
@@ -553,15 +553,26 @@ const allow = (key: string, max: number, windowMs: number, commit = true): boole
 // path being throttled). Ship this fuse AND move to Blaze/KV if >~2 warm isolates.
 //
 // Sizing (reserve ~4,000/day project-wide for owner writes: create/cron/extend/
-// revoke/PIN). Single-IP single-instance ceiling = min(tiers) = 1,500/day (<< 20k).
-// For more seminar headroom raise per-IP, never global; never per-IP daily >= global.
+// revoke/PIN). Single-IP single-instance ceiling = min(per-IP tiers) = 1,500/day (<< 20k).
+// For more seminar headroom raise per-IP, never the globals. Keep single-IP exhaustion of
+// each global bounded: WQ_IP_PER_DAY (1,500, SHARED) is < WQ_GLOBAL_PER_DAY (2,500), so no
+// one IP drains the telemetry share alone; it EQUALS WQ_UNLOCK_GLOBAL_PER_DAY (1,500), but
+// unlock is capped further upstream by the ul:ip read gate (40/hr = 960/day < 1,500), so no
+// one IP drains the unlock share alone either. If you raise WQ_UNLOCK_GLOBAL_PER_DAY, keep
+// it > 960 or the upstream ul:ip cap becomes the effective ceiling.
 // Per-instance budget: this fuse lives in one warm isolate's memory, so the safe warm-
-// isolate count is N_safe = floor((20,000 - 4,000 owner) / WQ_GLOBAL_PER_DAY). At 4,000
-// that tolerates 4 warm isolates (4×4,000 + 4,000 owner = 20,000 exactly). Legit unauth
-// telemetry is only hundreds/day, so 4,000 is ample real-traffic headroom while abuse
-// still trips the fuse. Above ~4 warm isolates, move to Blaze or a shared KV counter
-// (see HONESTY note above) — do NOT raise this number.
-const WQ_GLOBAL_PER_DAY = 4000; // unauth telemetry writes per instance per day
+// isolate count is N_safe = floor((20,000 - 4,000 owner) / PER_INSTANCE_UNAUTH), where
+// PER_INSTANCE_UNAUTH = WQ_GLOBAL_PER_DAY + WQ_UNLOCK_GLOBAL_PER_DAY. The two globals
+// PARTITION one 4,000/instance ceiling (telemetry 2,500 + unlock 1,500), so their SUM —
+// not either share alone — is the load-bearing number: 4×4,000 + 4,000 owner = 20,000
+// exactly still holds. They are SEPARATE counters precisely so a telemetry flood
+// (open-count / reader-detect) can never exhaust the unlock share and 429 a correct-PIN
+// unlock, and vice-versa. Legit unauth volume is only hundreds/day on either share, so both
+// are ample real-traffic headroom while abuse still trips the fuse. Above ~4 warm isolates,
+// move to Blaze or a shared KV counter (see HONESTY note above) — do NOT raise these
+// numbers, and keep their SUM at 4,000.
+const WQ_GLOBAL_PER_DAY = 2500;        // unauth TELEMETRY writes/instance/day (uncapped open-count + reader-detect)
+const WQ_UNLOCK_GLOBAL_PER_DAY = 1500; // unauth UNLOCK-attempt reservations/instance/day (own share; telemetry floods can't touch it)
 const WQ_IP_PER_DAY = 1500;     // per client IP per day
 const WQ_IP_PER_HOUR = 200;     // per client IP per hour (allow(), ww:h:)
 const WQ_IP_PER_MIN = 80;       // per client IP per minute (allow(), ww:m:)
@@ -571,8 +582,9 @@ const WQ_IP_PER_MIN = 80;       // per client IP per minute (allow(), ww:m:)
 // old, so one idle hour would RESET the daily budget) and stores a ~15k-element array.
 // These counters live OUTSIDE rlCost/rlHits, so no spray can touch them.
 type DayCounter = { day: string; n: number };
-const wqGlobal: DayCounter = { day: "", n: 0 };
-const wqByIp = new Map<string, DayCounter>(); // protected: stale-day prune + 5000-key bound
+const wqGlobal: DayCounter = { day: "", n: 0 };       // TELEMETRY global share (open-count + reader-detect)
+const wqUnlockGlobal: DayCounter = { day: "", n: 0 }; // UNLOCK global share — isolated from wqGlobal so a telemetry flood can't deny unlocks
+const wqByIp = new Map<string, DayCounter>(); // protected: stale-day prune + 5000-key bound; SHARED per-IP tier across both globals
 
 // Pacific day key (YYYY-MM-DD), anchored to the Firebase Spark reset boundary
 // (midnight America/Los_Angeles), NOT UTC. Built from explicit Intl parts rather
@@ -634,20 +646,25 @@ function wqIpDaySlot(ip: string, day: string): DayCounter | null {
   return slot;
 }
 
-// Reserve one unauth Firestore telemetry write against every tier (global daily +
-// per-IP daily/hour/minute). Peek all tiers first (short-circuit), then commit all
-// with NO await between check and reserve — otherwise concurrent requests could
-// double-spend one slot. Never refunds (an ambiguous timeout leaves the write's
-// commit state unknown; a refund on timeout would let a real write escape the fuse).
-function chargeWriteBudget(ip: string): boolean {
+// Reserve one unauth Firestore write against a CHOSEN global daily counter plus the
+// shared per-IP daily/hour/minute tiers. The global counter is a parameter so telemetry
+// (wqGlobal) and unlock attempts (wqUnlockGlobal) draw from SEPARATE per-instance shares
+// — a flood on one global can never deny the other — while still sharing the per-IP tiers
+// (a single IP's own abuse is self-limited, which is the intended per-IP behavior, and the
+// per-IP tiers are not the distributed-flood vector the globals defend against).
+// Peek all tiers first (short-circuit), then commit all with NO await between check and
+// reserve — otherwise concurrent requests could double-spend one slot. Never refunds (an
+// ambiguous timeout leaves the write's commit state unknown; a refund on timeout would let
+// a real write escape the fuse).
+function chargeWriteBudgetAgainst(ip: string, globalSlot: DayCounter, globalMax: number): boolean {
   // Compute the Pacific day ONCE and thread it through, so every tier in this
   // reservation agrees on the day and dayKey() runs a single time. An undetermined
-  // day (dayKey()==="") fails closed: deny this budgeted telemetry write rather than
+  // day (dayKey()==="") fails closed: deny this budgeted write rather than
   // risk a UTC-boundary refill. Capped-link increments (exempt) and reads are
   // unaffected — they never call this.
   const today = dayKey();
   if (today === "") return false;
-  if (!dayAllow(wqGlobal, WQ_GLOBAL_PER_DAY, 1, today, false)) return false;
+  if (!dayAllow(globalSlot, globalMax, 1, today, false)) return false;
   const ipDaily = wqIpDaySlot(ip, today);
   if (!ipDaily) return false;
   if (!dayAllow(ipDaily, WQ_IP_PER_DAY, 1, today, false)) return false;
@@ -658,11 +675,27 @@ function chargeWriteBudget(ip: string): boolean {
   // push the map over the cap), so HONOR their return: deny the write rather than issue
   // it without a reservation. The daily charges already taken are not refunded —
   // a conservative partial charge is the safe direction for a fuse.
-  dayAllow(wqGlobal, WQ_GLOBAL_PER_DAY, 1, today, true);
+  dayAllow(globalSlot, globalMax, 1, today, true);
   dayAllow(ipDaily, WQ_IP_PER_DAY, 1, today, true);
   if (!allow(`ww:h:${ip}`, WQ_IP_PER_HOUR, 3_600_000, true)) return false;
   if (!allow(`ww:m:${ip}`, WQ_IP_PER_MIN, 60_000, true)) return false;
   return true;
+}
+
+// Telemetry writes (uncapped open-count, reader-detect): draw from the shared telemetry global.
+function chargeWriteBudget(ip: string): boolean {
+  return chargeWriteBudgetAgainst(ip, wqGlobal, WQ_GLOBAL_PER_DAY);
+}
+
+// Unlock-attempt reservation (taken BEFORE the PIN compare): draws from unlock's OWN global
+// share. A telemetry flood (open-count / reader-detect) exhausting the wqGlobal SHARE can no
+// longer 429 a correct-PIN unlock — that is the whole point of the split. NOT total isolation:
+// the per-IP tiers (ip-daily / ww:h / ww:m) are still SHARED, so a same-IP telemetry burst can
+// deny that IP's own unlock; that is intended (an abuser only rate-limits itself). The
+// oracle-closure property is unchanged — a blown unlock fuse still 429s every attempt
+// identically, right or wrong, because this is still one reservation taken before the compare.
+function chargeUnlockBudget(ip: string): boolean {
+  return chargeWriteBudgetAgainst(ip, wqUnlockGlobal, WQ_UNLOCK_GLOBAL_PER_DAY);
 }
 
 // openCount increment, gated by the write fuse. Placement rule: wrap the WRITE, never
@@ -1368,7 +1401,12 @@ app.post("/api/unlock-link", async (req, res) => {
     // cannot advance guesses while the durable counter is frozen. (Reserving only on the
     // wrong branch, after the compare, left exactly that oracle open.) A blown fuse is
     // an abuse condition; legit unlock volume is far below the per-IP tiers.
-    if (!chargeWriteBudget(ip)) {
+    // This draws from unlock's OWN global share (wqUnlockGlobal), NOT the telemetry global
+    // (wqGlobal) — so a flood of open-count / reader-detect writes from OTHER IPs can no
+    // longer exhaust the global share and 429 a legitimate correct-PIN unlock. The per-IP
+    // tiers stay shared, so a same-IP telemetry burst can still 429 that IP's own unlock
+    // (intended: self-limited to the abusive IP).
+    if (!chargeUnlockBudget(ip)) {
       console.warn(`[WRITE_BUDGET] unlock attempt denied (fuse) for ${shortId} ip=${ip}`);
       return res.status(429).json({ error: "too_many_attempts" });
     }
