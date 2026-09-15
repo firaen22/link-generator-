@@ -698,33 +698,178 @@ function chargeUnlockBudget(ip: string): boolean {
   return chargeWriteBudgetAgainst(ip, wqUnlockGlobal, WQ_UNLOCK_GLOBAL_PER_DAY);
 }
 
+// Read just the openCount + updateTime of a link doc — the inputs the capped-open CAS
+// needs. Returns null on any failure (missing service account, non-OK GET, absent
+// updateTime, thrown fetch): callers treat null as "cannot determine" and fall back to
+// best-effort serving, never to a false refusal.
+async function readLinkOpenState(
+  projectId: string,
+  shortId: string,
+): Promise<{ openCount: number; updateTime: string } | null> {
+  try {
+    const fsHeaders = await firestoreHeaders();
+    if (!fsHeaders) return null;
+    const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links/${shortId}`;
+    const resp = await fetch(docUrl, { headers: fsHeaders });
+    if (!resp.ok) return null;
+    const d = await resp.json();
+    const openCount = parseInt(d.fields?.openCount?.integerValue ?? "0", 10) || 0;
+    const updateTime = typeof d.updateTime === "string" ? d.updateTime : "";
+    if (!updateTime) return null;
+    return { openCount, updateTime };
+  } catch (error) {
+    console.error(`[OPEN_COUNT] Failed to read open state for ${shortId}:`, error);
+    return null;
+  }
+}
+
+type CasOutcome = "committed" | "precondition_failed" | "error";
+// On "committed", newOpenCount is the authoritative post-increment openCount read back from
+// the commit's transformResults (no extra round-trip) — used for an accurate "remaining"
+// notification even when a retry committed against a value newer than the caller's read.
+type CappedCommit = { outcome: CasOutcome; newOpenCount?: number };
+
+// Increment openCount ONCE, but only if the doc is still at `expectedUpdateTime` — a
+// compare-and-swap via Firestore's currentDocument.updateTime precondition. This is what
+// makes the capped-link cap race-free: two concurrent opens that both read the same
+// pre-increment state issue the same precondition, and Firestore commits exactly one; the
+// loser gets HTTP 400 FAILED_PRECONDITION and is re-gated by the caller. Returns
+// "precondition_failed" only for that specific stale-precondition case (identified from the
+// parsed error.status, not a substring); any other non-OK response or thrown error is
+// "error" (transient/unknown), which the caller maps to a best-effort serve rather than a
+// false refusal.
+async function commitCappedOpenIncrement(
+  projectId: string,
+  shortId: string,
+  expectedUpdateTime: string,
+): Promise<CappedCommit> {
+  try {
+    const fsHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
+    if (!fsHeaders) return { outcome: "error" };
+    const commitUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:commit`;
+    const document = `projects/${projectId}/databases/(default)/documents/links/${shortId}`;
+    const response = await fetch(commitUrl, {
+      method: "POST",
+      headers: fsHeaders,
+      body: JSON.stringify({
+        writes: [{
+          // Precondition: commit only if the doc has not changed since the read that
+          // produced expectedUpdateTime. A concurrent open that incremented first bumps
+          // updateTime, so this commit then fails FAILED_PRECONDITION instead of blindly
+          // double-incrementing past the cap.
+          currentDocument: { updateTime: expectedUpdateTime },
+          transform: {
+            document,
+            fieldTransforms: [
+              { fieldPath: "openCount", increment: { integerValue: "1" } },
+              { fieldPath: "lastOpenAt", setToServerValue: "REQUEST_TIME" },
+            ],
+          },
+        }],
+      }),
+    });
+    if (response.ok) {
+      // transformResults mirrors fieldTransforms order: [0] is the incremented openCount.
+      const j = await response.json().catch(() => null);
+      const nv = j?.writeResults?.[0]?.transformResults?.[0]?.integerValue;
+      const newOpenCount = typeof nv === "string" ? (parseInt(nv, 10) || 0) : undefined;
+      return { outcome: "committed", newOpenCount };
+    }
+    const body = await response.text().catch(() => "");
+    // Any HTTP 400 means the write was REJECTED and did not mutate the doc. The expected
+    // case is a stale currentDocument precondition (gRPC status FAILED_PRECONDITION); an
+    // off-spec or unparseable 400 could ALSO be that lost CAS. Since no 400 ever applied
+    // the write, re-reading actual state is always safe — so treat every 400 as
+    // precondition_failed (re-read + re-gate). This fails CLOSED on a persistently
+    // malformed 400 (refuse after the retry cap) rather than false-serving a capped open,
+    // which is the expensive direction. Only NON-400 failures (5xx/transport, where the
+    // write outcome is genuinely unknown) fall through to the availability-preserving
+    // best-effort serve. We still parse the status for observability logging.
+    if (response.status === 400) {
+      let status = "";
+      try { status = JSON.parse(body)?.error?.status ?? ""; } catch { /* non-JSON body */ }
+      if (status !== "FAILED_PRECONDITION") {
+        console.error(`[OPEN_COUNT] Capped increment 400 (${status || "unparsed"}) treated as CAS loss for ${shortId}: ${body.slice(0, 200)}`);
+      }
+      return { outcome: "precondition_failed" };
+    }
+    console.error(`[OPEN_COUNT] Capped increment commit failed (${response.status}) for ${shortId}: ${body.slice(0, 200)}`);
+    return { outcome: "error" };
+  } catch (error) {
+    console.error(`[OPEN_COUNT] Capped increment threw for ${shortId}:`, error);
+    return { outcome: "error" };
+  }
+}
+
+// Atomically reserve one open of a CAPPED link (maxOpens>0). Returns true when the open is
+// reserved (caller serves), false when the cap is — or concurrently became — reached
+// (caller MUST refuse). CAS loop: seed the precondition from the caller's own read
+// (seedUpdateTime), and on a lost CAS re-read to re-gate against the fresh openCount and
+// retry with the new updateTime. This keeps maxOpens=N correct under contention: a lost
+// race retries while capacity remains, and stops the moment the re-read shows the cap hit.
+//   - Cannot read state (null): best-effort serve (true) — preserve availability on a
+//     Firestore outage, matching the prior swallow-and-serve behavior; NOT the race here.
+//   - Transient commit error: best-effort serve (true), same rationale.
+//   - Sustained contention (retries exhausted while capacity kept appearing): fail CLOSED
+//     (false) to protect the cap; requires many consecutive lost CASes, not a 2-open race.
+async function reserveCappedOpen(
+  projectId: string,
+  shortId: string,
+  maxOpens: number,
+  seedUpdateTime?: string,
+): Promise<{ allowed: boolean; newOpenCount?: number }> {
+  // Seed the first attempt with the caller's read timestamp (it already gated
+  // openCount<maxOpens against that same read); a stale seed just loses the first CAS and
+  // falls through to a fresh re-read+re-gate.
+  let updateTime = seedUpdateTime && seedUpdateTime.length > 0 ? seedUpdateTime : undefined;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (!updateTime) {
+      const state = await readLinkOpenState(projectId, shortId);
+      if (!state) return { allowed: true }; // cannot determine → best-effort serve
+      if (state.openCount >= maxOpens) return { allowed: false }; // cap reached
+      updateTime = state.updateTime;
+    }
+    const { outcome, newOpenCount } = await commitCappedOpenIncrement(projectId, shortId, updateTime);
+    if (outcome === "committed") return { allowed: true, newOpenCount };
+    if (outcome === "error") return { allowed: true }; // transient → best-effort serve
+    updateTime = undefined; // precondition_failed → re-read & re-gate next iteration
+  }
+  console.warn(`[OPEN_COUNT] CAS contention exhausted for ${shortId}; refusing open to protect maxOpens=${maxOpens}`);
+  return { allowed: false }; // sustained contention → fail closed to protect the cap
+}
+
 // openCount increment, gated by the write fuse. Placement rule: wrap the WRITE, never
 // the route — a blown fuse must never 429 a legitimate resolve/read.
 //   - Capped links (maxOpens>0): the increment IS the enforcement mechanism (it drives
-//     the maxOpens cap on /l, unlock, and /api/pdf). Capped-link write volume is bounded
-//     by owner-created links × maxOpens (links need x-pwp-key to create) → NOT attacker-
-//     scalable → EXEMPT from the telemetry budget. Never skip-and-serve a capped link
-//     (freezing openCount would grant unlimited opens on a maxOpens=1 link).
+//     the maxOpens cap on /l, unlock, and /api/pdf). It is done as an ATOMIC compare-and-
+//     swap (reserveCappedOpen) so concurrent opens cannot both slip past a maxOpens cap —
+//     the return value GATES serving (false ⇒ caller must refuse). Capped-link write
+//     volume is bounded by owner-created links × maxOpens (links need x-pwp-key to create)
+//     → NOT attacker-scalable → EXEMPT from the telemetry budget. Never skip-and-serve a
+//     capped link (freezing openCount would grant unlimited opens on a maxOpens=1 link).
 //   - Uncapped links (maxOpens==0): the increment is pure telemetry. On budget deny, skip
-//     the write and still serve (telemetry loss is tolerable; serving is never gated here).
-// Charges synchronously BEFORE the await. Returns whether the write was issued (logging
-// only; both callers serve regardless of the return).
+//     the write and still serve (telemetry loss is tolerable; serving is NEVER gated here —
+//     always returns true).
+// Returns whether the caller may serve this open, plus (capped, on a confirmed commit) the
+// authoritative post-increment openCount for an accurate "remaining" notification. Uncapped
+// ⇒ always allowed, no count. seedUpdateTime is the updateTime of the caller's own link
+// read, used to seed the capped CAS without an extra round-trip.
 async function incrementLinkOpenCountBudgeted(
   projectId: string,
   shortId: string,
   maxOpens: number,
   ip: string,
-): Promise<boolean> {
+  seedUpdateTime?: string,
+): Promise<{ allowed: boolean; newOpenCount?: number }> {
   if (maxOpens > 0) {
-    await incrementLinkOpenCount(projectId, shortId);
-    return true;
+    return reserveCappedOpen(projectId, shortId, maxOpens, seedUpdateTime);
   }
   if (!chargeWriteBudget(ip)) {
     console.warn(`[WRITE_BUDGET] openCount increment skipped (uncapped) for ${shortId} ip=${ip}`);
-    return false;
+    return { allowed: true }; // uncapped telemetry loss never gates serving
   }
   await incrementLinkOpenCount(projectId, shortId);
-  return true;
+  return { allowed: true };
 }
 
 // Best-effort client IP. Prefer Vercel's x-real-ip (set by the platform to the true
@@ -1243,8 +1388,16 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     }
 
     if (!isCrawler && !pinProtected) {
-      await incrementLinkOpenCountBudgeted(projectId, shortId, maxOpens, ip);
-      const remaining = maxOpens > 0 ? maxOpens - (openCount + 1) : -1;
+      // Atomic for capped links: !allowed ⇒ the cap was reached (possibly won by a
+      // concurrent open), so refuse instead of serving. Uncapped ⇒ always allowed.
+      const { allowed, newOpenCount } = await incrementLinkOpenCountBudgeted(projectId, shortId, maxOpens, ip, data.updateTime);
+      if (!allowed) {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        return res.status(410).send(lifecycleErrorHtml("此連結已達開啟次數上限"));
+      }
+      // Prefer the authoritative post-commit count (accurate even after a CAS retry);
+      // fall back to the read-time estimate when no confirmed count is available.
+      const remaining = maxOpens > 0 ? maxOpens - (newOpenCount ?? (openCount + 1)) : -1;
       const marker = remaining === 1 ? '⚠️ <b>此連結只剩 1 次開啟機會</b>（可用 extend_link 工具提高上限）' : '';
       await sendShortLinkOpenNotification(req, data, shortId, cName, rName, marker);
     }
@@ -1512,8 +1665,15 @@ app.post("/api/unlock-link", async (req, res) => {
     }
 
     const viewerUrl = `/view?q=${encodeURIComponent(q)}&lid=${encodeURIComponent(shortId)}`;
-    await incrementLinkOpenCountBudgeted(projectId, shortId, maxOpens, ip);
-    const remaining = maxOpens > 0 ? maxOpens - (openCount + 1) : -1;
+    // Atomic for capped links: false ⇒ cap reached (possibly won by a concurrent open),
+    // so refuse with the same link_capped response the top-of-handler gate returns. The
+    // seed updateTime may be stale here if the correct-PIN path PATCHed failedPinCount
+    // above; that just loses the first CAS and forces a fresh re-read, still correct.
+    const { allowed, newOpenCount } = await incrementLinkOpenCountBudgeted(projectId, shortId, maxOpens, ip, data.updateTime);
+    if (!allowed) {
+      return res.status(410).json({ error: "link_capped" });
+    }
+    const remaining = maxOpens > 0 ? maxOpens - (newOpenCount ?? (openCount + 1)) : -1;
     const unlockMarker = remaining === 1 ? "🔐 已解鎖 ⚠️ <b>此連結只剩 1 次開啟機會</b>（可用 extend_link 工具提高上限）" : "🔐 已解鎖";
     await sendShortLinkOpenNotification(req, data, shortId, cName, rName, unlockMarker);
     res.json({ url: viewerUrl });
