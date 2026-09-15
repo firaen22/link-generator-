@@ -1358,7 +1358,11 @@ app.post("/api/unlock-link", async (req, res) => {
     // Reserve exactly ONE write-fuse slot per attempt BEFORE comparing the PIN. Whichever
     // write follows uses it: a wrong PIN → the failedPinCount increment (the durable
     // lockout enforcement), a correct PIN with prior failures → the counter reset, a
-    // clean correct PIN → the slot goes unused (never refunded). Reserving before the
+    // clean correct PIN → the slot goes unused (never refunded). The success path's
+    // openCount increment is budgeted separately inside incrementLinkOpenCountBudgeted
+    // (uncapped links only) — a clean uncapped unlock therefore costs two reservations
+    // for one write. That over-reservation is deliberate: conservative, fail-closed, and
+    // only binding at abuse-level volume (~750 unlocks/IP/day). Reserving before the
     // compare is what makes the fuse FAIL-CLOSED without an oracle: when the fuse is
     // blown every attempt is 429 — an attacker cannot distinguish right from wrong and
     // cannot advance guesses while the durable counter is frozen. (Reserving only on the
