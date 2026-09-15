@@ -14,21 +14,19 @@ advisors. `/api/pdf` runs on ~every report open; `/api/generate-meta` runs once 
 link creation. Rank accordingly: A dominates aggregate transfer, B has the largest
 per-request waste.
 
-## Current status (refreshed 2026-09-15)
-Both high-value levers are shipped and enabled on prod; the remainder are decided.
+## Current status (refreshed 2026-09-15, pt.2)
+All five levers are decided; the four worth shipping are shipped, enabled on prod, and verified live.
 
 | # | Lever | State |
 |---|---|---|
 | 1 | `/api/pdf` `r2_` → 302 to R2 presign | ✅ **Shipped + enabled** — PR #39 `45f37f8`, flag `PDF_R2_REDIRECT=1` on prod |
-| 2 | `/api/generate-meta` sends extracted text | ✅ **Shipped + enabled** — PR #40 `41a6b86`, flag `META_TEXT_EXTRACT=1` on prod (deploy `1lvgg9e4u`) |
+| 2 | `/api/generate-meta` sends extracted text | ✅ **Shipped + enabled + VERIFIED live** — PR #40 `41a6b86`, flag `META_TEXT_EXTRACT=1`; needed two serverless-bundling fixes (PR #43 `0181a7d` DOMMatrix stub, PR #44 `7a647c3` pdfjs-worker bundle) before it stopped silently falling back. Now logs `text mode \| 331 chars`. |
 | 3 | Gemini Files API upload-once | ⛔ **Decided: skip** — mooted by #2 + payload already sent once on the hot path |
-| 4 | CDN-cache no-lid responses | ⏸️ **Deferred — your call** — one-line lever, but unmeasured payoff + a privacy tradeoff |
-| 5 | Memoize `{title,description}` | ⏸️ **Deferred — marginal** — low hit-rate for non-trivial code |
+| 4 | CDN-cache no-lid responses | ✅ **Shipped + enabled** — PR #41 `5f5cc2a`, flag `PDF_NOLID_CDN_CACHE` (no-lid → `public, s-maxage`) |
+| 5 | Memoize `{title,description}` | ✅ **Shipped + enabled + VERIFIED live** — PR #41 `5f5cc2a` (content-addressed 2-tier cache keyed sha256(pdfBuffer), L1 Map 500/24h + L2 R2 `meta/<sha>.json`); TTL hardened by PR #42 `977c903`; flag `META_CACHE=1`, `cache hit (L1)` confirmed on prod |
 
 **Open residuals (need a human, no code):** (#1) no real `/l/<id>` end-to-end open tested
-(fires advisor notify + openCount); (#2) live text-mode not yet observed — watch
-`[GENERATE_META] text mode` vs `extract too short` on the next real generation. Details in
-"## Progress".
+(fires advisor notify + openCount). Everything else is verified live. Details in "## Progress".
 
 The sections below are the original analysis, retained as the decision record; each
 recommendation now carries its outcome.
@@ -132,8 +130,17 @@ both meters go to ~0 for `r2_` opens by construction. Confirmed live on prod tha
 handler now emits the 302 (see Progress); the byte-path change follows from that.
 
 ### 2. `/api/generate-meta`: send extracted text, not 14 MB, per attempt
-**Status: ✅ SHIPPED & ENABLED (2026-09-15).** PR #40 (`41a6b86`), flag
-`META_TEXT_EXTRACT=1` on prod. See "## Progress" for the review trail and known bounds.
+**Status: ✅ SHIPPED, ENABLED & VERIFIED LIVE (2026-09-15).** PR #40 (`41a6b86`), flag
+`META_TEXT_EXTRACT=1` on prod. Two serverless-bundling blockers made it silently fall
+back to full-PDF on *every* prod call until fixed: PR #43 (`0181a7d`) stubs
+`globalThis.DOMMatrix` (pdfjs legacy does `new DOMMatrix()` at module eval; not a Node
+global, `@napi-rs/canvas` polyfill not bundled by nft), and PR #44 (`7a647c3`) registers
+`globalThis.pdfjsWorker` from a bare-specifier `import(".../pdf.worker.mjs")` (nft can't
+trace pdfjs' own runtime-variable `import(workerSrc)`, so the worker was dropped from the
+bundle → main-thread handler now used). Now confirmed live: `[GENERATE_META] text mode
+| 331 chars`. Both fixes sit inside `extractPdfCoverText`, so any failure still degrades
+into the full-PDF fallback within the extract timeout. See "## Progress" for the review
+trail and known bounds.
 
 Biggest per-call win: extract text server-side (pdfjs, buffer already in hand) and send
 ~tens of KB (≤3 pages / 40 000 chars) instead of ≤18.6 MB `inlineData` — ~100–400× fewer
@@ -153,9 +160,11 @@ Not worth the complexity. (Original note: files are **project**-scoped, so same-
 key rotation could share one upload — moot given the skip.)
 
 ### 4. no-lid responses → shared/CDN cacheable (`public, s-maxage`)
-**Status: ⏸️ DEFERRED — your call.** One `!lid`-scoped line at `server.ts:2057`. Unmeasured
-payoff, and #1's redirect already bypasses this path for `r2_` (leaving only `f_`/`vblob_`
-no-lid opens); it also means a shared CDN caches client report PDFs. See "## Progress".
+**Status: ✅ SHIPPED & ENABLED (2026-09-15).** PR #41 (`5f5cc2a`), flag
+`PDF_NOLID_CDN_CACHE` (default OFF, `=1` on prod): no-lid → `public, max-age=3600,
+s-maxage=86400`; `lid` stays `private, max-age=60` (never CDN-cached — would bypass
+lifecycle). #1's redirect still bypasses this path for `r2_`, so it applies to `f_`/`vblob_`
+no-lid opens. Original deferral analysis retained below.
 Bounded and smaller than it looks: a CDN hit still sends the PDF **CDN→client (FDT)**, so
 it saves the **function invocation + Fast Origin Transfer**, not the FDT meter. Only for
 the no-lid branch (`/view?q=`, `/s/:file_id`) which has no lifecycle to enforce, and it
@@ -166,9 +175,16 @@ already have, but don't extend it to `lid`. (No defensible payoff ratio — depe
 unmeasured no-lid share and hit rate.)
 
 ### 5. Memoize `{title,description}` by an immutable content key
-**Status: ⏸️ DEFERRED — marginal.** Low-frequency op (once per link creation) × low hit
-rate for non-trivial code (generalize the jargon two-tier cache + hash `pdfBuffer`). See
-"## Progress".
+**Status: ✅ SHIPPED, ENABLED & VERIFIED LIVE (2026-09-15).** PR #41 (`5f5cc2a`), flag
+`META_CACHE` (default OFF, `=1` on prod): content-addressed 2-tier cache keyed on
+`sha256(pdfBuffer)` (not the storage path — an overwritten `r2:` key would serve stale
+meta), L1 in-mem Map (500 cap / 24h TTL) + L2 R2 sidecar `meta/<sha>.json`. A hit skips
+the whole Gemini key×model fan-out. PR #42 (`977c903`) hardened the TTL after a
+codex-astra post-merge review: L2→L1 promotion no longer re-stamps `at` (was extending
+24h→~48h), and `at` must be a non-negative safe-integer within a 60s clock-skew tolerance
+(was `Number(parsed.at)`, which accepted `"1e100"`/huge-future values that never expired).
+Verified live: `cache hit (L1)` on a repeat generate of identical bytes. Original marginal
+analysis retained below.
 
 Cache the generated meta so a re-linked report skips Gemini. **Bound:** `f = r2:reports/…`
 is a storage *key*, not proof of content-addressing — overwriting the object at that key
@@ -207,7 +223,16 @@ _Updated 2026-09-15._
   - **Residual (open):** no end-to-end load of a *real* report through a *real* `/l/<id>`
     tested — that fires the advisor "opened" notification and bumps open counts, so it was
     left for a human open. Every component is verified; only their live composition is not.
-- **#2 `/api/generate-meta` text extraction — ✅ MERGED to main. PR #40 (`41a6b86`). Flag `META_TEXT_EXTRACT`=1 ENABLED on Vercel prod 2026-09-15 (deploy `1lvgg9e4u`, aliased share.pmd-hk.com). Rollback: `vercel env rm META_TEXT_EXTRACT production` (or set 0) + redeploy. Live text-mode NOT yet observed (needs a real advisor generate-meta call) — watch `[GENERATE_META] text mode` vs `extract too short` logs (F3).**
+- **#2 `/api/generate-meta` text extraction — ✅ MERGED, ENABLED & VERIFIED LIVE. PR #40 (`41a6b86`), flag `META_TEXT_EXTRACT`=1 on prod. Live text-mode CONFIRMED: `[GENERATE_META] text mode | 331 chars` — but only after two serverless-bundling fixes (below) that had made it silently fall back to full-PDF on every prod call. Rollback: `vercel env rm META_TEXT_EXTRACT production` (or set 0) + redeploy.**
+  - **Bundling fixes (post-enable, both cross-family reviewed codex-astra + grok-4.6):**
+    PR #43 (`0181a7d`) — `globalThis.DOMMatrix` stub (pdfjs legacy `new DOMMatrix()` at
+    module eval, not a Node global, `@napi-rs/canvas` polyfill not bundled by nft). PR #44
+    (`7a647c3`) — register `globalThis.pdfjsWorker={WorkerMessageHandler}` via a
+    bare-specifier `import("pdfjs-dist/legacy/build/pdf.worker.mjs")` (nft can't trace
+    pdfjs' own runtime-variable `import(workerSrc)`, dropping the worker from the bundle;
+    the global routes pdfjs to its main-thread handler). nft bundling is only verifiable on
+    Vercel → each needed deploy + prod re-test. Both remain inside `extractPdfCoverText`,
+    so a failure degrades to the full-PDF fallback within the extract timeout.
   - Code: flag `META_TEXT_EXTRACT` (default OFF). When on, `extractPdfCoverText`
     (already-shipped `pdfjs-dist`, no new dep, reads the content stream — no canvas)
     pulls the first ≤3 pages / 40 000 chars of text and sends ~tens of KB to Gemini
@@ -238,8 +263,8 @@ _Updated 2026-09-15._
     already extracts these zh-Hant reports via the same pdfjs API (jargon feature), so the
     real corpus uses embedded fonts / ToUnicode. **Watch the `extract too short` log rate
     after enabling** to confirm on the live corpus.
-- **#3–#5 — assessed against the code after #2; recommend NOT building #3, and treating
-  #4/#5 as your call (evidence below, verified by direct read 2026-09-15).**
+- **#3–#5 — RESOLVED: #3 skipped; #4 and #5 SHIPPED + ENABLED (PR #41 `5f5cc2a`, #5 TTL
+  hardened by PR #42 `977c903`). The assessment below is the decision record that led there.**
   - **#3 Gemini Files API — RECOMMEND SKIP.** The fan-out reuses one `contentParts` array
     (`server.ts:2402`) and stops on the first success (`return res.json` at
     `server.ts:2436`), so the payload is sent **once on the hot path**; upload-once only
@@ -262,13 +287,15 @@ _Updated 2026-09-15._
     single-feature, so #5 = generalize it + add content hashing. Low-frequency op × low
     hit rate (few links per identical PDF) → non-trivial code for a tiny win.
 
-_Rollback (both levers are enabled on prod):_
-- _#1: set `PDF_R2_REDIRECT=0` (or unset) on Vercel prod + redeploy → instant revert to
-  the proxy path. R2 CORS additions are backward-compatible (upload rule untouched) and
-  can stay._
-- _#2: `vercel env rm META_TEXT_EXTRACT production` (or set `0`) + `vercel redeploy …
-  --target production` → reverts to the full-PDF path. The code already auto-falls-back on
-  any extraction failure, so the flag is the only switch._
+_Rollback (all four levers are enabled on prod; each flag defaults OFF, so unset/`0` +
+redeploy reverts):_
+- _#1: `PDF_R2_REDIRECT=0` → instant revert to the proxy path. R2 CORS additions are
+  backward-compatible (upload rule untouched) and can stay._
+- _#2: `vercel env rm META_TEXT_EXTRACT production` (or `0`) + redeploy → full-PDF path.
+  Code auto-falls-back on any extraction failure, so the flag is the only switch. The #43/#44
+  bundling fixes are inert when the flag is off (extract path never runs)._
+- _#4: `PDF_NOLID_CDN_CACHE=0` → no-lid responses return to `private, max-age=3600`._
+- _#5: `META_CACHE=0` → generate-meta stops reading/writing the cache and always regenerates._
 
 ---
 *Cross-checked by codex (OpenAI), grok (xAI), agy (Gemini), opencode (muse-spark),
