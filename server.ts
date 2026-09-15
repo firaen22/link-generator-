@@ -1417,6 +1417,13 @@ app.post("/api/unlock-link", async (req, res) => {
       const fsResetHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
       if (!fsResetHeaders) {
         console.error("[UNLOCK_LINK] Missing Firestore service account");
+      } else if (!chargeWriteBudget(ip)) {
+        // Unlike the wrong-PIN increment above (which IS the lockout enforcement and is
+        // exempt), this reset is NOT enforcement: skipping it merely leaves the counter
+        // high, so the lockout arms sooner — the conservative direction. It is an
+        // unauthenticated write an attacker holding the PIN can drive (alternate
+        // wrong/correct → one reset per pair), so it draws from the write fuse.
+        console.warn(`[WRITE_BUDGET] PIN counter reset skipped for ${shortId} ip=${ip}`);
       } else {
         const resetRes = await fetch(
           `${fsBase}/${shortId}?updateMask.fieldPaths=failedPinCount`,
