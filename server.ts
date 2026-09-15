@@ -503,10 +503,10 @@ const allow = (key: string, max: number, windowMs: number, commit = true): boole
   //     the spend caps and billed-read/write budgets are in rlCost, so a clear can't
   //     reset them.
   //   - Protected store (rlCost): NEVER clear (that was the spray-reset bug) and do NOT
-  //     grow without bound. The read gates' global tiers already bound NEW per-IP key
-  //     creation to ~1,600/hr/instance (a global peek runs before each ip: commit), but
-  //     the AI gate commits ai:ip: before checking ai:global, so a fresh-IP flood there
-  //     can still grow the map. Keep every existing counter, but refuse to ADMIT an
+  //     grow without bound. The read/AI gates' global tiers already bound NEW per-IP key
+  //     creation to ~1,600/hr/instance (a global peek runs before each ip: commit — the
+  //     AI gate now peeks ai:global before committing ai:ip:, like the read gates). As a
+  //     final backstop under a fresh-IP flood: keep every existing counter, but refuse to ADMIT an
   //     unseen per-IP key: deny the request (fail-closed on memory). For a quota
   //     limiter, rate-limiting a brand-new IP during a cardinality flood is correct;
   //     capacity frees as idle keys age past the stale prune above. Global keys are
@@ -3419,9 +3419,23 @@ app.post("/api/session-end", async (req, res) => {
   // flow falls through to the cheap summary branches below (the advisor is still
   // notified; no Gemini call is made).
   const ip = clientIp(req);
+  const aiSessionKey = `ai:s:${session_id ?? "none"}`;
+  const aiIpKey = `ai:ip:${ip}`;
+  // Peek ALL three tiers (commit=false) before committing ANY, matching the read/unlock
+  // gates (~L1294). A passing peek never creates a store entry, so an exhausted ai:global
+  // no longer lets a fresh IP grow a protected ai:ip: cost-map entry. Only once every tier
+  // passes do we commit each (the commit is what records the reservation — a peek never
+  // does). The gate runs synchronously with no interleave, and rlCost is unchanged between
+  // a tier's peek and its commit (the ai:s commit hits rlHits; globals are cardinality-
+  // exempt), so a commit that follows a passing peek here cannot itself deny; the && guards
+  // on the commits stay only as a defensive mirror of the unlock gate. On throttle the flow
+  // falls through to the cheap no-AI branches (no Gemini call).
   const aiAllowed = wantsAnalysis
-    && allow(`ai:s:${session_id ?? "none"}`, 1, 60_000)
-    && allow(`ai:ip:${ip}`, 30, 3_600_000)
+    && allow(aiSessionKey, 1, 60_000, false)
+    && allow(aiIpKey, 30, 3_600_000, false)
+    && allow("ai:global", 40, 3_600_000, false)
+    && allow(aiSessionKey, 1, 60_000)
+    && allow(aiIpKey, 30, 3_600_000)
     && allow("ai:global", 40, 3_600_000);
 
   let text = "";
