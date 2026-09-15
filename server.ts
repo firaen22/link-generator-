@@ -1373,18 +1373,23 @@ app.post("/api/unlock-link", async (req, res) => {
 
       // Durable lockout is read-modify-write; concurrent wrong attempts can
       // undercount, but this still closes the serverless scale-out brute-force gap.
-      // INTENTIONALLY NOT behind the WRITE fuse (chargeWriteBudget): like a capped-link
-      // open, this PATCH IS the enforcement mechanism, not telemetry — the fuse fails by
-      // skipping the write, which here would stop failedPinCount advancing and never arm
-      // the 20-fail lockout (reopening the brute-force gap). It is self-bounded instead:
-      // a locked link 429s above before this runs, so ≤20 writes/hour/link (~480/day),
-      // and the preceding billed GET is already ul:ip: capped at 40/hr/IP. If a hard
-      // project-global ceiling is ever needed (many PIN links under parallel attack), the
-      // only safe shape is a FAIL-CLOSED cap that denies the attempt — never a skip.
+      // This PATCH IS the lockout enforcement, not telemetry, so it must never be
+      // SKIPPED on a blown write fuse (skipping would stop failedPinCount advancing and
+      // never arm the 20-fail lockout). It is not self-bounded either: a recipient who
+      // HOLDS the PIN can alternate wrong/correct — the correct attempt resets the
+      // counter (that reset is fused below) so lockout never arms and every wrong
+      // attempt is one more write. So this write is FAIL-CLOSED on the fuse: reserve a
+      // slot, and if none is available DENY the attempt with 429 (no write issued, no
+      // lockout bypass — the attempt simply doesn't count). A blown fuse is an abuse
+      // condition; a correct PIN still unlocks (that path only skips its reset).
       const fsPatchHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
       if (!fsPatchHeaders) {
         console.error("[UNLOCK_LINK] Missing Firestore service account");
         return res.status(500).json({ error: "unlock_failed" });
+      }
+      if (!chargeWriteBudget(ip)) {
+        console.warn(`[WRITE_BUDGET] wrong-PIN attempt denied (fuse) for ${shortId} ip=${ip}`);
+        return res.status(429).json({ error: "too_many_attempts" });
       }
       const patchRes = await fetch(
         `${fsBase}/${shortId}?${masks.map((m) => `updateMask.fieldPaths=${encodeURIComponent(m)}`).join("&")}`,
@@ -1418,9 +1423,9 @@ app.post("/api/unlock-link", async (req, res) => {
       if (!fsResetHeaders) {
         console.error("[UNLOCK_LINK] Missing Firestore service account");
       } else if (!chargeWriteBudget(ip)) {
-        // Unlike the wrong-PIN increment above (which IS the lockout enforcement and is
-        // exempt), this reset is NOT enforcement: skipping it merely leaves the counter
-        // high, so the lockout arms sooner — the conservative direction. It is an
+        // Unlike the wrong-PIN increment above (lockout enforcement — fail-closed 429 on
+        // a blown fuse), this reset is NOT enforcement: skipping it merely leaves the
+        // counter high, so the lockout arms sooner — the conservative direction. It is an
         // unauthenticated write an attacker holding the PIN can drive (alternate
         // wrong/correct → one reset per pair), so it draws from the write fuse.
         console.warn(`[WRITE_BUDGET] PIN counter reset skipped for ${shortId} ip=${ip}`);
