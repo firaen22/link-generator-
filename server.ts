@@ -2437,8 +2437,9 @@ app.post("/api/generate-meta", async (req, res) => {
       // L1 miss: try L2 (R2).
       const stored = await readMetaStore(metaKey).catch(() => null);
       if (stored) {
-        cachedMeta = stored;
-        setMetaCache(metaKey, stored); // populate L1 on read
+        cachedMeta = { title: stored.title, description: stored.description };
+        // Preserve the L2 creation time so promotion doesn't extend the 24h TTL.
+        setMetaCache(metaKey, cachedMeta, stored.at); // populate L1 on read
         console.log(`[GENERATE_META] cache hit (L2) | ${metaKey.slice(0, 30)}...`);
       }
     }
@@ -2600,8 +2601,13 @@ type MetaResult = { title: string; description: string };
 const metaCache = new Map<string, { meta: MetaResult; at: number }>();
 const META_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const META_CACHE_MAX = 500;
+// Tolerance for a stored `at` slightly ahead of this instance's clock (skew across
+// instances) before it is rejected as an invalid future timestamp.
+const META_CACHE_CLOCK_SKEW_MS = 60 * 1000;
 
-const setMetaCache = (key: string, meta: MetaResult): void => {
+// `at` defaults to now for a fresh generation; pass the original creation time when
+// promoting an L2 entry into L1 so promotion does not extend its 24h lifetime.
+const setMetaCache = (key: string, meta: MetaResult, at: number = Date.now()): void => {
   if (!metaCache.has(key) && metaCache.size >= META_CACHE_MAX) {
     let oldestKey: string | null = null;
     let oldestAt = Infinity;
@@ -2613,10 +2619,10 @@ const setMetaCache = (key: string, meta: MetaResult): void => {
     }
     if (oldestKey) metaCache.delete(oldestKey);
   }
-  metaCache.set(key, { meta, at: Date.now() });
+  metaCache.set(key, { meta, at });
 };
 
-const readMetaStore = async (key: string): Promise<MetaResult | null> => {
+const readMetaStore = async (key: string): Promise<(MetaResult & { at: number }) | null> => {
   try {
     const bucket = process.env.R2_BUCKET_NAME || "reports";
     const { client, GetObjectCommand } = await getS3();
@@ -2628,13 +2634,23 @@ const readMetaStore = async (key: string): Promise<MetaResult | null> => {
     // findings: L2 never checked parsed.at (served stale indefinitely), and L2 bypassed
     // the string/length validation applied to generated metadata (allowing malformed
     // cache entries). Both now required for L2 hit.
-    const storedAt = Number(parsed?.at);
-    if (!Number.isFinite(storedAt) || storedAt + META_CACHE_TTL_MS <= Date.now()) {
-      return null; // TTL expired or missing/invalid timestamp
+    // Accept only a genuine numeric, non-negative, safe-integer timestamp: bare
+    // Number() coercion let "1e100"/[1e100] through, and a finite-but-huge future
+    // `at` never satisfied the expiry check, so a malformed entry could live forever.
+    const now = Date.now();
+    const storedAt = typeof parsed?.at === "number" ? parsed.at : NaN;
+    if (
+      !Number.isSafeInteger(storedAt) ||
+      storedAt < 0 ||
+      storedAt > now + META_CACHE_CLOCK_SKEW_MS ||
+      storedAt + META_CACHE_TTL_MS <= now
+    ) {
+      return null; // missing / invalid / future / expired timestamp
     }
     const title = typeof parsed?.title === "string" ? parsed.title.trim() : "";
     const description = typeof parsed?.description === "string" ? parsed.description.trim() : "";
-    return title && description ? { title, description } : null;
+    // Return `at` so an L2→L1 promotion can preserve the original creation time.
+    return title && description ? { title, description, at: storedAt } : null;
   } catch (err: any) {
     // A miss (NoSuchKey) is the common case and not worth logging at warn.
     return null;
