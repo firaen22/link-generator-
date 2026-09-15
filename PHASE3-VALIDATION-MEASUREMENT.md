@@ -205,7 +205,86 @@ not a storage/request-count driver; carry it as its own item, not a gate trigger
    on it in the window run.
 
 ---
-*Scope + Run 1 results. Scope cross-family reviewed (Fable + codex-astra, both FIX→folded);
-Run 1 reviewed by codex-luna + agy + grok-4.6 (analysis) then Fable + codex-astra (pre-commit
-gate, both FIX→folded). Gate verdict: INCONCLUSIVE — a real-traffic window + GA4 volume remain
-to close M1/M2/M3-rate/M4 and the storage cliff.*
+
+## Phase 3 — Run 2: gate re-derivation with GA4 open volume (2026-09-15)
+
+**New input:** GA4 (property `market-update-56e1c`, Events report, last 90d Jun 17–Sep 14 2026).
+`open` = **110 events / 90d, 30 users** — reader link-opens [verified: `open` fires once "when
+the document first loads" in the viewer, `src/viewer/hooks/useTelemetry.ts:662-665`,
+`sendTrackingEvent('open', {total_pages})`]. By country: HK 96, TW 10, ES 2, SG/TH 1 (matches
+the zh-Hant reader audience). Other 90d events: page_view 1,221, user_engagement 499,
+session_start 125, report_session_end 83, engaged_60s 52, first_visit 45; and **heartbeat 1,551
+= leftover E2E self-test client `E2E-TEST-DELETE` — NOT real usage** (kill/quarantine it; if it
+exercises create-link it can pressure the write cap on spike days). Total 3,686 events / 58 users.
+
+**Reviewed cross-family (codex-astra + grok-4.6, independent lenses); both reached INCONCLUSIVE,
+overturning an author-proposed NO. Findings reproduced first-hand against code/arithmetic before
+adoption (two reviewer sub-claims refuted by code — see below).**
+
+### What the volume DOES resolve
+The **reader-open term** of the daily-ops cliff is definitively *not* the cliff: 110/90d =
+**1.22 opens/day** → per open ≥2 GETs + 1 commit ⇒ **~2.4 reads + 1.2 writes/day = 0.005%** of the
+Firestore Spark caps (50k reads / 20k writes per day). Even a 100× open spike stays <1%. [verified: arithmetic]
+
+### Why the gate is still INCONCLUSIVE, not NO
+The Phase 4 gate is an **OR** of two cliffs; open volume touches only clause 1's reader term:
+- **Total daily ops (clause 1):** the dominant Firestore consumers are *not* opens — cron
+  silent-links (≤300 reads + ≤300 writes/run, 1×/day, **hard `limit:300`, no paging** [verified:
+  server.ts:1514], so it cannot grow into a read-cliff), advisor-dashboard `/api/links` (≤300
+  reads/load × **unmeasured** load frequency — 167 loads/day alone = the full 50k read cap), and
+  create-link (1–20 writes/action × unmeasured rate). These totals are **scenarios, not measured bounds.**
+- **Unbounded storage (clause 2):** needs actual **current stored bytes + `links` document count**,
+  which GA4 cannot supply (Firestore TTL is Blaze-blocked → doc count is monotonic). Time-to-cap =
+  (1 GiB − current_bytes) / (create_rate × bytes_per_doc); an author-proposed "decades" margin
+  stacked **three unmeasured guesses** (current bytes ≈ 0, ~2k docs/yr, few KB/doc) and is
+  **withdrawn** — the gate requires a *named* margin, and a guessed one is not named. Sensitivity
+  (both reviewers, reproduced): at 5 KiB/doc from empty ~2,300 creates/day exhausts 1 GiB in 90d
+  (not credible at 1.22 opens/day), **but** near-full it takes only ~230/day — and the create rate
+  is unmeasured (opens ≠ creates; unopened links accumulate). The flip hinges on exactly the two
+  quantities GA4 doesn't measure.
+- **Not R2:** bounded by the live 90-day delete rule. Confirmed the meta/extract L2 cache writes
+  **R2, not Firestore** [verified: `writeMetaStore`→`PutObjectCommand`, server.ts:2692-2705], so
+  the extraction-before-cache candidate is not an unbounded-Firestore input. *(Refutes a reviewer
+  "extract may write unbounded Firestore" claim.)*
+
+### Coverage caveat (sharpens `open`)
+GA4 `open` is a **recorded viewer-load event count — a floor, not a server-operation count**:
+requests that fail before load, crawlers/unfurls, retries, direct `/api/pdf` hits, and any
+blocked/dropped analytics consume Firestore ops without emitting `open`. Treat 110/90d as the
+measured reader-open floor, to be reconciled against `/l/` + `/api/pdf` server counts in a window.
+
+### Phase 4 gate — Run 2 verdict: **INCONCLUSIVE** (materially narrowed)
+Both cross-family reviewers independently reached it; reproduction against code/arithmetic confirms
+it. The GA4 pull was not wasted — it **retired the reader-open cliff** and re-pointed the missing
+input from "GA4 open volume" (now obtained) to **one Firestore console usage snapshot**: total
+stored bytes (dated, for net growth) + `links` document count + daily reads/writes series. That
+single pull closes both clauses; until then, INCONCLUSIVE — never a silent NO.
+
+### Lever efficacy (M1–M4) — corrected framing
+An author draft ("payoff is inherently tiny at this volume, skip the window") is **withdrawn**.
+M1–M4 are **correctness** questions, not ROI (a 0% redirect share or a cache that never hits is a
+product bug at any volume), and M3's denominator is *generations*, not opens. A bounded on-flag
+window stays worthwhile for correctness (M3 ≥20 generations ≈ 3 weeks at current cadence; expect
+honest small-sample / INCONCLUSIVE *efficacy*, not "skip").
+
+### M2 residual counting rule — reworked (define now, validate on `-x` grouping)
+Replaces the withdrawn `Success − ΣM2` aggregate (which went negative once a cache hit interleaved).
+Correct rule is **per-request**, not aggregate: a *silent full-PDF generation* = a generate-meta
+request whose grouped `-x` log lines contain `[GENERATE_META] Success` **and none** of the three M2
+extraction lines (`text mode` / `extract too short` / `text extract failed`) **and no** `cache hit`
+(i.e. it generated with `extractBudget<2000` skipping extraction). Count these by per-request
+grouping (`-x` provides it), never by subtracting `--json` aggregates across cache-hit and
+generation requests. Still to **validate against real grouped logs** in the window before relied on.
+
+### What resolves Phase 3 now
+1. **One Firestore console usage snapshot** (stored bytes + doc count + daily r/w, dated) → the gate.
+2. A bounded on-flag correctness window → M1–M4 + a valid M3 denominator + M2-rule validation.
+3. Kill the `E2E-TEST-DELETE` heartbeat client → removes synthetic write-cap pressure and cleans
+   the log/GA4 signal.
+
+---
+*Scope + Run 1 + Run 2. Scope reviewed (Fable + codex-astra); Run 1 reviewed by codex-luna + agy +
+grok-4.6 then Fable + codex-astra; Run 2 (GA4 gate re-derivation) reviewed by codex-astra + grok-4.6
+— both INCONCLUSIVE, overturning an author NO; two reviewer sub-claims refuted by code
+(extract→R2 not Firestore; cron `limit:300` no paging). **Gate verdict: INCONCLUSIVE (narrowed)** —
+reader-open cliff retired; one Firestore console usage snapshot now closes both clauses.*
