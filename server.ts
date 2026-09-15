@@ -1276,28 +1276,30 @@ app.post("/api/unlock-link", async (req, res) => {
   }
 
   const ip = clientIp(req);
-  if (!allow(`pin:${ip}`, 10, 60_000, false) || !allow(`pin:id:${shortId}`, 30, 3_600_000, false)) {
+  // Two cap families guard this handler:
+  //   - pin:/pin:id: are PIN-brute-force limits in the sprayable rlHits store (a key-
+  //     spray that forces store.clear() resets them).
+  //   - ul:* charge the billed Firestore GET below against a SEPARATE, never-cleared
+  //     cost budget (rlCost) so spraying can't reset the read protection. The global
+  //     cap is PER-PROCESS (like ai:/jg:): N warm instances allow up to N×600/hr — it
+  //     bounds single-process spend against the Spark free tier (50k reads/day, shared
+  //     with the /l/ resolve path), not a deployment-wide guarantee. 600/hr =
+  //     14.4k/day/process; like ai:/jg: it accepts that a flood can 429 unlock
+  //     attempts to bound billed reads.
+  // Peek ALL four tiers before committing ANY, so an exhausted read budget doesn't
+  // burn a legit user's PIN allowance (and vice versa). Then commit the pin: tiers,
+  // and commit the ul: tiers HONORING their return: at the rlCost cardinality boundary
+  // an earlier commit can grow the map and make a later commit admission-deny, and
+  // that must 429 BEFORE the billed GET, never slip a read with no reservation.
+  if (!allow(`pin:${ip}`, 10, 60_000, false) || !allow(`pin:id:${shortId}`, 30, 3_600_000, false) ||
+      !allow(`ul:ip:${ip}`, 40, 3_600_000, false) || !allow("ul:global", 600, 3_600_000, false)) {
     return res.status(429).json({ error: "too_many_attempts" });
   }
   allow(`pin:${ip}`, 10, 60_000);
   allow(`pin:id:${shortId}`, 30, 3_600_000);
-
-  // The pin: caps above are PIN-brute-force limits and live in the sprayable rlHits
-  // store, so a key-spray that forces store.clear() (see allow()) resets them and
-  // re-opens the billed Firestore GET below. Charge that GET against a SEPARATE,
-  // never-cleared cost budget (ul:*, in rlCost) so spraying can't reset the read
-  // protection. Peek both before committing either, so a maxed global cap doesn't
-  // burn a legit user's per-IP budget. The global cap is PER-PROCESS (like the ai:/jg:
-  // globals): each serverless instance keeps its own rlCost, so N warm instances allow
-  // up to N×600/hr — it bounds single-process spend against the Spark free tier
-  // (50k reads/day, shared with the /l/ resolve path), not a deployment-wide guarantee.
-  // 600/hr = 14.4k/day/process leaves headroom for real reads while capping abuse;
-  // like ai:/jg: it accepts that a flood can 429 unlock attempts to bound billed reads.
-  if (!allow(`ul:ip:${ip}`, 40, 3_600_000, false) || !allow("ul:global", 600, 3_600_000, false)) {
+  if (!allow(`ul:ip:${ip}`, 40, 3_600_000) || !allow("ul:global", 600, 3_600_000)) {
     return res.status(429).json({ error: "too_many_attempts" });
   }
-  allow(`ul:ip:${ip}`, 40, 3_600_000);
-  allow("ul:global", 600, 3_600_000);
 
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
   if (!projectId) {
@@ -1371,6 +1373,14 @@ app.post("/api/unlock-link", async (req, res) => {
 
       // Durable lockout is read-modify-write; concurrent wrong attempts can
       // undercount, but this still closes the serverless scale-out brute-force gap.
+      // INTENTIONALLY NOT behind the WRITE fuse (chargeWriteBudget): like a capped-link
+      // open, this PATCH IS the enforcement mechanism, not telemetry — the fuse fails by
+      // skipping the write, which here would stop failedPinCount advancing and never arm
+      // the 20-fail lockout (reopening the brute-force gap). It is self-bounded instead:
+      // a locked link 429s above before this runs, so ≤20 writes/hour/link (~480/day),
+      // and the preceding billed GET is already ul:ip: capped at 40/hr/IP. If a hard
+      // project-global ceiling is ever needed (many PIN links under parallel attack), the
+      // only safe shape is a FAIL-CLOSED cap that denies the attempt — never a skip.
       const fsPatchHeaders = await firestoreHeaders({ "Content-Type": "application/json" });
       if (!fsPatchHeaders) {
         console.error("[UNLOCK_LINK] Missing Firestore service account");
@@ -3704,6 +3714,19 @@ ${vossLabel}
     console.warn(`[SESSION-END] Telegram rate-limited for ${ip}`);
   }
 
+  // Second-reader detection below is one billed Firestore GET on an unauthenticated
+  // endpoint, so it must draw from a protected (rlCost, never spray-cleared) read
+  // budget like the /l/ and unlock gates. Legit volume is ~1/day per reader link, so
+  // 120/hr per IP and 120/hr per instance (2,880/day) is large headroom while keeping
+  // the read-quota arithmetic under 50k/day: rd:global 24,000 + ul:global 14,400 +
+  // rdet:global 2,880 = 41,280/day/instance. Peek both tiers, then commit both and
+  // HONOR the commit (an admission-deny at the rlCost boundary must skip the GET).
+  const readerDetectLimiter = (ip: string): boolean =>
+    allow(`rdet:ip:${ip}`, 120, 3_600_000, false) &&
+    allow("rdet:global", 120, 3_600_000, false) &&
+    allow(`rdet:ip:${ip}`, 120, 3_600_000) &&
+    allow("rdet:global", 120, 3_600_000);
+
   try {
     const validReaderInput =
       device_id !== null &&
@@ -3711,7 +3734,13 @@ ${vossLabel}
       typeof client_name === "string" && client_name.trim() !== "" &&
       total_duration_sec >= 10;
 
-    if (validReaderInput) {
+    // On denial, skip detection entirely (telemetry loss) — never fail the request.
+    const readerDetectOk = validReaderInput && readerDetectLimiter(ip);
+    if (validReaderInput && !readerDetectOk) {
+      console.warn(`[SESSION-END] Reader detection rate-limited for ${ip}`);
+    }
+
+    if (readerDetectOk) {
       const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
       if (!projectId) {
         console.error("[SESSION-END] Missing Firebase config for second-reader detection");
