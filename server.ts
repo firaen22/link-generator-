@@ -465,12 +465,22 @@ const getHkTimeOfDay = (): { name: 'morning' | 'afternoon' | 'evening' | 'late n
 // blunts single-source floods; a distributed multi-IP flood is out of scope for
 // app-level code (would need a WAF or a durable global counter).
 const RL_MAX_WINDOW_MS = 3_600_000; // longest window any caller uses (per-IP / global AI caps)
-// Cost counters (ai:*, jg:*, ul:*, rd:* — global + ip: variants) live in a SEPARATE map that is never bulk-
-// cleared. They're bounded by the number of real client IPs (x-real-ip, set by the
-// platform), so a single attacker can't grow them — and they must NOT be wipeable, or
-// an attacker could spray unique session ids into the map below to force a clear and
-// reset the Gemini spend caps for telemetry or jargon explanation.
+// Cost counters live in a SEPARATE map that is never bulk-cleared. Three kinds qualify,
+// all keyed per real client IP (x-real-ip, set by the platform) or global:
+//   - AI/jargon spend caps (ai:global, ai:ip:<ip>, jg:global, jg:ip:<ip>)
+//   - billed Firestore read caps (rd:global, rd:ip:<ip> link-resolve; ul:global, ul:ip:<ip>
+//     unlock; rdet:global, rdet:ip:<ip> reader-detect)
+//   - per-IP Firestore WRITE-budget caps (ww:h:<ip> hourly, ww:m:<ip> minute) — the
+//     minute/hour tiers of the write fuse; its daily counters live OUTSIDE these maps
+//     (see wqGlobal / wqByIp below, which allow() cannot spray-clear either way).
+// They must NOT be wipeable, or an attacker could spray unique session ids into the
+// sprayable map below to force a clear and reset the Gemini spend caps, the billed-read
+// budgets, OR the per-IP write budget — the quota-drain vectors these caps exist to close.
 const rlCost = new Map<string, number[]>();
+// Global (non-per-IP) cost keys. Always admitted into rlCost even during a cardinality
+// flood (see the admission cap in allow()): denying creation of a global key would
+// 429 that key's entire route family for every client.
+const COST_GLOBAL_KEYS = new Set(["ai:global", "jg:global", "rd:global", "ul:global", "rdet:global"]);
 // Sprayable counters (tg:<ip>, ai:s:<session_id> — session id is request-supplied).
 const rlHits = new Map<string, number[]>();
 // commit=false peeks whether a call would be allowed without consuming budget — used
@@ -479,19 +489,41 @@ const rlHits = new Map<string, number[]>();
 // global cap will reject anyway).
 const allow = (key: string, max: number, windowMs: number, commit = true): boolean => {
   const now = Date.now();
-  const isCostKey = key === "ai:global" || key.startsWith("ai:ip:") || key === "jg:global" || key.startsWith("jg:ip:") || key === "ul:global" || key.startsWith("ul:ip:") || key === "rd:global" || key.startsWith("rd:ip:");
+  const isCostKey =
+    COST_GLOBAL_KEYS.has(key) ||
+    key.startsWith("ai:ip:") || key.startsWith("jg:ip:") ||
+    key.startsWith("rd:ip:") || key.startsWith("ul:ip:") || key.startsWith("rdet:ip:") ||
+    key.startsWith("ww:");
   const store = isCostKey ? rlCost : rlHits;
 
-  // Bound memory under a key-spraying flood. Prune only entries whose newest hit is
+  // Bound memory under a key-spraying flood. First prune entries whose newest hit is
   // already older than the longest window (genuinely expired). If a fresh-key flood
-  // still overruns the sprayable store, clear THAT store only (fail-open) — the cost
-  // store is never cleared, so spraying can't reset the AI spend caps.
+  // still overruns a store after that, the two stores diverge:
+  //   - Sprayable store (rlHits): clear it (fail-open). Only tg:/ai:s:/pin: live here;
+  //     the spend caps and billed-read/write budgets are in rlCost, so a clear can't
+  //     reset them.
+  //   - Protected store (rlCost): NEVER clear (that was the spray-reset bug) and do NOT
+  //     grow without bound. The read gates' global tiers already bound NEW per-IP key
+  //     creation to ~1,600/hr/instance (a global peek runs before each ip: commit), but
+  //     the AI gate commits ai:ip: before checking ai:global, so a fresh-IP flood there
+  //     can still grow the map. Keep every existing counter, but refuse to ADMIT an
+  //     unseen per-IP key: deny the request (fail-closed on memory). For a quota
+  //     limiter, rate-limiting a brand-new IP during a cardinality flood is correct;
+  //     capacity frees as idle keys age past the stale prune above. Global keys are
+  //     always admitted (COST_GLOBAL_KEYS) — denying one would 429 its whole route
+  //     family. Note the bound is ~5,000 + admitted globals, not an exact 5,000.
   if (store.size > 5000) {
     const stale = now - RL_MAX_WINDOW_MS;
     for (const [k, ts] of store) {
       if (ts.length === 0 || ts[ts.length - 1] <= stale) store.delete(k);
     }
-    if (!isCostKey && store.size > 5000) store.clear();
+    if (store.size > 5000) {
+      if (!isCostKey) {
+        store.clear();
+      } else if (!store.has(key) && !COST_GLOBAL_KEYS.has(key)) {
+        return false;
+      }
+    }
   }
 
   const cutoff = now - windowMs;
@@ -505,6 +537,162 @@ const allow = (key: string, max: number, windowMs: number, commit = true): boole
   store.set(key, hits);
   return true;
 };
+
+// ---------------------------------------------------------------------------
+// Firestore WRITE-quota fuse (per-instance, in-memory, best-effort).
+//
+// HONESTY: this is a FUSE, not a project-global 20k/day guarantee. Firebase
+// Spark caps writes at 20,000/day PROJECT-GLOBAL, resetting at midnight Pacific
+// (verified against Firebase docs, Sep 2026). This limiter lives in one warm
+// Vercel isolate's memory: N warm isolates each carry their own budget, so
+// N × WQ_GLOBAL_PER_DAY + owner writes can still exceed 20k, and a cold isolate
+// starts at zero (fail-open). It stops ONE IP on ONE instance from walking the
+// project into the wall and survives session-id spray; it does NOT coordinate
+// across isolates or regions. The real fix is Blaze (removes the hard cap) or a
+// shared KV/Redis counter (NOT a Firestore counter — that adds writes to the
+// path being throttled). Ship this fuse AND move to Blaze/KV if >~2 warm isolates.
+//
+// Sizing (reserve ~4,000/day project-wide for owner writes: create/cron/extend/
+// revoke/PIN). Single-IP single-instance ceiling = min(tiers) = 1,500/day (<< 20k).
+// For more seminar headroom raise per-IP, never global; never per-IP daily >= global.
+// Per-instance budget: this fuse lives in one warm isolate's memory, so the safe warm-
+// isolate count is N_safe = floor((20,000 - 4,000 owner) / WQ_GLOBAL_PER_DAY). At 4,000
+// that tolerates 4 warm isolates (4×4,000 + 4,000 owner = 20,000 exactly). Legit unauth
+// telemetry is only hundreds/day, so 4,000 is ample real-traffic headroom while abuse
+// still trips the fuse. Above ~4 warm isolates, move to Blaze or a shared KV counter
+// (see HONESTY note above) — do NOT raise this number.
+const WQ_GLOBAL_PER_DAY = 4000; // unauth telemetry writes per instance per day
+const WQ_IP_PER_DAY = 1500;     // per client IP per day
+const WQ_IP_PER_HOUR = 200;     // per client IP per hour (allow(), ww:h:)
+const WQ_IP_PER_MIN = 80;       // per client IP per minute (allow(), ww:m:)
+
+// Daily budget uses a dedicated integer day-counter, NOT allow(): a 24h window via
+// allow() mis-prunes (its overflow loop deletes a whole key whose newest hit is >1h
+// old, so one idle hour would RESET the daily budget) and stores a ~15k-element array.
+// These counters live OUTSIDE rlCost/rlHits, so no spray can touch them.
+type DayCounter = { day: string; n: number };
+const wqGlobal: DayCounter = { day: "", n: 0 };
+const wqByIp = new Map<string, DayCounter>(); // protected: stale-day prune + 5000-key bound
+
+// Pacific day key (YYYY-MM-DD), anchored to the Firebase Spark reset boundary
+// (midnight America/Los_Angeles), NOT UTC. Built from explicit Intl parts rather
+// than a locale string, so the key is a machine contract not a locale-format
+// assumption. Returns "" when the Pacific day cannot be determined (Intl/ICU
+// unavailable, or malformed parts); callers MUST treat "" as fail-closed for
+// budgeted telemetry writes — never fall back to a UTC day, whose midnight lands
+// INSIDE the Pacific quota day and would refill the fuse once per day.
+function dayKey(): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    let y = "", m = "", d = "";
+    for (const p of parts) {
+      if (p.type === "year") y = p.value;
+      else if (p.type === "month") m = p.value;
+      else if (p.type === "day") d = p.value;
+    }
+    // Explicit zero-padded YYYY-MM-DD is lexicographically sortable — the forward-
+    // only rollover compare below depends on that ordering.
+    if (/^\d{4}$/.test(y) && /^\d{2}$/.test(m) && /^\d{2}$/.test(d)) return `${y}-${m}-${d}`;
+    return "";
+  } catch {
+    return "";
+  }
+}
+
+// Charge/peek one day-counter for the given (already-computed, non-empty) day.
+// Rolls the window only FORWARD (day > slot.day): a backward clock jump must NOT
+// reset the counter, or it would refill the budget.
+function dayAllow(slot: DayCounter, max: number, n: number, day: string, commit: boolean): boolean {
+  if (slot.day === "" || day > slot.day) {
+    slot.day = day;
+    slot.n = 0;
+  }
+  if (slot.n + n > max) return false;
+  if (commit) slot.n += n;
+  return true;
+}
+
+// Fetch-or-create this IP's daily slot, bounding wqByIp like rlCost: prune stale-day
+// entries, and if still over the cap refuse to ADMIT an unseen IP (fail-closed on
+// memory during a cardinality flood). Returns null when a new IP can't be admitted.
+function wqIpDaySlot(ip: string, day: string): DayCounter | null {
+  const existing = wqByIp.get(ip);
+  if (existing) return existing;
+  if (wqByIp.size > 5000) {
+    for (const [k, s] of wqByIp) {
+      if (s.day !== "" && s.day < day) wqByIp.delete(k);
+    }
+    if (wqByIp.size > 5000) return null;
+  }
+  const slot: DayCounter = { day: "", n: 0 };
+  wqByIp.set(ip, slot);
+  return slot;
+}
+
+// Reserve one unauth Firestore telemetry write against every tier (global daily +
+// per-IP daily/hour/minute). Peek all tiers first (short-circuit), then commit all
+// with NO await between check and reserve — otherwise concurrent requests could
+// double-spend one slot. Never refunds (an ambiguous timeout leaves the write's
+// commit state unknown; a refund on timeout would let a real write escape the fuse).
+function chargeWriteBudget(ip: string): boolean {
+  // Compute the Pacific day ONCE and thread it through, so every tier in this
+  // reservation agrees on the day and dayKey() runs a single time. An undetermined
+  // day (dayKey()==="") fails closed: deny this budgeted telemetry write rather than
+  // risk a UTC-boundary refill. Capped-link increments (exempt) and reads are
+  // unaffected — they never call this.
+  const today = dayKey();
+  if (today === "") return false;
+  if (!dayAllow(wqGlobal, WQ_GLOBAL_PER_DAY, 1, today, false)) return false;
+  const ipDaily = wqIpDaySlot(ip, today);
+  if (!ipDaily) return false;
+  if (!dayAllow(ipDaily, WQ_IP_PER_DAY, 1, today, false)) return false;
+  if (!allow(`ww:h:${ip}`, WQ_IP_PER_HOUR, 3_600_000, false)) return false;
+  if (!allow(`ww:m:${ip}`, WQ_IP_PER_MIN, 60_000, false)) return false;
+  // All tiers admit — commit synchronously, no await in between. The allow() commits
+  // can still admission-deny at the rlCost cardinality boundary (an earlier commit can
+  // push the map over the cap), so HONOR their return: deny the write rather than issue
+  // it without a reservation. The daily charges already taken are not refunded —
+  // a conservative partial charge is the safe direction for a fuse.
+  dayAllow(wqGlobal, WQ_GLOBAL_PER_DAY, 1, today, true);
+  dayAllow(ipDaily, WQ_IP_PER_DAY, 1, today, true);
+  if (!allow(`ww:h:${ip}`, WQ_IP_PER_HOUR, 3_600_000, true)) return false;
+  if (!allow(`ww:m:${ip}`, WQ_IP_PER_MIN, 60_000, true)) return false;
+  return true;
+}
+
+// openCount increment, gated by the write fuse. Placement rule: wrap the WRITE, never
+// the route — a blown fuse must never 429 a legitimate resolve/read.
+//   - Capped links (maxOpens>0): the increment IS the enforcement mechanism (it drives
+//     the maxOpens cap on /l, unlock, and /api/pdf). Capped-link write volume is bounded
+//     by owner-created links × maxOpens (links need x-pwp-key to create) → NOT attacker-
+//     scalable → EXEMPT from the telemetry budget. Never skip-and-serve a capped link
+//     (freezing openCount would grant unlimited opens on a maxOpens=1 link).
+//   - Uncapped links (maxOpens==0): the increment is pure telemetry. On budget deny, skip
+//     the write and still serve (telemetry loss is tolerable; serving is never gated here).
+// Charges synchronously BEFORE the await. Returns whether the write was issued (logging
+// only; both callers serve regardless of the return).
+async function incrementLinkOpenCountBudgeted(
+  projectId: string,
+  shortId: string,
+  maxOpens: number,
+  ip: string,
+): Promise<boolean> {
+  if (maxOpens > 0) {
+    await incrementLinkOpenCount(projectId, shortId);
+    return true;
+  }
+  if (!chargeWriteBudget(ip)) {
+    console.warn(`[WRITE_BUDGET] openCount increment skipped (uncapped) for ${shortId} ip=${ip}`);
+    return false;
+  }
+  await incrementLinkOpenCount(projectId, shortId);
+  return true;
+}
 
 // Best-effort client IP. Prefer Vercel's x-real-ip (set by the platform to the true
 // client IP) over the leftmost x-forwarded-for hop, which is client-supplied and
@@ -1022,7 +1210,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
     }
 
     if (!isCrawler && !pinProtected) {
-      await incrementLinkOpenCount(projectId, shortId);
+      await incrementLinkOpenCountBudgeted(projectId, shortId, maxOpens, ip);
       const remaining = maxOpens > 0 ? maxOpens - (openCount + 1) : -1;
       const marker = remaining === 1 ? '⚠️ <b>此連結只剩 1 次開啟機會</b>（可用 extend_link 工具提高上限）' : '';
       await sendShortLinkOpenNotification(req, data, shortId, cName, rName, marker);
@@ -1255,7 +1443,7 @@ app.post("/api/unlock-link", async (req, res) => {
     }
 
     const viewerUrl = `/view?q=${encodeURIComponent(q)}&lid=${encodeURIComponent(shortId)}`;
-    await incrementLinkOpenCount(projectId, shortId);
+    await incrementLinkOpenCountBudgeted(projectId, shortId, maxOpens, ip);
     const remaining = maxOpens > 0 ? maxOpens - (openCount + 1) : -1;
     const unlockMarker = remaining === 1 ? "🔐 已解鎖 ⚠️ <b>此連結只剩 1 次開啟機會</b>（可用 extend_link 工具提高上限）" : "🔐 已解鎖";
     await sendShortLinkOpenNotification(req, data, shortId, cName, rName, unlockMarker);
