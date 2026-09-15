@@ -2260,6 +2260,21 @@ async function extractPdfCoverText(
     };
   }
   const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // In Node, pdfjs defaults workerSrc to a relative "./pdf.worker.mjs" and dynamically
+  // imports it at getDocument time. Vercel's bundler (nft) can't trace that runtime
+  // path, so the fake worker fails with `Cannot find module`. Importing the worker via
+  // its bare specifier (a string literal nft DOES bundle) and registering it on
+  // globalThis.pdfjsWorker makes pdfjs use it as the main-thread message handler and
+  // skip the untraceable import entirely (see PDFWorker.#mainThreadWorkerMessageHandler).
+  if (!(globalThis as any).pdfjsWorker) {
+    const pdfWorker: any = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+    const handler = pdfWorker.WorkerMessageHandler ?? pdfWorker.default?.WorkerMessageHandler;
+    // Only register when the export is actually present. Assigning an object with an
+    // undefined handler would be truthy — poisoning the guard on every warm invoke so
+    // pdfjs falls back to the untraceable import() with no recovery. Leaving it unset
+    // lets pdfjs try its own path (which fails loud into the full-PDF fallback).
+    if (handler) (globalThis as any).pdfjsWorker = { WorkerMessageHandler: handler };
+  }
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(pdfBuffer),
     isEvalSupported: false,
