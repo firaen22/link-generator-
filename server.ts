@@ -1989,6 +1989,25 @@ app.get("/api/pdf/:file_id", async (req, res) => {
 
   try {
     if (lid) {
+      // checkPdfLinkLifecycle does an unauthenticated BILLED Firestore GET on
+      // links/<lid>, so a spray of unique lids here would drain the Spark read
+      // quota (50k/day) exactly like the /l/ and unlock-link paths — bypassing
+      // those gates via this sibling route. Charge it against the SAME protected,
+      // never-cleared rd:* budget the /l/ resolve uses: this route is coupled to
+      // /l/ (a real reader open is one /l/ read + one /api/pdf?lid= read here, the
+      // client loading the bytes with disableRange => a single GET), so sharing the
+      // budget bounds the whole link-read flow together and keeps the per-process
+      // total under the shared quota. A legit open therefore costs 2 rd: charges;
+      // the ip/global caps are sized for that. No lid => the un-revocable /view?q=,
+      // /s/ flows, which do no Firestore read here and stay ungated. Per-process,
+      // like ai:/jg:/ul:. Charge BEFORE the fetch; peek both, commit both.
+      const ip = clientIp(req);
+      if (!allow(`rd:ip:${ip}`, 120, 3_600_000, false) || !allow("rd:global", 1000, 3_600_000, false)) {
+        return res.status(429).send("系統繁忙，請稍後再試");
+      }
+      allow(`rd:ip:${ip}`, 120, 3_600_000);
+      allow("rd:global", 1000, 3_600_000);
+
       const blocked = await checkPdfLinkLifecycle(lid, file_id);
       if (blocked) {
         console.warn(`[PDF_PROXY] Blocked ${lid} (${blocked.status}): ${blocked.message}`);
