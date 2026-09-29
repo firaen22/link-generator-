@@ -4106,6 +4106,31 @@ app.use((req, res, next) => {
   res.status(404).json({ error: "Not found" });
 });
 
+// Express 4 does not catch rejected promises from async route handlers: any throw
+// inside one (e.g. Number()/String() on a request-body field like {"toString":0})
+// becomes an unhandled rejection, which exits the Node process and drops every
+// in-flight request on the instance. Forward those rejections to `next` so they
+// reach the error handler below. Runs once, after every route above is registered.
+for (const layer of (app as any)._router.stack) {
+  for (const routeLayer of layer.route?.stack ?? []) {
+    const handle = routeLayer.handle;
+    routeLayer.handle = function (req: express.Request, res: express.Response, next: express.NextFunction) {
+      const out = handle.call(this, req, res, next);
+      if (out && typeof out.catch === "function") out.catch(next);
+      return out;
+    };
+  }
+}
+
+// Unexpected handler errors: log and send a generic JSON 500 (never the stack).
+// HTTP errors that carry a status (body-parser's 400/413) and responses already
+// under way keep Express's default handling.
+app.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent || typeof (err as any)?.status === "number") return next(err);
+  console.error(`[UNHANDLED] ${req.method} ${safeLogValue(req.path)}:`, err);
+  res.status(500).json({ error: "Internal error" });
+});
+
 // For Vercel Serverless Functions
 export default app;
 
