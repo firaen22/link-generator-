@@ -56,6 +56,7 @@ const TOOLS = [
           items: { type: "string" },
           description: "One or more client names. A unique personalised link is created per name.",
           minItems: 1,
+          maxItems: 20,
         },
         reportName: {
           type: "string",
@@ -411,7 +412,9 @@ async function elicitMissingFields(args) {
 async function createShareLink(rawArgs) {
   if (!rawArgs.pdfPath || typeof rawArgs.pdfPath !== "string") throw new Error("pdfPath is required.");
   if (!Array.isArray(rawArgs.clients)) throw new Error("clients must be an array of names.");
-  if (rawArgs.clients.length > 100) throw new Error("Too many clients (max 100 per call).");
+  // Match the backend cap (/api/create-link rejects > 20) BEFORE uploading or
+  // generating metadata, so an oversized batch fails fast instead of after that work.
+  if (rawArgs.clients.length > 20) throw new Error("Too many clients (max 20 per call).");
   // Only accept string names — a number/null/object would otherwise be coerced into
   // a bogus name like "null" or "[object Object]".
   const names = rawArgs.clients
