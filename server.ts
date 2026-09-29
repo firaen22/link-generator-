@@ -473,6 +473,7 @@ const RL_MAX_WINDOW_MS = 3_600_000; // longest window any caller uses (per-IP / 
 //   - per-IP Firestore WRITE-budget caps (ww:h:<ip> hourly, ww:m:<ip> minute) — the
 //     minute/hour tiers of the write fuse; its daily counters live OUTSIDE these maps
 //     (see wqGlobal / wqByIp below, which allow() cannot spray-clear either way).
+//   - per-IP legacy PDF proxy cap (pdfv:ip:<ip>) on the vblob_ fetch branch
 // They must NOT be wipeable, or an attacker could spray unique session ids into the
 // sprayable map below to force a clear and reset the Gemini spend caps, the billed-read
 // budgets, OR the per-IP write budget — the quota-drain vectors these caps exist to close.
@@ -493,7 +494,7 @@ const allow = (key: string, max: number, windowMs: number, commit = true): boole
     COST_GLOBAL_KEYS.has(key) ||
     key.startsWith("ai:ip:") || key.startsWith("jg:ip:") ||
     key.startsWith("rd:ip:") || key.startsWith("ul:ip:") || key.startsWith("rdet:ip:") ||
-    key.startsWith("ww:");
+    key.startsWith("ww:") || key.startsWith("pdfv:");
   const store = isCostKey ? rlCost : rlHits;
 
   // Bound memory under a key-spraying flood. First prune entries whose newest hit is
