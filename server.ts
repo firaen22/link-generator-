@@ -2667,13 +2667,16 @@ const NON_PUBLIC_ADDRESSES = (() => {
   const b = new BlockList();
   for (const [net, prefix] of [
     ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
-    ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16],
-    ["198.18.0.0", 15], ["224.0.0.0", 4], ["240.0.0.0", 4],
+    ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
+    ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24],
+    ["224.0.0.0", 4], ["240.0.0.0", 4],
   ] as const) b.addSubnet(net, prefix, "ipv4");
   for (const [net, prefix] of [
-    ["::", 128], ["::1", 128], ["64:ff9b::", 96],
+    ["::", 128], ["::1", 128], ["64:ff9b::", 96], ["64:ff9b:1::", 48], ["100::", 64],
+    ["2001::", 23], ["2001:db8::", 32], ["5f00::", 16],
     ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
   ] as const) b.addSubnet(net, prefix, "ipv6");
+  // Ranges follow the IANA special-purpose registries' "not globally reachable" rows.
   // No ::ffff:0:0/96 entry: BlockList matches IPv4-mapped IPv6 (::ffff:a.b.c.d)
   // against the IPv4 rules above, and that entry would also match EVERY plain IPv4.
   return b;
@@ -2682,12 +2685,17 @@ const NON_PUBLIC_ADDRESSES = (() => {
 const resolvesToPublicAddress = async (hostname: string): Promise<boolean> => {
   try {
     const host = hostname.replace(/^\[/, "").replace(/\]$/, "");
-    const addrs = await lookup(host, { all: true, verbatim: true });
+    // Bounded: the fetch timeout below does not cover DNS, so a stalled resolver would
+    // otherwise hold the request open.
+    const addrs = await Promise.race([
+      lookup(host, { all: true, verbatim: true }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("dns timeout")), 3000).unref()),
+    ]);
     return addrs.length > 0 && addrs.every(
       (a) => !NON_PUBLIC_ADDRESSES.check(a.address, a.family === 6 ? "ipv6" : "ipv4"),
     );
   } catch {
-    return false; // unresolvable → refuse
+    return false; // unresolvable or slow → refuse
   }
 };
 
