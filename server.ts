@@ -473,7 +473,7 @@ const RL_MAX_WINDOW_MS = 3_600_000; // longest window any caller uses (per-IP / 
 //   - per-IP Firestore WRITE-budget caps (ww:h:<ip> hourly, ww:m:<ip> minute) — the
 //     minute/hour tiers of the write fuse; its daily counters live OUTSIDE these maps
 //     (see wqGlobal / wqByIp below, which allow() cannot spray-clear either way).
-//   - per-IP legacy PDF proxy cap (pdfv:ip:<ip>) on the vblob_ fetch branch
+//   - legacy PDF proxy caps (pdfv:global, pdfv:ip:<ip>) on the vblob_ fetch branch
 // They must NOT be wipeable, or an attacker could spray unique session ids into the
 // sprayable map below to force a clear and reset the Gemini spend caps, the billed-read
 // budgets, OR the per-IP write budget — the quota-drain vectors these caps exist to close.
@@ -481,7 +481,7 @@ const rlCost = new Map<string, number[]>();
 // Global (non-per-IP) cost keys. Always admitted into rlCost even during a cardinality
 // flood (see the admission cap in allow()): denying creation of a global key would
 // 429 that key's entire route family for every client.
-const COST_GLOBAL_KEYS = new Set(["ai:global", "jg:global", "rd:global", "ul:global", "rdet:global"]);
+const COST_GLOBAL_KEYS = new Set(["ai:global", "jg:global", "rd:global", "ul:global", "rdet:global", "pdfv:global"]);
 // Sprayable counters (tg:<ip>, ai:s:<session_id> — session id is request-supplied).
 const rlHits = new Map<string, number[]>();
 // commit=false peeks whether a call would be allowed without consuming budget — used
@@ -2454,8 +2454,14 @@ app.get("/api/pdf/:file_id", async (req, res) => {
       // this app's own bucket), unauthenticated, at this function's cost. Legacy links
       // still use it, so the host list stays; cap per-IP volume instead. The viewer
       // loads a PDF with one full GET (disableRange) and the response is cached 1h, so
-      // a real reader stays far below this.
-      if (!allow(`pdfv:ip:${clientIp(req)}`, 60, 3_600_000)) {
+      // a real reader stays far below this. The global tier bounds how many NEW per-IP
+      // keys this route can admit into rlCost, so a fresh-IP flood here can't fill it
+      // and admission-deny the unlock/read gates. Peek both tiers, then commit both.
+      const pdfvIp = clientIp(req);
+      if (
+        !allow(`pdfv:ip:${pdfvIp}`, 60, 3_600_000, false) || !allow("pdfv:global", 600, 3_600_000, false) ||
+        !allow(`pdfv:ip:${pdfvIp}`, 60, 3_600_000) || !allow("pdfv:global", 600, 3_600_000)
+      ) {
         return res.status(429).send("Too many requests. Please try again later.");
       }
     } else if (file_id.startsWith('r2_')) {
