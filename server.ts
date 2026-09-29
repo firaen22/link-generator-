@@ -4002,7 +4002,11 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
       const cialdiniLever = escapeHTML(aiResult.cialdini_lever || '—');
       const vossLabel = escapeHTML(aiResult.voss_label || '—');
       const nba = escapeHTML(aiResult.nba_whatsapp || '—');
-      const frictionList = (aiResult.friction_points || [])
+      // The standard-model fallback has no responseSchema, so the reply's shape is
+      // unchecked: keep only string entries (a non-array here used to throw and
+      // replace the whole report with the failure message).
+      const frictionList = (Array.isArray(aiResult.friction_points) ? aiResult.friction_points : [])
+        .filter((f: unknown): f is string => typeof f === 'string')
         .map((f: string) => `• ${escapeHTML(f)}`)
         .join('\n') || '• none detected';
       const modelTag = isThinkingModel ? '🧠 Thinking' : '⚡ Standard';
@@ -4021,7 +4025,7 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
 ${deviceIcon} ${escapeHTML(device_type || 'unknown')}  ${timeLabel}  🔁 Returns: ${return_visit_count ?? 0}${returnVisitLine}${ctaLine}${askLine}
 
 🧠 <b>Intent Archetype：</b> ${archetype}
-📊 <b>Z-Score：</b> ${aiResult.z_score ?? zScore}
+📊 <b>Z-Score：</b> ${escapeHTML(aiResult.z_score ?? zScore)}
 🔬 <b>Psych Bias：</b> ${bias}
 👁 <b>Rep System：</b> ${repSystem}
 
