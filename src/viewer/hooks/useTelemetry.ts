@@ -351,12 +351,17 @@ export function useTelemetry({
       ...data,
     };
 
-    fetch('/api/track', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      keepalive: true,
-    }).catch(err => console.error('Tracking failed', err));
+    // /api/track builds no Telegram text for heartbeats (the 1-minute alert comes
+    // from engaged_60s), so a heartbeat POST was a billed no-op every 30s per open
+    // reader. Heartbeats still go to GA4 / ContentSquare below.
+    if (event !== 'heartbeat') {
+      fetch('/api/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      }).catch(err => console.error('Tracking failed', err));
+    }
 
     if (typeof window.gtag === 'function') {
       window.gtag('event', event, {
@@ -648,8 +653,7 @@ export function useTelemetry({
         persistSessionSnapshot();
         sendTrackingEvent('heartbeat', {
           duration_seconds: sessionDuration,
-          // Server /api/track reads `page` (not current_page) for the heartbeat
-          // 「正在閱讀中」 page note — send under that key so it isn't dropped.
+          // Sent as `page` (not current_page), matching the other events' key.
           page: currentPageRef.current,
         });
         lastPingRef.current = now;
