@@ -385,12 +385,13 @@ const sendTelegram = async (text: string, chatId?: string): Promise<void> => {
           .replace(/&lt;/g, '<')
           .replace(/&gt;/g, '>')
           .replace(/&amp;/g, '&');
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        const fallback = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chat_id: targetChat, text: plain }),
           signal: AbortSignal.timeout(5000),
         });
+        if (!fallback.ok) console.error(`Telegram plain-text fallback failed (${fallback.status})`);
       }
     }
   } catch (err) {
