@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import express from "express";
 import { createHash, timingSafeEqual, randomBytes } from "node:crypto";
+import { lookup } from "node:dns/promises";
+import { BlockList } from "node:net";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -2655,6 +2657,62 @@ app.post("/api/shorten", async (req, res) => {
 });
 
 // 新增：圖片大小檢查 API 端點
+// DNS-level companion to isPublicHttpUrl: the hostname check above only sees the
+// spelling, so a public-looking name (or an unlisted literal like 0.0.0.1) can still
+// resolve to an internal address. Resolve it and reject if ANY address is
+// non-public. Residual: a DNS answer can change between this lookup and fetch()'s
+// own resolution (rebinding); closing that needs connection pinning or an egress
+// policy.
+const NON_PUBLIC_ADDRESSES = (() => {
+  const b = new BlockList();
+  for (const [net, prefix] of [
+    ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
+    ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
+    ["192.88.99.2", 32], ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24],
+    ["224.0.0.0", 4], ["240.0.0.0", 4],
+  ] as const) b.addSubnet(net, prefix, "ipv4");
+  for (const [net, prefix] of [
+    ["::", 128], ["::1", 128], ["64:ff9b::", 96], ["64:ff9b:1::", 48], ["100::", 64],
+    ["2001::", 23], ["2001:db8::", 32], ["2002::", 16], ["3fff::", 20], ["5f00::", 16],
+    ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
+  ] as const) b.addSubnet(net, prefix, "ipv6");
+  // Ranges follow the IANA special-purpose registries' "not globally reachable" rows,
+  // plus 2002::/16 (6to4), whose addresses embed an arbitrary IPv4 (2002:7f00:1:: = 127.0.0.1).
+  // No ::ffff:0:0/96 entry: BlockList matches IPv4-mapped IPv6 (::ffff:a.b.c.d)
+  // against the IPv4 rules above, and that entry would also match EVERY plain IPv4.
+  return b;
+})();
+
+// getaddrinfo can't be cancelled: a lookup abandoned at the 3s bound keeps its libuv
+// threadpool slot (default 4, shared with fetch's own DNS) until the OS gives up, so this
+// route keeps at most 2 lookups outstanding and refuses beyond that.
+let pendingImageLookups = 0;
+const resolvesToPublicAddress = async (hostname: string): Promise<boolean> => {
+  if (pendingImageLookups >= 2) {
+    console.warn(`[CHECK_IMAGE_SIZE] DNS lookup cap reached (${pendingImageLookups} outstanding); refusing ${hostname}`);
+    return false;
+  }
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const host = hostname.replace(/^\[/, "").replace(/\]$/, "");
+    const pending = lookup(host, { all: true, verbatim: true }).finally(() => { pendingImageLookups--; });
+    pendingImageLookups++; // after lookup() returns: a synchronous throw can't strand the count
+    // Bounded: the fetch timeout below does not cover DNS, so a stalled resolver would
+    // otherwise hold the request open.
+    const addrs = await Promise.race([
+      pending,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("dns timeout")), 3000); timer.unref(); }),
+    ]);
+    return addrs.length > 0 && addrs.every(
+      (a) => !NON_PUBLIC_ADDRESSES.check(a.address, a.family === 6 ? "ipv6" : "ipv4"),
+    );
+  } catch {
+    return false; // unresolvable, slow, or too many lookups outstanding → refuse
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 app.get("/api/check-image-size", async (req, res) => {
   if (!requireApiKey(req, res)) return; // advisor-only utility; also limits SSRF surface
   const { url } = req.query;
@@ -2667,7 +2725,7 @@ app.get("/api/check-image-size", async (req, res) => {
 
   // SSRF guard: this fetches a caller-supplied URL, so block internal/private
   // targets and never follow a redirect from a public host into an internal one.
-  if (!isPublicHttpUrl(resolvedUrl)) {
+  if (!isPublicHttpUrl(resolvedUrl) || !(await resolvesToPublicAddress(new URL(resolvedUrl).hostname))) {
     return res.status(400).json({ error: "不支援的圖片網址" });
   }
   const ssrfSafeFetch = (u: string, method: "HEAD" | "GET") =>
