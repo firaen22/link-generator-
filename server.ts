@@ -1613,11 +1613,13 @@ app.post("/api/unlock-link", async (req, res) => {
         ? committed
         : (Number.isFinite(currentFailed) ? currentFailed + 1 : 1);
 
-      if (nextFailed % 20 === 0) {
+      // A read count already >= 20 means an earlier lock write failed (a live lock would
+      // have refused this request before the PIN compare), so retry the lock now rather
+      // than letting the count run on to the next multiple of 20.
+      if (nextFailed % 20 === 0 || (currentFailed >= 20 && nextFailed > 20)) {
         // Arm the 1-hour lock and restart the count. Atomic increments hand exactly one
         // request each multiple of 20, so this extra write happens once per 20 failures
         // (it rides on the 20 slots already reserved) even under a concurrent burst.
-        // If it fails, the lock is re-armed at the next multiple of 20.
         const lockRes = await fetch(
           `${fsBase}/${shortId}?updateMask.fieldPaths=failedPinCount&updateMask.fieldPaths=pinLockedUntil`,
           {
