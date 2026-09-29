@@ -2688,12 +2688,15 @@ const NON_PUBLIC_ADDRESSES = (() => {
 // route keeps at most 2 lookups outstanding and refuses beyond that.
 let pendingImageLookups = 0;
 const resolvesToPublicAddress = async (hostname: string): Promise<boolean> => {
-  if (pendingImageLookups >= 2) return false;
+  if (pendingImageLookups >= 2) {
+    console.warn(`[CHECK_IMAGE_SIZE] DNS lookup cap reached (${pendingImageLookups} outstanding); refusing ${hostname}`);
+    return false;
+  }
   let timer: NodeJS.Timeout | undefined;
   try {
     const host = hostname.replace(/^\[/, "").replace(/\]$/, "");
-    pendingImageLookups++;
     const pending = lookup(host, { all: true, verbatim: true }).finally(() => { pendingImageLookups--; });
+    pendingImageLookups++; // after lookup() returns: a synchronous throw can't strand the count
     // Bounded: the fetch timeout below does not cover DNS, so a stalled resolver would
     // otherwise hold the request open.
     const addrs = await Promise.race([
