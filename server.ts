@@ -1568,21 +1568,10 @@ app.post("/api/unlock-link", async (req, res) => {
     const ok = storedHash.length === candidateHash.length && sameHash(storedHash, candidateHash);
 
     if (!ok) {
-      const currentFailed = Number.parseInt(fields.failedPinCount?.integerValue || "0", 10);
-      const nextFailed = Number.isFinite(currentFailed) ? currentFailed + 1 : 1;
-      const lockout = nextFailed >= 20;
-      const patchFields: any = {
-        failedPinCount: { integerValue: lockout ? "0" : String(nextFailed) },
-      };
-      const masks = ["failedPinCount"];
-      if (lockout) {
-        patchFields.pinLockedUntil = { timestampValue: new Date(Date.now() + 3_600_000).toISOString() };
-        masks.push("pinLockedUntil");
-      }
-
-      // Durable lockout is read-modify-write; concurrent wrong attempts can
-      // undercount, but this still closes the serverless scale-out brute-force gap.
-      // This PATCH IS the lockout enforcement, not telemetry, so it is never SKIPPED
+      // Durable lockout counter. The increment is an atomic Firestore transform, so
+      // concurrent wrong attempts (across IPs and warm instances) each count once — a
+      // read-modify-write PATCH let a synchronized burst advance it by only one.
+      // This write IS the lockout enforcement, not telemetry, so it is never SKIPPED
       // on a blown fuse (skipping would freeze failedPinCount and never arm the 20-fail
       // lockout). Its write slot was reserved BEFORE the PIN compare above — see that
       // comment for why the reservation must precede the compare. It is not otherwise
@@ -1593,18 +1582,61 @@ app.post("/api/unlock-link", async (req, res) => {
         console.error("[UNLOCK_LINK] Missing Firestore service account");
         return res.status(500).json({ error: "unlock_failed" });
       }
-      const patchRes = await fetch(
-        `${fsBase}/${shortId}?${masks.map((m) => `updateMask.fieldPaths=${encodeURIComponent(m)}`).join("&")}`,
+      const incRes = await fetch(
+        `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:commit`,
         {
-          method: "PATCH",
+          method: "POST",
           headers: fsPatchHeaders,
-          body: JSON.stringify({ fields: patchFields }),
+          signal: AbortSignal.timeout(10000),
+          body: JSON.stringify({
+            writes: [{
+              currentDocument: { exists: true },
+              transform: {
+                document: `projects/${projectId}/databases/(default)/documents/links/${shortId}`,
+                fieldTransforms: [{ fieldPath: "failedPinCount", increment: { integerValue: "1" } }],
+              },
+            }],
+          }),
         }
       );
-      if (!patchRes.ok) {
-        const detail = await patchRes.text().catch(() => "");
-        console.error(`[UNLOCK_LINK] Failed to update PIN counters (${patchRes.status}) for ${shortId}: ${detail}`);
+      if (!incRes.ok) {
+        const detail = await incRes.text().catch(() => "");
+        console.error(`[UNLOCK_LINK] Failed to update PIN counters (${incRes.status}) for ${shortId}: ${detail}`);
         return res.status(500).json({ error: "unlock_failed" });
+      }
+      // transformResults[0] is the post-increment count. If it is missing, fall back to
+      // this request's read-based estimate (the pre-atomic behavior).
+      const incJson = await incRes.json().catch(() => null);
+      const committed = Number.parseInt(incJson?.writeResults?.[0]?.transformResults?.[0]?.integerValue ?? "", 10);
+      const currentFailed = Number.parseInt(fields.failedPinCount?.integerValue || "0", 10);
+      const nextFailed = Number.isFinite(committed) && committed > 0
+        ? committed
+        : (Number.isFinite(currentFailed) ? currentFailed + 1 : 1);
+
+      if (nextFailed % 20 === 0) {
+        // Arm the 1-hour lock and restart the count. Atomic increments hand exactly one
+        // request each multiple of 20, so this extra write happens once per 20 failures
+        // (it rides on the 20 slots already reserved) even under a concurrent burst.
+        // If it fails, the lock is re-armed at the next multiple of 20.
+        const lockRes = await fetch(
+          `${fsBase}/${shortId}?updateMask.fieldPaths=failedPinCount&updateMask.fieldPaths=pinLockedUntil`,
+          {
+            method: "PATCH",
+            headers: fsPatchHeaders,
+            signal: AbortSignal.timeout(10000),
+            body: JSON.stringify({
+              fields: {
+                failedPinCount: { integerValue: "0" },
+                pinLockedUntil: { timestampValue: new Date(Date.now() + 3_600_000).toISOString() },
+              },
+            }),
+          }
+        );
+        if (!lockRes.ok) {
+          const detail = await lockRes.text().catch(() => "");
+          console.error(`[UNLOCK_LINK] Failed to arm PIN lockout (${lockRes.status}) for ${shortId}: ${detail}`);
+          return res.status(500).json({ error: "unlock_failed" });
+        }
       }
 
       if ((nextFailed === 1 || nextFailed === 20) && allow(`tg:${ip}`, 12, 60_000)) {
