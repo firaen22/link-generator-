@@ -714,7 +714,7 @@ async function readLinkOpenState(
     const fsHeaders = await firestoreHeaders();
     if (!fsHeaders) return null;
     const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/links/${shortId}`;
-    const resp = await fetch(docUrl, { headers: fsHeaders });
+    const resp = await fetch(docUrl, { headers: fsHeaders, signal: AbortSignal.timeout(10000) });
     if (!resp.ok) return null;
     const d = await resp.json();
     const openCount = parseInt(d.fields?.openCount?.integerValue ?? "0", 10) || 0;
@@ -754,6 +754,7 @@ async function commitCappedOpenIncrement(
     const document = `projects/${projectId}/databases/(default)/documents/links/${shortId}`;
     const response = await fetch(commitUrl, {
       method: "POST",
+      signal: AbortSignal.timeout(10000),
       headers: fsHeaders,
       body: JSON.stringify({
         writes: [{
@@ -971,6 +972,7 @@ const incrementLinkOpenCount = async (projectId: string, shortId: string): Promi
     const document = `projects/${projectId}/databases/(default)/documents/links/${shortId}`;
     const response = await fetch(commitUrl, {
       method: "POST",
+      signal: AbortSignal.timeout(10000),
       headers: fsHeaders,
       body: JSON.stringify({
         writes: [{
@@ -1298,7 +1300,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
       console.error("[SHORT_LINK] Missing Firestore service account");
       return res.status(500).send("系統發生錯誤，無法載入報告");
     }
-    const response = await fetch(docUrl, { headers: fsHeaders });
+    const response = await fetch(docUrl, { headers: fsHeaders, signal: AbortSignal.timeout(10000) });
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -1504,7 +1506,7 @@ app.post("/api/unlock-link", async (req, res) => {
       console.error("[UNLOCK_LINK] Missing Firestore service account");
       return res.status(500).json({ error: "server_config_missing" });
     }
-    const docRes = await fetch(`${fsBase}/${shortId}`, { headers: fsHeaders });
+    const docRes = await fetch(`${fsBase}/${shortId}`, { headers: fsHeaders, signal: AbortSignal.timeout(10000) });
     if (!docRes.ok) {
       if (docRes.status !== 404) {
         const detail = await docRes.text().catch(() => "");
@@ -1674,15 +1676,21 @@ app.post("/api/unlock-link", async (req, res) => {
         // this reset). It is an unauthenticated write an attacker holding the PIN can
         // drive (alternate wrong/correct → one reset per pair), which is why every
         // attempt — not just wrong ones — is charged to the fuse.
+        // A timeout here is logged like a failed reset rather than thrown: it must not
+        // refuse a reader who entered the correct PIN.
         const resetRes = await fetch(
           `${fsBase}/${shortId}?updateMask.fieldPaths=failedPinCount`,
           {
             method: "PATCH",
+            signal: AbortSignal.timeout(10000),
             headers: fsResetHeaders,
             body: JSON.stringify({ fields: { failedPinCount: { integerValue: "0" } } }),
           }
-        );
-        if (!resetRes.ok) {
+        ).catch((err) => {
+          console.error(`[UNLOCK_LINK] PIN counter reset threw for ${shortId}:`, err);
+          return null;
+        });
+        if (resetRes && !resetRes.ok) {
           const detail = await resetRes.text().catch(() => "");
           console.error(`[UNLOCK_LINK] Failed to reset PIN counter (${resetRes.status}) for ${shortId}: ${detail}`);
         }
@@ -1870,7 +1878,7 @@ app.post("/api/create-link", async (req, res) => {
           const body = JSON.stringify({ fields });
           const writeRes = await fetch(
             `${fsBase}/${candidate}?currentDocument.exists=false`,
-            { method: "PATCH", headers: fsWriteHeaders, body }
+            { method: "PATCH", headers: fsWriteHeaders, body, signal: AbortSignal.timeout(10000) }
           );
 
           if (writeRes.ok) {
@@ -1918,6 +1926,7 @@ app.get("/api/links", async (req, res) => {
       `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:runQuery`,
       {
         method: "POST",
+        signal: AbortSignal.timeout(10000),
         headers: fsHeaders,
         body: JSON.stringify({
           structuredQuery: {
@@ -1995,6 +2004,7 @@ app.get("/api/cron/silent-links", async (req, res) => {
       `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:runQuery`,
       {
         method: "POST",
+        signal: AbortSignal.timeout(10000),
         headers: fsHeaders,
         body: JSON.stringify({
           structuredQuery: {
@@ -2110,6 +2120,7 @@ app.get("/api/cron/silent-links", async (req, res) => {
       }));
       const commitRes = await fetch(`https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:commit`, {
         method: "POST",
+        signal: AbortSignal.timeout(10000),
         headers: fsHeaders,
         body: JSON.stringify({ writes }),
       });
@@ -2149,7 +2160,7 @@ app.post("/api/revoke-link", async (req, res) => {
     if (!fsHeaders) {
       return res.status(500).json({ error: "更新連結狀態失敗" });
     }
-    const docRes = await fetch(`${fsBase}/${shortId}`, { headers: fsHeaders });
+    const docRes = await fetch(`${fsBase}/${shortId}`, { headers: fsHeaders, signal: AbortSignal.timeout(10000) });
     if (!docRes.ok) {
       return res.status(404).json({ error: "找不到此連結" });
     }
@@ -2163,6 +2174,7 @@ app.post("/api/revoke-link", async (req, res) => {
       `${fsBase}/${shortId}?updateMask.fieldPaths=revoked`,
       {
         method: "PATCH",
+        signal: AbortSignal.timeout(10000),
         headers: { ...fsHeaders, "Content-Type": "application/json" },
         body: JSON.stringify({ fields: { revoked: { booleanValue: nextRevoked } } }),
       }
@@ -2197,7 +2209,7 @@ app.post("/api/extend-link", async (req, res) => {
   try {
     const fsHeaders = await firestoreHeaders();
     if (!fsHeaders) return res.status(500).json({ error: "延長連結失敗" });
-    const docRes = await fetch(`${fsBase}/${shortId}`, { headers: fsHeaders });
+    const docRes = await fetch(`${fsBase}/${shortId}`, { headers: fsHeaders, signal: AbortSignal.timeout(10000) });
     if (!docRes.ok) return res.status(404).json({ error: "找不到此連結" });
     const doc = await docRes.json();
     if (doc.fields?.adv?.stringValue !== advisor) return res.status(403).json({ error: "沒有權限修改此連結" });
@@ -2223,7 +2235,7 @@ app.post("/api/extend-link", async (req, res) => {
     if (typeof doc.updateTime !== "string") return res.status(500).json({ error: "延長連結失敗" });
     const query = updateFields.map((field) => `updateMask.fieldPaths=${encodeURIComponent(field)}`).join("&")
       + `&currentDocument.updateTime=${encodeURIComponent(doc.updateTime)}`;
-    const patchRes = await fetch(`${fsBase}/${shortId}?${query}`, { method: "PATCH", headers: { ...fsHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ fields }) });
+    const patchRes = await fetch(`${fsBase}/${shortId}?${query}`, { method: "PATCH", headers: { ...fsHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ fields }), signal: AbortSignal.timeout(10000) });
     if (!patchRes.ok) {
       const detail = await patchRes.text();
       if (detail.includes("FAILED_PRECONDITION")) return res.status(409).json({ error: "連結剛被更新，請重試" });
@@ -2263,7 +2275,7 @@ app.post("/api/replace-link-file", async (req, res) => {
   try {
     const fsHeaders = await firestoreHeaders();
     if (!fsHeaders) return res.status(500).json({ error: "連結內容更新失敗" });
-    const docRes = await fetch(`${fsBase}/${shortId}`, { headers: fsHeaders });
+    const docRes = await fetch(`${fsBase}/${shortId}`, { headers: fsHeaders, signal: AbortSignal.timeout(10000) });
     if (!docRes.ok) return res.status(404).json({ error: "連結不存在" });
     const doc = await docRes.json();
     if (doc.fields?.adv?.stringValue !== advisor) {
@@ -2284,6 +2296,7 @@ app.post("/api/replace-link-file", async (req, res) => {
     const nextQ = LZString.compressToEncodedURIComponent(JSON.stringify(payload));
     const patchRes = await fetch(`${fsBase}/${shortId}?updateMask.fieldPaths=q&currentDocument.exists=true`, {
       method: "PATCH",
+      signal: AbortSignal.timeout(10000),
       headers: { ...fsHeaders, "Content-Type": "application/json" },
       body: JSON.stringify({ fields: { q: { stringValue: nextQ } } }),
     });
@@ -2694,6 +2707,7 @@ app.post("/api/shorten", async (req, res) => {
   try {
     const dubResponse = await fetch("https://api.dub.co/links", {
       method: "POST",
+      signal: AbortSignal.timeout(10000),
       headers: {
         "Authorization": `Bearer ${process.env.DUB_API_KEY}`,
         "Content-Type": "application/json",
@@ -4110,7 +4124,7 @@ ${vossLabel}
         const docBase = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
         const docUrl = `${docBase}/readers/${readerKey}`;
         const nowIso = new Date().toISOString();
-        const readRes = await fetch(docUrl, { headers: fsReaderHeaders });
+        const readRes = await fetch(docUrl, { headers: fsReaderHeaders, signal: AbortSignal.timeout(10000) });
 
         // Both reader PATCHes below are unauthenticated telemetry writes (attacker-
         // scalable by rotating file_id|client_name / device_id), so they draw from the
@@ -4124,6 +4138,7 @@ ${vossLabel}
             `${docUrl}?currentDocument.exists=false`,
             {
             method: "PATCH",
+            signal: AbortSignal.timeout(10000),
             headers: fsReaderHeaders,
             body: JSON.stringify({
               fields: {
@@ -4167,6 +4182,7 @@ ${vossLabel}
             const updateUrl = `${docUrl}?updateMask.fieldPaths=deviceIds&updateMask.fieldPaths=updatedAt&currentDocument.updateTime=${encodeURIComponent(readerUpdateTime)}`;
             const updateRes = await fetch(updateUrl, {
               method: "PATCH",
+              signal: AbortSignal.timeout(10000),
               headers: fsReaderHeaders,
               body: JSON.stringify({
                 fields: {
