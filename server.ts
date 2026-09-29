@@ -1613,17 +1613,17 @@ app.post("/api/unlock-link", async (req, res) => {
         ? committed
         : (Number.isFinite(currentFailed) ? currentFailed + 1 : 1);
 
-      // A read count already >= 20 means an earlier lock write failed (a live lock would
-      // have refused this request before the PIN compare), so retry the lock now rather
-      // than letting the count run on to the next multiple of 20.
+      // A read count already >= 20 means the lock has not landed (a live lock would have
+      // refused this request before the PIN compare): an earlier lock write failed, or
+      // another request's lock write is still in flight. Arm it now rather than letting the
+      // count run on to the next multiple of 20.
       const armLock = nextFailed % 20 === 0 || (currentFailed >= 20 && nextFailed > 20);
       if (armLock) {
         // Arm the 1-hour lock and restart the count. Atomic increments hand exactly one
-        // request each multiple of 20, so on the normal path this extra write happens once
-        // per 20 failures (it rides on the 20 slots already reserved). On the retry path
-        // (an earlier lock write failed) every concurrent request that read >= 20 sends its
-        // own PATCH, uncharged to the fuse: bounded by the burst in flight before the lock
-        // lands, and never skipped because it IS the lockout.
+        // request each multiple of 20; every request that read >= 20 before the lock landed
+        // also sends one (idempotent) PATCH. Each is charged to the fuse like any write, but
+        // the result is ignored: the write IS the lockout, so it is never skipped.
+        chargeUnlockBudget(ip);
         const lockRes = await fetch(
           `${fsBase}/${shortId}?updateMask.fieldPaths=failedPinCount&updateMask.fieldPaths=pinLockedUntil`,
           {
