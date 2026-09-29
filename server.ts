@@ -2972,6 +2972,39 @@ app.post("/api/generate-meta", async (req, res) => {
 - description：一句吸引客戶閱讀的摘要，最多 60 字，帶出閱讀的價值。
 - 只輸出 JSON 物件：{"title":"...","description":"..."}`;
 
+  // Phase 2 lever #5 (PHASE2-EGRESS-PAYLOAD.md): check a content-addressed cache
+  // keyed on sha256(pdfBuffer), so regenerating the same PDF re-uses the meta
+  // without a fan-out. Two-tier: L1 in-memory Map, L2 R2 sidecar `meta/<sha256>.json`.
+  // Gated OFF by default (META_CACHE=1). Best-effort: any cache miss or I/O failure
+  // just regenerates.
+  // Checked before text extraction / request building so a hit skips that work.
+  // The key is computed once and reused by the cache write after generation.
+  let cachedMeta: MetaResult | null = null;
+  const metaKey = process.env.META_CACHE === "1"
+    ? `meta/${sha256Hex(pdfBuffer.toString("binary"))}.json`
+    : "";
+  if (process.env.META_CACHE === "1") {
+    // L1 hit?
+    const cached = metaCache.get(metaKey);
+    if (cached && Date.now() - cached.at < META_CACHE_TTL_MS) {
+      cachedMeta = cached.meta;
+      console.log(`[GENERATE_META] cache hit (L1) | ${metaKey.slice(0, 30)}...`);
+    } else {
+      // L1 miss: try L2 (R2).
+      const stored = await readMetaStore(metaKey).catch(() => null);
+      if (stored) {
+        cachedMeta = { title: stored.title, description: stored.description };
+        // Preserve the L2 creation time so promotion doesn't extend the 24h TTL.
+        setMetaCache(metaKey, cachedMeta, stored.at); // populate L1 on read
+        console.log(`[GENERATE_META] cache hit (L2) | ${metaKey.slice(0, 30)}...`);
+      }
+    }
+  }
+
+  if (cachedMeta) {
+    return res.json(cachedMeta);
+  }
+
   // Build the full-PDF request parts lazily so the flag-ON text path never pays
   // the ~18MB base64 allocation it does not use.
   const buildPdfParts = (): any[] => [
@@ -3040,35 +3073,6 @@ app.post("/api/generate-meta", async (req, res) => {
   }
   if (!contentParts) contentParts = buildPdfParts();
 
-  // Phase 2 lever #5 (PHASE2-EGRESS-PAYLOAD.md): check a content-addressed cache
-  // keyed on sha256(pdfBuffer), so regenerating the same PDF re-uses the meta
-  // without a fan-out. Two-tier: L1 in-memory Map, L2 R2 sidecar `meta/<sha256>.json`.
-  // Gated OFF by default (META_CACHE=1). Best-effort: any cache miss or I/O failure
-  // just regenerates.
-  let cachedMeta: MetaResult | null = null;
-  if (process.env.META_CACHE === "1") {
-    const metaKey = `meta/${sha256Hex(pdfBuffer.toString("binary"))}.json`;
-    // L1 hit?
-    const cached = metaCache.get(metaKey);
-    if (cached && Date.now() - cached.at < META_CACHE_TTL_MS) {
-      cachedMeta = cached.meta;
-      console.log(`[GENERATE_META] cache hit (L1) | ${metaKey.slice(0, 30)}...`);
-    } else {
-      // L1 miss: try L2 (R2).
-      const stored = await readMetaStore(metaKey).catch(() => null);
-      if (stored) {
-        cachedMeta = { title: stored.title, description: stored.description };
-        // Preserve the L2 creation time so promotion doesn't extend the 24h TTL.
-        setMetaCache(metaKey, cachedMeta, stored.at); // populate L1 on read
-        console.log(`[GENERATE_META] cache hit (L2) | ${metaKey.slice(0, 30)}...`);
-      }
-    }
-  }
-
-  if (cachedMeta) {
-    return res.json(cachedMeta);
-  }
-
   // Rotate keys over time; lite/high-quota models lead since this is a simple,
   // frequent task. JSON is requested via mime-type + prompt and parsed defensively
   // (no responseSchema — keeps the whole fallback list compatible).
@@ -3103,7 +3107,6 @@ app.post("/api/generate-meta", async (req, res) => {
           console.log(`[GENERATE_META] Success | ${modelName}`);
           // Cache write (best-effort, don't block the response on cache I/O).
           if (process.env.META_CACHE === "1") {
-            const metaKey = `meta/${sha256Hex(pdfBuffer.toString("binary"))}.json`;
             const meta = { title, description };
             setMetaCache(metaKey, meta); // L1 write
             void writeMetaStore(metaKey, meta); // L2 write, async, fire-and-forget
