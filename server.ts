@@ -1616,10 +1616,14 @@ app.post("/api/unlock-link", async (req, res) => {
       // A read count already >= 20 means an earlier lock write failed (a live lock would
       // have refused this request before the PIN compare), so retry the lock now rather
       // than letting the count run on to the next multiple of 20.
-      if (nextFailed % 20 === 0 || (currentFailed >= 20 && nextFailed > 20)) {
+      const armLock = nextFailed % 20 === 0 || (currentFailed >= 20 && nextFailed > 20);
+      if (armLock) {
         // Arm the 1-hour lock and restart the count. Atomic increments hand exactly one
-        // request each multiple of 20, so this extra write happens once per 20 failures
-        // (it rides on the 20 slots already reserved) even under a concurrent burst.
+        // request each multiple of 20, so on the normal path this extra write happens once
+        // per 20 failures (it rides on the 20 slots already reserved). On the retry path
+        // (an earlier lock write failed) every concurrent request that read >= 20 sends its
+        // own PATCH, uncharged to the fuse: bounded by the burst in flight before the lock
+        // lands, and never skipped because it IS the lockout.
         const lockRes = await fetch(
           `${fsBase}/${shortId}?updateMask.fieldPaths=failedPinCount&updateMask.fieldPaths=pinLockedUntil`,
           {
@@ -1641,10 +1645,12 @@ app.post("/api/unlock-link", async (req, res) => {
         }
       }
 
-      if ((nextFailed === 1 || nextFailed === 20) && allow(`tg:${ip}`, 12, 60_000)) {
+      // Alert on whichever request actually armed the lock (20th, or a retry after a
+      // failed lock write), not only on a count of exactly 20.
+      if ((nextFailed === 1 || armLock) && allow(`tg:${ip}`, 12, 60_000)) {
         const clientName = fields.clientName?.stringValue || "貴客";
         const advisor = fields.adv?.stringValue || "";
-        const message = nextFailed === 20
+        const message = armLock
           ? `🔐 <b>密碼嘗試失敗</b>\n\n👤 客戶連結：${escapeHTML(clientName)}\n🔗 ID：${shortId}\n🚫 已連續錯誤 20 次，連結已鎖定 1 小時。`
           : `🔐 <b>密碼嘗試失敗</b>\n\n👤 客戶連結：${escapeHTML(clientName)}\n🔗 ID：${shortId}\n⚠️ 有人輸入錯誤密碼 — 連結可能已被轉發。`;
         await sendTelegramTo(message, [advisor ? advisorChats.get(advisor) : undefined, process.env.TELEGRAM_CHAT_ID]);
