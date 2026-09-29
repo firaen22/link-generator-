@@ -2668,12 +2668,12 @@ const NON_PUBLIC_ADDRESSES = (() => {
   for (const [net, prefix] of [
     ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
     ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
-    ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24],
+    ["192.88.99.2", 32], ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24],
     ["224.0.0.0", 4], ["240.0.0.0", 4],
   ] as const) b.addSubnet(net, prefix, "ipv4");
   for (const [net, prefix] of [
     ["::", 128], ["::1", 128], ["64:ff9b::", 96], ["64:ff9b:1::", 48], ["100::", 64],
-    ["2001::", 23], ["2001:db8::", 32], ["2002::", 16], ["5f00::", 16],
+    ["2001::", 23], ["2001:db8::", 32], ["2002::", 16], ["3fff::", 20], ["5f00::", 16],
     ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
   ] as const) b.addSubnet(net, prefix, "ipv6");
   // Ranges follow the IANA special-purpose registries' "not globally reachable" rows,
@@ -2683,20 +2683,30 @@ const NON_PUBLIC_ADDRESSES = (() => {
   return b;
 })();
 
+// getaddrinfo can't be cancelled: a lookup abandoned at the 3s bound keeps its libuv
+// threadpool slot (default 4, shared with fetch's own DNS) until the OS gives up, so this
+// route keeps at most 2 lookups outstanding and refuses beyond that.
+let pendingImageLookups = 0;
 const resolvesToPublicAddress = async (hostname: string): Promise<boolean> => {
+  if (pendingImageLookups >= 2) return false;
+  let timer: NodeJS.Timeout | undefined;
   try {
     const host = hostname.replace(/^\[/, "").replace(/\]$/, "");
+    pendingImageLookups++;
+    const pending = lookup(host, { all: true, verbatim: true }).finally(() => { pendingImageLookups--; });
     // Bounded: the fetch timeout below does not cover DNS, so a stalled resolver would
     // otherwise hold the request open.
     const addrs = await Promise.race([
-      lookup(host, { all: true, verbatim: true }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("dns timeout")), 3000).unref()),
+      pending,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("dns timeout")), 3000); timer.unref(); }),
     ]);
     return addrs.length > 0 && addrs.every(
       (a) => !NON_PUBLIC_ADDRESSES.check(a.address, a.family === 6 ? "ipv6" : "ipv4"),
     );
   } catch {
-    return false; // unresolvable or slow → refuse
+    return false; // unresolvable, slow, or too many lookups outstanding → refuse
+  } finally {
+    clearTimeout(timer);
   }
 };
 
