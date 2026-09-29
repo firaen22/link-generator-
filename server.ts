@@ -2449,6 +2449,14 @@ app.get("/api/pdf/:file_id", async (req, res) => {
         return res.status(400).send("Invalid file ID format.");
       }
       console.log(`[PDF_PROXY] vblob_ ID: ${file_id.slice(0, 15)}... | Resolved URL: ${blobUrl.split('?')[0]}...`);
+      // vblob_ streams ANY object on the allowlisted public-storage suffixes (not just
+      // this app's own bucket), unauthenticated, at this function's cost. Legacy links
+      // still use it, so the host list stays; cap per-IP volume instead. The viewer
+      // loads a PDF with one full GET (disableRange) and the response is cached 1h, so
+      // a real reader stays far below this.
+      if (!allow(`pdfv:ip:${clientIp(req)}`, 60, 3_600_000)) {
+        return res.status(429).send("Too many requests. Please try again later.");
+      }
     } else if (file_id.startsWith('r2_')) {
       const r2Key = fromUrlSafeBase64(file_id.slice(3));
       if (!r2Key.startsWith('reports/')) {
