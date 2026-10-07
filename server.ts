@@ -3725,7 +3725,7 @@ app.post("/api/session-end", async (req, res) => {
     pages_data && typeof pages_data === "object"
       ? Object.keys(pages_data).map(Number).filter(Number.isFinite).slice(0, 5000)
       : [];
-  const maxReachedPage = pageNumbers.length > 0 ? Math.max(...pageNumbers) : 1;
+  const maxReachedPage = pageNumbers.length > 0 ? Math.max(...pageNumbers) : 0;
 
   const totalPagesNum = Number(total_pages);
   const progressPercent = Number.isFinite(totalPagesNum) && totalPagesNum > 0
