@@ -443,12 +443,16 @@ export function useTelemetry({
         (
           payload.scroll_samples.length > 8 ||
           payload.zoom_clusters.length > 8 ||
-          payload.nav_history.length > 8
+          payload.nav_history.length > 8 ||
+          payload.navigation_path.length > 8
         )
       ) {
-        payload.scroll_samples = payload.scroll_samples.filter((_, index) => index % 2 === 0);
-        payload.zoom_clusters = payload.zoom_clusters.filter((_, index) => index % 2 === 0);
-        payload.nav_history = payload.nav_history.filter((_, index) => index % 2 === 0);
+        // Halve only arrays still above the floor, so one long array (typically
+        // navigation_path) doesn't decimate the others down to a single entry.
+        if (payload.scroll_samples.length > 8) payload.scroll_samples = payload.scroll_samples.filter((_, index) => index % 2 === 0);
+        if (payload.zoom_clusters.length > 8) payload.zoom_clusters = payload.zoom_clusters.filter((_, index) => index % 2 === 0);
+        if (payload.nav_history.length > 8) payload.nav_history = payload.nav_history.filter((_, index) => index % 2 === 0);
+        if (payload.navigation_path.length > 8) payload.navigation_path = payload.navigation_path.filter((_, index) => index % 2 === 0);
       }
 
       safeRemoveItem(storageKey);

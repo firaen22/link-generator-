@@ -97,9 +97,9 @@ export function sanitizeSessionEnd(body: any): SanitizeResult {
   for (const item of navHistRaw) {
     if (nav_history.length >= 2000) break;
     if (item && typeof item === 'object') {
-      const page = num(item.page, 1, 10000, null);
+      const page = intClamp(item.page, 1, 10000, null);
       const t = num(item.t, 0, Number.MAX_SAFE_INTEGER, null);
-      if (Number.isInteger(page) && page >= 1 && page <= 10000 && Number.isFinite(t) && t >= 0) {
+      if (page !== null && Number.isFinite(t) && t >= 0) {
         nav_history.push({ page, t });
       }
     }
