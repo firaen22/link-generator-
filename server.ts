@@ -1310,7 +1310,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
 
     const data = await response.json();
     const expireAtRaw = data.fields?.expireAt?.timestampValue;
-    const expireAtDate = expireAtRaw ? new Date(expireAtRaw) : null;
+    const expireAtMs = expireAtRaw !== undefined ? new Date(expireAtRaw).getTime() : null;
     const maxOpens = parseInt(data.fields?.maxOpens?.integerValue ?? "0", 10) || 0;
     const openCount = parseInt(data.fields?.openCount?.integerValue ?? "0", 10) || 0;
 
@@ -1318,7 +1318,7 @@ app.get(["/l/:shortId", "/api/l/:shortId"], async (req, res) => {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       return res.status(410).send(lifecycleErrorHtml("此連結已由顧問停用"));
     }
-    if (expireAtDate && Number.isFinite(expireAtDate.getTime()) && expireAtDate < new Date()) {
+    if (expireAtMs !== null && (!Number.isFinite(expireAtMs) || expireAtMs < Date.now())) {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       return res.status(410).send(lifecycleErrorHtml("此連結已過期"));
     }
@@ -1524,11 +1524,11 @@ app.post("/api/unlock-link", async (req, res) => {
     }
 
     const expireAtRaw = fields.expireAt?.timestampValue;
-    const expireAtDate = expireAtRaw ? new Date(expireAtRaw) : null;
+    const expireAtMs = expireAtRaw !== undefined ? new Date(expireAtRaw).getTime() : null;
     if (fields.revoked?.booleanValue === true) {
       return res.status(410).json({ error: "link_unavailable" });
     }
-    if (expireAtDate && Number.isFinite(expireAtDate.getTime()) && expireAtDate < new Date()) {
+    if (expireAtMs !== null && (!Number.isFinite(expireAtMs) || expireAtMs < Date.now())) {
       return res.status(410).json({ error: "link_unavailable" });
     }
 
