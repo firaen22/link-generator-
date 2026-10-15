@@ -3594,7 +3594,7 @@ app.post("/api/track", async (req, res) => {
 // THINKING_MODELS support thinkingLevel + native JSON schema (response_schema).
 // STANDARD_MODELS are fallbacks that cannot honour those config options.
 const THINKING_MODELS = [
-  "gemini-3.6-flash",                 // RPM: 5, TPM: 250K (verified Jul 2026) — replaced 3-flash-preview, which ran 18-25s vs our 25s timeout
+  "gemini-3.8-flash",                 // replaced 3.6-flash (Oct 2026)
   "gemini-2.5-flash",                 // RPD: 20, RPM: 5
 ];
 const STANDARD_MODELS = [
@@ -3656,6 +3656,14 @@ const RESPONSE_SCHEMA = {
   },
   required: ["intent_archetype", "z_score", "friction_points", "psych_bias", "rep_system", "advisor_nlp_approach", "spin_question", "cialdini_lever", "voss_label", "nba_whatsapp"],
   additionalProperties: false,
+};
+// The Gemini API rejects additionalProperties in response_schema (HTTP 400 on every
+// THINKING_MODELS call), so the native schema omits it. The standard fallback prompt
+// still embeds the full RESPONSE_SCHEMA text, where "no extra keys" is useful guidance.
+const THINKING_RESPONSE_SCHEMA = {
+  type: RESPONSE_SCHEMA.type,
+  properties: RESPONSE_SCHEMA.properties,
+  required: RESPONSE_SCHEMA.required,
 };
 
 // AI-Powered Session Analysis Endpoint
@@ -3958,9 +3966,9 @@ STEP 8 — Write nba_whatsapp in Hong Kong financial Cantonese with matching sen
             const model = genAI.getGenerativeModel({
               model: modelName,
               generationConfig: {
-                thinkingConfig: { thinkingBudget: -1 }, // -1 = dynamic (high thinking)
+                thinkingConfig: { thinkingBudget: 512 }, // dynamic (-1) ran 69s on 3.8-flash vs the 25s timeout; 512 ran ~5s
                 responseMimeType: "application/json",
-                responseSchema: RESPONSE_SCHEMA as any,
+                responseSchema: THINKING_RESPONSE_SCHEMA as any,
               } as any,
             });
 

@@ -241,7 +241,7 @@ const loaded = Object.fromEntries(arms.map((arm) => [arm, loadArm(arm)]));
 const structuralFails = Object.fromEntries(arms.map((arm) => [arm, structural(arm)]));
 
 const PATHS = {
-  thinking: { model: 'gemini-3.6-flash', gapMs: 15000, timeoutMs: 25000 }, // 25s = server.ts
+  thinking: { model: 'gemini-3.8-flash', gapMs: 15000, timeoutMs: 25000 }, // 25s = server.ts
   fallback: { model: 'gemini-3.5-flash-lite', gapMs: 5000, timeoutMs: 60000 },
 };
 
@@ -253,7 +253,7 @@ const callModel = async (path, arm, prompt) => {
   const genAI = new GoogleGenerativeAI(apiKey);
   const { model: modelName, timeoutMs } = PATHS[path];
   const cfg = path === 'thinking'
-    ? { model: modelName, generationConfig: { thinkingConfig: { thinkingBudget: -1 }, responseMimeType: 'application/json', responseSchema: thinkingSchema(loaded[arm].schema) } }
+    ? { model: modelName, generationConfig: { thinkingConfig: { thinkingBudget: 512 }, responseMimeType: 'application/json', responseSchema: thinkingSchema(loaded[arm].schema) } }
     : { model: modelName };
   const model = genAI.getGenerativeModel(cfg);
   const full = path === 'thinking'
