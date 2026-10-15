@@ -1776,6 +1776,11 @@ app.post("/api/create-link", async (req, res) => {
   if (!f.startsWith("r2:")) {
     return res.status(400).json({ error: "檔案參照須為 r2: 開頭 (f)" });
   }
+  // /api/pdf only serves keys under reports/, so any other r2: key (e.g.
+  // r2:images/cover.png) minted a success response for a permanently broken link.
+  if (!/^r2:reports\/\S/.test(f)) {
+    return res.status(400).json({ error: "檔案參照須為 r2:reports/ 開頭 (f)" });
+  }
   const pin = rawPin === undefined || rawPin === null || rawPin === "" ? "" : rawPin;
   if (pin !== "" && (typeof pin !== "string" || !/^\d{4,8}$/.test(pin))) {
     return res.status(400).json({ error: "PIN 須為 4-8 位數字" });
@@ -2262,7 +2267,8 @@ app.post("/api/replace-link-file", async (req, res) => {
   // length >= 4, not 3: "r2:" alone cleared the old `length < 3` check and would
   // overwrite a working link's file reference with an empty key, then report
   // success — silently breaking a link the advisor had already sent out.
-  if (f.length < 4 || f.length > 1000 || !f.startsWith("r2:") || f.slice(3).trim() === "") {
+  // Must also sit under reports/ — the only prefix /api/pdf serves.
+  if (f.length < 4 || f.length > 1000 || !f.startsWith("r2:") || f.slice(3).trim() === "" || !/^r2:reports\/\S/.test(f)) {
     return res.status(400).json({ error: "檔案參照須為 r2: 開頭且不可為空 (f)" });
   }
 
@@ -2810,9 +2816,18 @@ app.get("/api/check-image-size", async (req, res) => {
     let contentLength = response.headers.get("content-length");
 
     // 若 HEAD 回傳無大小，嘗試用 GET 讀取標頭
-    if (!contentLength) {
+    // (also when HEAD failed: some hosts 405 a HEAD but serve the GET)
+    if (!contentLength || !response.ok) {
       response = await ssrfSafeFetch(resolvedUrl, "GET");
       contentLength = response.headers.get("content-length");
+      // only headers are needed — release the body instead of leaving it unread
+      await response.body?.cancel().catch(() => {});
+    }
+
+    // A 404/5xx/redirect's content-length is the error page's size, not the
+    // image's — reporting it hid the warning for a broken preview image.
+    if (!response.ok) {
+      return res.status(502).json({ error: "圖片網址無法讀取" });
     }
 
     if (contentLength) {

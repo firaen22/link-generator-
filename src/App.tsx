@@ -194,7 +194,14 @@ export default function App() {
   // Upload the PDF to R2 once (cached per file in this session) and return its
   // r2: reference. Shared by link generation and auto title/description.
   const uploadPdfIfNeeded = async (file: File): Promise<string> => {
-    const fileIdentifier = `${file.name}_${file.size}`;
+    // Keyed by content digest: name + size (or + lastModified) let a different
+    // PDF with matching metadata reuse the first file's R2 key, so its links
+    // served file A. No digest (non-secure context, read failure) → no cache.
+    let fileIdentifier = '';
+    try {
+      const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+      fileIdentifier = `sha256_${Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('')}`;
+    } catch { /* fall through uncached */ }
     // Storage-blocked webviews (WhatsApp/Line in-app browser, Safari with site
     // data off) throw here — the cache is a pure optimization, so degrade to
     // "no cache" instead of letting it abort the upload.
@@ -206,7 +213,7 @@ export default function App() {
       const parsed = JSON.parse(sessionStorage.getItem(SESSION_CACHE_KEY) || '{}');
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) sessionCache = parsed;
     } catch { /* storage blocked or corrupt cache entry */ }
-    if (typeof sessionCache[fileIdentifier] === 'string' && sessionCache[fileIdentifier]) {
+    if (fileIdentifier && typeof sessionCache[fileIdentifier] === 'string' && sessionCache[fileIdentifier]) {
       console.log('[UPLOAD] Reusing cached path:', sessionCache[fileIdentifier]);
       return sessionCache[fileIdentifier];
     }
@@ -232,7 +239,7 @@ export default function App() {
     const cleanFileURL = `r2:${r2Key}`; // 'r2:' prefix so pdfBridge resolves it
     // The PUT to R2 already succeeded — a throwing setItem must not undo that
     // by failing the whole upload; just skip caching it for reuse this session.
-    try {
+    if (fileIdentifier) try {
       sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({ ...sessionCache, [fileIdentifier]: cleanFileURL }));
     } catch { /* storage blocked or quota exceeded */ }
     console.log('[UPLOAD] Success:', cleanFileURL);
