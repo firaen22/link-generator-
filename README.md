@@ -2,6 +2,8 @@
 
 This web application lets wealth advisors generate personalized, trackable PDF report links (`/l/<id>` and `/s/<id>`) for clients, optionally PIN-protected, captures client-reading telemetry (scroll depth, dwell time, zoom, device type, tab switches, return visits), analyzes engagement behavior via the Gemini API, offers an in-viewer jargon explainer for report terms, and notifies advisors in real time through Telegram. Links can be listed and revoked at any time, from the dashboard or via the MCP server.
 
+Load-bearing changes in this repo are cross-reviewed before ship with **Codex `gpt-6.1-sol`** and **Grok `grok-4.7`** (see [`AGENTS.md`](AGENTS.md) and behavioral gates such as [`scripts/session-end-injection-gate/PREREG.md`](scripts/session-end-injection-gate/PREREG.md)).
+
 ## Architecture
 
 - **Frontend (`src/`)** — Vite React single-page app (Tailwind CSS). Key entrypoints: `src/App.tsx` (advisor dashboard / link creator) and `src/Viewer.tsx` (client-facing PDF viewer that captures telemetry).

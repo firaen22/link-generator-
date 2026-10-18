@@ -2,6 +2,13 @@
 
 Core operating rules: `~/.codex/AGENTS.md` (loaded globally, applies here too).
 
+## Cross-model review (ship gate)
+Load-bearing diffs need both lenses on the same revision:
+- **Codex** `gpt-6.1-sol` (OpenAI)
+- **Grok** `grok-4.7` (xAI)
+
+Deterministic behavioral gates (no LLM judge) live under `scripts/session-end-injection-gate/`; pre-registration and verdict rules are in `PREREG.md`.
+
 ## Deploy target: Vercel + ESM
 - Relative imports need explicit `.js` extensions. `tsx` runs fine locally
   without them, but the Vercel build ships broken modules —
